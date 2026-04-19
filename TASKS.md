@@ -4,7 +4,12 @@
 Unlocked: 2026-04-19
 
 ## In progress
-(none)
+
+### T-002: Root tooling config
+- Spec: §5.1-5.3, §3.1
+- Started: 2026-04-19
+- Branch: feat/T-002-root-tooling-config
+- Blockers: none
 
 ## Done (last 10)
 - [x] T-001: Monorepo scaffold (2026-04-19)
@@ -13,7 +18,6 @@ Unlocked: 2026-04-19
 
 Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tooling → shared packages → infra compose → alembic + signals table → hello-world service → CI-full/release → F1 backlog. Each task is scoped to ≤~400 LOC diff per §0.3.
 
-- [ ] T-002: Root tooling config — ruff (format+lint), mypy --strict, pytest, bandit, pip-audit; .pre-commit-config.yaml wiring them. Spec: §5.1-5.3, §3.1
 - [ ] T-003: CI-fast workflow (.github/workflows/ci-fast.yml) — lint + type-check + unit tests on every push. Spec: §0.4, §6.5, §17.6, §19 F0 bullet 1
 - [ ] T-004: ADR directory scaffold + ADR-0001 recording the NATS JetStream vs Kafka/Redpanda choice. Spec: §6.3, §3.3, §19 F0 bullet 9
 - [ ] T-005: `packages/core` — domain types, `ScalperError` hierarchy, `@idempotent`/`@non_idempotent` markers, `now_utc()` time utility. Spec: §5.4, §5.8, §5.12, §19 F0 bullet 4

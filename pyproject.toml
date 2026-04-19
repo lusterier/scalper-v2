@@ -6,12 +6,122 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
 
-# Tooling configuration (ruff, mypy --strict, pytest, bandit, pip-audit) is
-# added in T-002. Dependencies per service/package are added in their
-# respective later tasks (T-005+).
-
 [tool.uv.workspace]
 members = [
     "services/*",
     "packages/*",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff~=0.6",
+    "mypy~=1.11",
+    "pytest~=8.3",
+    "pytest-asyncio~=0.24",
+    "pytest-cov~=5.0",
+    "bandit[toml]~=1.7",
+    "pip-audit~=2.7",
+    "pre-commit~=4.0",
+]
+
+# -----------------------------------------------------------------------------
+# Ruff — formatter + linter. Config verbatim from brief §5.1.
+# -----------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",     # pycodestyle + pyflakes
+    "I",               # isort
+    "B",               # bugbear
+    "UP",              # pyupgrade
+    "SIM",             # simplify
+    "TCH",             # type-checking imports
+    "RUF",             # ruff-specific
+    "ASYNC",           # async patterns
+    "S",               # security (bandit subset)
+    "A",               # builtins shadowing
+    "RET",             # return patterns
+    "PT",              # pytest patterns
+]
+ignore = ["S101"]  # assert in tests is fine
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use assert, hardcoded passwords for fixtures, etc.
+"tests/**/*.py" = ["S", "B", "PT011"]
+"**/tests/**/*.py" = ["S", "B", "PT011"]
+
+# -----------------------------------------------------------------------------
+# Mypy — strict mode over services/ and packages/. Plugin type-checking policy
+# lives with the plugin-loading task (§5.1 note).
+# -----------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["services", "packages"]
+exclude = [
+    "^migrations/versions/",
+    "^\\.venv/",
+    "^build/",
+    "^dist/",
+]
+warn_unreachable = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+# -----------------------------------------------------------------------------
+# Pytest — async-auto, coverage wired with a 0% floor (tightened per §N5 as
+# critical modules land).
+# -----------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests", "services", "packages"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=services",
+    "--cov=packages",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+    "--cov-fail-under=0",
+]
+asyncio_mode = "auto"
+
+# -----------------------------------------------------------------------------
+# Coverage — source dirs, branch coverage, XML output for CI upload.
+# -----------------------------------------------------------------------------
+
+[tool.coverage.run]
+source = ["services", "packages"]
+branch = true
+parallel = true
+
+[tool.coverage.report]
+fail_under = 0
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
+# -----------------------------------------------------------------------------
+# Bandit — security lint over services/ and packages/. B101 (assert) is
+# skipped because pytest uses assert intentionally. B105/B106 (hardcoded
+# credentials) stay on per T-002 operator decision.
+# -----------------------------------------------------------------------------
+
+[tool.bandit]
+exclude_dirs = ["tests", "migrations/versions", ".venv", "build", "dist"]
+skips = ["B101"]
