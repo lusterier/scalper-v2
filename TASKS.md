@@ -7,6 +7,7 @@ Unlocked: 2026-04-19
 (none)
 
 ## Done (last 10)
+- [x] T-020: Workspace build-system (hatchling) + ADR-0002 + CI-fast --all-packages (2026-04-19)
 - [x] T-005: `packages/core` — domain types, errors, markers, now_utc (2026-04-19)
 - [x] T-004: ADR-0001 — NATS JetStream (2026-04-19)
 - [x] T-003: CI-fast workflow (2026-04-19)
@@ -17,7 +18,6 @@ Unlocked: 2026-04-19
 
 Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tooling → shared packages → infra compose → alembic + signals table → hello-world service → CI-full/release → F1 backlog. Each task is scoped to ≤~400 LOC diff per §0.3.
 
-- [ ] T-020: Workspace build-system + sync strategy — add `[build-system]` (hatchling) to `packages/core` and `packages/observability`, write ADR-0002 (uv build backend = hatchling, flat layout), switch CI-fast to `uv sync --all-packages --group dev --frozen`. Unblocks T-006 and every future workspace member with external runtime deps. Spec: §0.8, §3.1
 - [ ] T-007: `packages/db` — asyncpg pool factory + query helper skeleton (no ORM on write path). Spec: §5.10, §4, §19 F0 bullet 6
 - [ ] T-008: `packages/bus` — NATS client wrapper, `MessageEnvelope` Pydantic model, publish/subscribe helpers. Spec: §8.3, §4, §19 F0 bullet 5
 - [ ] T-009: Docker Compose — PostgreSQL 16 + TimescaleDB service with `/mnt/data` volume mount and healthcheck. Spec: §18.1, §3.1, §19 F0 bullet 2
@@ -36,4 +36,4 @@ Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tool
 (F1-F5 tasks will be added as phases approach; F1 is populated by T-019)
 
 ## Parked
-- [ ] T-006: `packages/observability` — structlog JSON renderer, correlation/trace-ID helpers, `prometheus-client` bootstrap, secret redactor. Spec: §5.7, §15.1-15.3, §19 F0 bullet 7 — parked 2026-04-19, waiting on T-020 (workspace build-system). Code is on disk in git stash; resume via `git stash pop` after T-020 merges. Note for unpark: the stash pop will produce a single-file merge conflict on `packages/observability/__init__.py` — T-020 leaves a one-docstring stub so hatchling has a non-empty wheel to build, T-006 replaces it with the real public-API re-exports. Resolution is always "take T-006's version".
+- [ ] T-006: `packages/observability` — structlog JSON renderer, correlation/trace-ID helpers, `prometheus-client` bootstrap, secret redactor. Spec: §5.7, §15.1-15.3, §19 F0 bullet 7 — parked 2026-04-19. Ready to resume now that T-020 (workspace build-system) has merged: `git pull origin master` then `git stash pop` (code is on disk in git stash). Unpark will produce a single-file merge conflict on `packages/observability/__init__.py` — T-020 left a one-docstring stub so hatchling had a non-empty wheel to build; T-006 replaces it with the real public-API re-exports. Resolution is always "take T-006's version".
