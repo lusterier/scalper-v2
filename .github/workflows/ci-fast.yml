@@ -32,20 +32,7 @@ jobs:
           enable-cache: true
       - run: uv sync --group dev --frozen
 
-      - name: Run mypy
-        run: |
-          set +e
-          uv run mypy
-          rc=$?
-          # mypy exits 2 when no .py[i] files are found in the configured
-          # paths (services/, packages/). Zero Python files in the repo
-          # during F0 — treat exit 2 as pass here so ci-fast can go green.
-          # Remove this branch once packages/core lands at T-005.
-          if [ $rc -eq 2 ]; then
-            echo "mypy: no .py files to check (expected in F0); treating as pass"
-            exit 0
-          fi
-          exit $rc
+      - run: uv run mypy
 
   unit:
     runs-on: ubuntu-24.04
@@ -59,23 +46,7 @@ jobs:
       # pytest filters per §17.6: --ignore=tests/integration keeps the
       # testcontainers-backed suites in ci-full; -m 'not slow' excludes
       # @slow/@e2e markers (Bybit testnet etc. per §17.1).
-      #
-      # --cov-fail-under not set here: pyproject.toml sets it to 0 as a
-      # placeholder (T-002). Per-module thresholds (§17.2) will be enforced
-      # as critical modules land (packages/core first at T-005).
-      - name: Run pytest
-        run: |
-          set +e
-          uv run pytest -q --ignore=tests/integration -m 'not slow'
-          rc=$?
-          # pytest exits 5 when no tests are collected. Zero tests in the
-          # repo during F0 — treat exit 5 as pass here so ci-fast can go
-          # green. Remove this branch once packages/core tests land at T-005.
-          if [ $rc -eq 5 ]; then
-            echo "pytest: no tests collected (expected in F0); treating as pass"
-            exit 0
-          fi
-          exit $rc
+      - run: uv run pytest -q --ignore=tests/integration -m 'not slow'
 
       - uses: actions/upload-artifact@v7
         if: always()
