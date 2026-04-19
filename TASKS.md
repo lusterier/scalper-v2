@@ -7,6 +7,7 @@ Unlocked: 2026-04-19
 (none)
 
 ## Done (last 10)
+- [x] T-003: CI-fast workflow (2026-04-19)
 - [x] T-002: Root tooling config (2026-04-19)
 - [x] T-001: Monorepo scaffold (2026-04-19)
 
@@ -14,7 +15,6 @@ Unlocked: 2026-04-19
 
 Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tooling → shared packages → infra compose → alembic + signals table → hello-world service → CI-full/release → F1 backlog. Each task is scoped to ≤~400 LOC diff per §0.3.
 
-- [ ] T-003: CI-fast workflow (.github/workflows/ci-fast.yml) — lint + type-check + unit tests on every push. Spec: §0.4, §6.5, §17.6, §19 F0 bullet 1
 - [ ] T-004: ADR directory scaffold + ADR-0001 recording the NATS JetStream vs Kafka/Redpanda choice. Spec: §6.3, §3.3, §19 F0 bullet 9
 - [ ] T-005: `packages/core` — domain types, `ScalperError` hierarchy, `@idempotent`/`@non_idempotent` markers, `now_utc()` time utility. Spec: §5.4, §5.8, §5.12, §19 F0 bullet 4
 - [ ] T-006: `packages/observability` — structlog JSON renderer, correlation/trace-ID helpers, `prometheus-client` bootstrap, secret redactor. Spec: §5.7, §15.1-15.3, §19 F0 bullet 7
