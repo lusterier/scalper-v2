@@ -43,6 +43,7 @@ select = [
     "RUF",             # ruff-specific
     "ASYNC",           # async patterns
     "S",               # security (bandit subset)
+    "DTZ",             # naive datetime calls (§5.12 / §N1)
     "A",               # builtins shadowing
     "RET",             # return patterns
     "PT",              # pytest patterns
