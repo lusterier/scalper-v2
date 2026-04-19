@@ -7,6 +7,7 @@ Unlocked: 2026-04-19
 (none)
 
 ## Done (last 10)
+- [x] T-006: `packages/observability` — structlog JSON, trace/correlation IDs, Prometheus registry factory, secret redactor (2026-04-19)
 - [x] T-020: Workspace build-system (hatchling) + ADR-0002 + CI-fast --all-packages (2026-04-19)
 - [x] T-005: `packages/core` — domain types, errors, markers, now_utc (2026-04-19)
 - [x] T-004: ADR-0001 — NATS JetStream (2026-04-19)
@@ -36,4 +37,4 @@ Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tool
 (F1-F5 tasks will be added as phases approach; F1 is populated by T-019)
 
 ## Parked
-- [ ] T-006: `packages/observability` — structlog JSON renderer, correlation/trace-ID helpers, `prometheus-client` bootstrap, secret redactor. Spec: §5.7, §15.1-15.3, §19 F0 bullet 7 — parked 2026-04-19. Ready to resume now that T-020 (workspace build-system) has merged: `git pull origin master` then `git stash pop` (code is on disk in git stash). Unpark will produce a single-file merge conflict on `packages/observability/__init__.py` — T-020 left a one-docstring stub so hatchling had a non-empty wheel to build; T-006 replaces it with the real public-API re-exports. Resolution is always "take T-006's version".
+(none)
