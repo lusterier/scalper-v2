@@ -1,0 +1,5 @@
+[project]
+name = "scalper-v2-signal-gateway"
+version = "0.1.0"
+description = "Webhook ingress service: HMAC validation, schema validation, dedup, NATS publish. Scaffold stub; hello-world implementation lands in T-015; full service in F1."
+requires-python = ">=3.12"

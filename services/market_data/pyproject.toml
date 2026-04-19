@@ -1,0 +1,5 @@
+[project]
+name = "scalper-v2-market-data"
+version = "0.1.0"
+description = "Binance WebSocket consumer, OHLC persistence, NATS fan-out. Scaffold stub; implementation lands in F1."
+requires-python = ">=3.12"

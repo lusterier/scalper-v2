@@ -1,0 +1,5 @@
+[project]
+name = "scalper-v2-observability"
+version = "0.1.0"
+description = "structlog JSON setup, trace/correlation IDs, Prometheus metrics bootstrap. Scaffold stub; implementation lands in T-006."
+requires-python = ">=3.12"

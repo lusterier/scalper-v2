@@ -1,0 +1,5 @@
+[project]
+name = "scalper-v2-exchange"
+version = "0.1.0"
+description = "ExchangeClient protocol plus BybitV5Adapter and PaperExchange implementations. Scaffold stub; implementation lands in F2."
+requires-python = ">=3.12"

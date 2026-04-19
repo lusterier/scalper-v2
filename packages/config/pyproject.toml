@@ -1,0 +1,5 @@
+[project]
+name = "scalper-v2-config"
+version = "0.1.0"
+description = "Pydantic settings models for per-service configuration. Scaffold stub; implementation lands alongside services that consume it."
+requires-python = ">=3.12"
