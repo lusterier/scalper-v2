@@ -1,0 +1,71 @@
+name: ci-fast
+
+# Lint + type-check + unit tests on every push and pull request.
+# Spec: §0.4, §6.5, §17.6, §19 F0 bullet 1.
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --group dev --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  type:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --group dev --frozen
+      - run: uv run mypy
+
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --group dev --frozen
+
+      # pytest filters per §17.6: --ignore=tests/integration keeps the
+      # testcontainers-backed suites in ci-full; -m 'not slow' excludes
+      # @slow/@e2e markers (Bybit testnet etc. per §17.1).
+      #
+      # --cov-fail-under not set here: pyproject.toml sets it to 0 as a
+      # placeholder (T-002). Per-module thresholds (§17.2) will be enforced
+      # as critical modules land (packages/core first at T-005).
+      - name: Run pytest
+        run: |
+          set +e
+          uv run pytest -q --ignore=tests/integration -m 'not slow'
+          rc=$?
+          # pytest exits 5 when no tests are collected. Zero tests in the
+          # repo during F0 — treat exit 5 as pass here so ci-fast can go
+          # green. Remove this branch once packages/core tests land at T-005.
+          if [ $rc -eq 5 ]; then
+            echo "pytest: no tests collected (expected in F0); treating as pass"
+            exit 0
+          fi
+          exit $rc
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
