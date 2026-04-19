@@ -1,18 +1,26 @@
 [project]
 name = "scalper-v2-observability"
 version = "0.1.0"
-description = "structlog JSON setup, trace/correlation IDs, Prometheus metrics bootstrap. Scaffold stub; implementation lands in T-006."
+description = "structlog JSON logging + stdlib bridge, contextvar trace/correlation helpers, Prometheus registry factory, secret redactor. Spec: §5.7, §15.1–15.3, §19 F0 bullet 7."
 requires-python = ">=3.12"
+dependencies = [
+    "prometheus-client==0.25.0",
+    "scalper-v2-core",
+    "structlog==25.5.0",
+]
+
+[tool.uv.sources]
+scalper-v2-core = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# Same flat-layout / PEP 420 namespace pattern as packages/core per ADR-0002.
-# Source modules land after T-006 stash-pop; glob avoids another pyproject.toml
-# change at unpark. `__init__.py` is a docstring stub today so hatch has a
-# non-empty wheel to build — T-006 overwrites it with the real re-exports
-# (see TASKS.md Parked note).
+# Flat layout: source files live in packages/observability/ directly. Wheel
+# install path preserved via sources remap so `from packages.observability
+# import ...` works at runtime. PEP 420 namespace package lets packages.core
+# and packages.observability share the `packages` namespace without a
+# top-level __init__.py conflict. Rationale: ADR-0002.
 [tool.hatch.build.targets.wheel]
 include = ["*.py", "py.typed"]
 exclude = ["tests/**", "**/__pycache__/**"]
