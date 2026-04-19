@@ -22,6 +22,10 @@ dev = [
     "bandit[toml]~=1.7",
     "pip-audit~=2.7",
     "pre-commit~=4.0",
+    # Type stubs for asyncpg (used by packages/db). asyncpg itself ships
+    # without a py.typed marker; the community stubs package tracks its
+    # API so mypy --strict has real types instead of Any.
+    "asyncpg-stubs~=0.30",
 ]
 
 # -----------------------------------------------------------------------------
