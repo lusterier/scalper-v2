@@ -869,7 +869,7 @@ source = { virtual = "packages/config" }
 [[package]]
 name = "scalper-v2-core"
 version = "0.1.0"
-source = { virtual = "packages/core" }
+source = { editable = "packages/core" }
 
 [[package]]
 name = "scalper-v2-db"
@@ -904,7 +904,7 @@ source = { virtual = "services/market_data" }
 [[package]]
 name = "scalper-v2-observability"
 version = "0.1.0"
-source = { virtual = "packages/observability" }
+source = { editable = "packages/observability" }
 
 [[package]]
 name = "scalper-v2-scoring"

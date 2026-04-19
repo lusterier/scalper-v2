@@ -19,7 +19,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - run: uv sync --group dev --frozen
+      - run: uv sync --all-packages --group dev --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
 
@@ -30,7 +30,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - run: uv sync --group dev --frozen
+      - run: uv sync --all-packages --group dev --frozen
 
       - run: uv run mypy
 
@@ -41,7 +41,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - run: uv sync --group dev --frozen
+      - run: uv sync --all-packages --group dev --frozen
 
       # pytest filters per §17.6: --ignore=tests/integration keeps the
       # testcontainers-backed suites in ci-full; -m 'not slow' excludes

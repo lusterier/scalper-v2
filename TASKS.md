@@ -36,4 +36,4 @@ Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tool
 (F1-F5 tasks will be added as phases approach; F1 is populated by T-019)
 
 ## Parked
-- [ ] T-006: `packages/observability` — structlog JSON renderer, correlation/trace-ID helpers, `prometheus-client` bootstrap, secret redactor. Spec: §5.7, §15.1-15.3, §19 F0 bullet 7 — parked 2026-04-19, waiting on T-020 (workspace build-system). Code is on disk in git stash; resume via `git stash pop` after T-020 merges.
+- [ ] T-006: `packages/observability` — structlog JSON renderer, correlation/trace-ID helpers, `prometheus-client` bootstrap, secret redactor. Spec: §5.7, §15.1-15.3, §19 F0 bullet 7 — parked 2026-04-19, waiting on T-020 (workspace build-system). Code is on disk in git stash; resume via `git stash pop` after T-020 merges. Note for unpark: the stash pop will produce a single-file merge conflict on `packages/observability/__init__.py` — T-020 leaves a one-docstring stub so hatchling has a non-empty wheel to build, T-006 replaces it with the real public-API re-exports. Resolution is always "take T-006's version".
