@@ -4,14 +4,10 @@
 Unlocked: 2026-04-19
 
 ## In progress
-
-### T-002: Root tooling config
-- Spec: §5.1-5.3, §3.1
-- Started: 2026-04-19
-- Branch: feat/T-002-root-tooling-config
-- Blockers: none
+(none)
 
 ## Done (last 10)
+- [x] T-002: Root tooling config (2026-04-19)
 - [x] T-001: Monorepo scaffold (2026-04-19)
 
 ## Next (do not start without operator approval)
