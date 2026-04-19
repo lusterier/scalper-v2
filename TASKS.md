@@ -10,10 +10,31 @@ Unlocked: <dátum keď spustíš Claude Code>
 (none)
 
 ## Next (do not start without operator approval)
-(To be populated by Claude Code in first session — F0 task breakdown)
+
+Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tooling → shared packages → infra compose → alembic + signals table → hello-world service → CI-full/release → F1 backlog. Each task is scoped to ≤~400 LOC diff per §0.3.
+
+- [ ] T-001: Monorepo scaffold — root pyproject.toml with `uv` workspaces, .gitignore, .editorconfig, .env.example, service/package directory stubs. Spec: §4, §3.1-3.2, §19 F0 bullet 1
+- [ ] T-002: Root tooling config — ruff (format+lint), mypy --strict, pytest, bandit, pip-audit; .pre-commit-config.yaml wiring them. Spec: §5.1-5.3, §3.1
+- [ ] T-003: CI-fast workflow (.github/workflows/ci-fast.yml) — lint + type-check + unit tests on every push. Spec: §0.4, §6.5, §17.6, §19 F0 bullet 1
+- [ ] T-004: ADR directory scaffold + ADR-0001 recording the NATS JetStream vs Kafka/Redpanda choice. Spec: §6.3, §3.3, §19 F0 bullet 9
+- [ ] T-005: `packages/core` — domain types, `ScalperError` hierarchy, `@idempotent`/`@non_idempotent` markers, `now_utc()` time utility. Spec: §5.4, §5.8, §5.12, §19 F0 bullet 4
+- [ ] T-006: `packages/observability` — structlog JSON renderer, correlation/trace-ID helpers, `prometheus-client` bootstrap, secret redactor. Spec: §5.7, §15.1-15.3, §19 F0 bullet 7
+- [ ] T-007: `packages/db` — asyncpg pool factory + query helper skeleton (no ORM on write path). Spec: §5.10, §4, §19 F0 bullet 6
+- [ ] T-008: `packages/bus` — NATS client wrapper, `MessageEnvelope` Pydantic model, publish/subscribe helpers. Spec: §8.3, §4, §19 F0 bullet 5
+- [ ] T-009: Docker Compose — PostgreSQL 16 + TimescaleDB service with `/mnt/data` volume mount and healthcheck. Spec: §18.1, §3.1, §19 F0 bullet 2
+- [ ] T-010: Alembic setup (alembic.ini, async env.py, migration test harness) + migration 0001 creating `bots`, `bot_configs`, `symbol_map` with seed data. Spec: §5.10, §7.2, §N8, §19 F0 bullet 3
+- [ ] T-011: Migration 0002 — `signals` hypertable with unique index `(idempotency_key, received_at)`, `(symbol, received_at DESC)` index, and GIN on `payload`. Spec: §7.2, §N8, §19 F0 exit criterion ("a DB signals row")
+- [ ] T-012: Docker Compose — NATS JetStream service with `infra/nats/server.conf` and stream bootstrap for SIGNALS/ORDERS/MARKET/etc. Spec: §2.1, §8.1-8.2, §18.1, §19 F0 bullet 2
+- [ ] T-013: Docker Compose — Prometheus + Grafana with provisioning and one dashboard showing signal-gateway up/down. Spec: §15.3-15.4, §18.1, §19 F0 bullet 2 + exit criterion
+- [ ] T-014: Docker Compose — nginx reverse proxy + Cloudflare Tunnel (`cloudflared`) with configuration. Spec: §2.1, §18.1, §19 F0 bullet 2
+- [ ] T-015: Hello-world `signal-gateway` — FastAPI skeleton with `/webhook` (NATS publish, signals row insert, JSON log), `/health`, `/ready`, `/metrics`. Spec: §9.1 (subset), §5.7, §19 F0 bullet 8. Split note per §0.2+§0.3: if the diff approaches 400 LOC during implementation, split into T-015a (skeleton + /health + /ready + /metrics) and T-015b (/webhook + NATS publish + DB insert + JSON log) rather than absorb overflow.
+- [ ] T-016: CI-full workflow (.github/workflows/ci-full.yml) — integration stage using testcontainers for PG+NATS. Spec: §6.5, §17.6, §19 F0 bullet 1
+- [ ] T-017: Dashboard test harness stub — `tests/grafana/` placeholder (dashboard JSON query tests) wired into CI-full. Spec: §4, §17, §19 F0 bullet 10
+- [ ] T-018: Release workflow (.github/workflows/release.yml) — Docker image build + tag on git tag push, per-service images. Spec: §3.1, §6.5, §18, §19 F0 bullet 11
+- [ ] T-019: Populate F1 backlog in TASKS.md (exit-criterion task; enumerate F1 tasks under "Backlog"). Spec: §19 F0 exit criterion, §19 F1
 
 ## Backlog
-(F1-F5 tasks will be added as phases approach)
+(F1-F5 tasks will be added as phases approach; F1 is populated by T-019)
 
 ## Parked
 (none)
