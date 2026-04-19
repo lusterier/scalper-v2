@@ -4,15 +4,10 @@
 Unlocked: 2026-04-19
 
 ## In progress
-
-### T-001: Monorepo scaffold
-- Spec: §4, §3.1-3.2, §19 F0 bullet 1
-- Started: 2026-04-19
-- Branch: feat/T-001-monorepo-scaffold
-- Blockers: none
+(none)
 
 ## Done (last 10)
-(none)
+- [x] T-001: Monorepo scaffold (2026-04-19)
 
 ## Next (do not start without operator approval)
 
