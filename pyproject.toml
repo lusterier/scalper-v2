@@ -26,6 +26,16 @@ dev = [
     # without a py.typed marker; the community stubs package tracks its
     # API so mypy --strict has real types instead of Any.
     "asyncpg-stubs~=0.30",
+    # Alembic + SQLAlchemy land here (dev group, not packages/db runtime)
+    # for T-010: migrations run via the Alembic CLI on the dev host and in
+    # the deploy-time one-shot container (§18.5, deferred to T-018). No
+    # SQLAlchemy Core schema or ORM usage yet — SQLAlchemy is pulled in
+    # as Alembic's transitive required dep. The [asyncio] extra pulls
+    # `greenlet`, which SQLAlchemy 2.0 no longer installs by default but
+    # is required for any async-engine path (including Alembic's
+    # `connection.run_sync(...)` in async env.py).
+    "alembic==1.18.4",
+    "sqlalchemy[asyncio]==2.0.49",
 ]
 
 # -----------------------------------------------------------------------------
