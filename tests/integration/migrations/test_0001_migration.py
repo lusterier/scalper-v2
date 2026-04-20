@@ -9,7 +9,10 @@ verifies:
 * ``config_hash`` is NOT NULL on ``bots`` and ``bot_configs``
   (§7.2 schema invariant).
 * ``symbol_map`` carries the two seed rows from Appendix B.4.
-* The ``alembic_version`` row reports revision ``0001``.
+* An ``alembic_version`` row exists (proof Alembic ran). The specific
+  head revision advances as later migrations land — each successor's
+  own test_00NN_migration.py asserts head matches its revision. This
+  test therefore does not over-specify the tail.
 
 Skipped at collection time when ``POSTGRES_TEST_DSN`` is unset — see
 ``conftest.py`` docstring.
@@ -67,6 +70,6 @@ async def test_migration_0001_creates_expected_schema(migrated_db_dsn: str) -> N
         ]
 
         version = await conn.fetchval("SELECT version_num FROM alembic_version")
-        assert version == "0001"
+        assert version is not None
     finally:
         await conn.close()
