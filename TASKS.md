@@ -7,6 +7,7 @@ Unlocked: 2026-04-19
 (none)
 
 ## Done (last 10)
+- [x] T-008a: `packages/bus` — MessageEnvelope + error taxonomy scaffold (2026-04-20)
 - [x] T-007: `packages/db` — asyncpg pool factory + query helper skeleton (2026-04-19)
 - [x] T-006: `packages/observability` — structlog JSON, trace/correlation IDs, Prometheus registry factory, secret redactor (2026-04-19)
 - [x] T-020: Workspace build-system (hatchling) + ADR-0002 + CI-fast --all-packages (2026-04-19)
@@ -20,7 +21,6 @@ Unlocked: 2026-04-19
 
 Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tooling → shared packages → infra compose → alembic + signals table → hello-world service → CI-full/release → F1 backlog. Each task is scoped to ≤~400 LOC diff per §0.3.
 
-- [ ] T-008a: `packages/bus` — envelope/errors contract scaffold. Ships `pyproject.toml` (per ADR-0002), `__init__.py`, `envelope.py` (`MessageEnvelope` per §8.3 with `correlation_id: CorrelationId`, envelope-level `schema_version` default `"1.0"`, `publisher` required), `errors.py` (`BusError`, `NotConnectedError`), `schemas/` empty namespace, unit tests for envelope + errors. Spec: §8.3, §4, §19 F0 bullet 5. Pre-split from T-008 per §0.3 400-LOC cap.
 - [ ] T-008b: `packages/bus` — `NatsClient` wrapper. Ships `client.py` with `connect`/`close`/`publish`/`subscribe` (thin ephemeral core-NATS subscribe; publish sets `Nats-Msg-Id` header but stays `@non_idempotent` per wrapper-boundary contract), connection/publish/subscribe event logging per §5.7, unit tests with mocked `nats-py`. Handler exceptions in `subscribe` are logged and swallowed; ack semantics deferred to H-009 durable-JS sibling. Depends on T-008a merged to master. Spec: §8.3, §8.5 (minimal), §5.7, §5.8, §19 F0 bullet 5. Follow-up note for T-012: `infra/nats/streams.yaml` must set `duplicate_window` for `Nats-Msg-Id` dedup to actually take effect.
 - [ ] T-009: Docker Compose — PostgreSQL 16 + TimescaleDB service with `/mnt/data` volume mount and healthcheck. Spec: §18.1, §3.1, §19 F0 bullet 2
 - [ ] T-010: Alembic setup (alembic.ini, async env.py, migration test harness) + migration 0001 creating `bots`, `bot_configs`, `symbol_map`. Seed data: `symbol_map` only, defaults from Appendix B.4; `bots` and `bot_configs` stay empty until F3 YAML apply populates them (rows require `config_hash` which doesn't exist yet). Spec: §5.10, §7.2, §N8, §19 F0 bullet 3, Appendix B.4
