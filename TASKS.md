@@ -7,6 +7,7 @@ Unlocked: 2026-04-19
 (none)
 
 ## Done (last 10)
+- [x] T-011: Migration 0002 — `signals` hypertable (2026-04-20)
 - [x] T-010: Alembic setup + migration 0001 — bots, bot_configs, symbol_map + seed (2026-04-20)
 - [x] T-009: Docker Compose — PostgreSQL 16 + TimescaleDB service (2026-04-20)
 - [x] T-008b: `packages/bus` — `NatsClient` wrapper (2026-04-20)
@@ -24,7 +25,6 @@ Unlocked: 2026-04-19
 
 Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tooling → shared packages → infra compose → alembic + signals table → hello-world service → CI-full/release → F1 backlog. Each task is scoped to ≤~400 LOC diff per §0.3.
 
-- [ ] T-011: Migration 0002 — `signals` hypertable with unique index `(idempotency_key, received_at)`, `(symbol, received_at DESC)` index, and GIN on `payload`. Spec: §7.2, §N8, §19 F0 exit criterion ("a DB signals row")
 - [ ] T-012: Docker Compose — NATS JetStream service with `infra/nats/server.conf` and stream bootstrap for SIGNALS/ORDERS/MARKET/etc. Spec: §2.1, §8.1-8.2, §18.1, §19 F0 bullet 2
 - [ ] T-013: Docker Compose — Prometheus + Grafana with provisioning and one dashboard showing signal-gateway up/down. Spec: §15.3-15.4, §18.1, §19 F0 bullet 2 + exit criterion
 - [ ] T-014: Docker Compose — nginx reverse proxy + Cloudflare Tunnel (`cloudflared`) with configuration. Spec: §2.1, §18.1, §19 F0 bullet 2
