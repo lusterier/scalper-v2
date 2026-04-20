@@ -1,0 +1,40 @@
+# Development overlay for compose.yaml (brief §18.1, §19 F0 bullet 2).
+#
+# Activate with:
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d postgres
+#
+# Deltas vs compose.yaml (production base):
+#
+#   * Volume: wholesale replaces the base's two bind mounts with a single
+#     named docker volume (works on any host, no sudo or `/mnt/data`
+#     provisioning). `!override` is required — Compose v2 merge appends
+#     sequences by default, and the base's `/backups` bind has a
+#     different target path so it would otherwise survive the merge.
+#   * Secret: wholesale clears the base's Docker-secret reference via
+#     `!reset` so `pg_password` is not mounted. Without `!reset` the
+#     base list entry would persist (sequence append).
+#     `POSTGRES_PASSWORD_FILE` is emptied so the postgres-image
+#     entrypoint's "both set (but are exclusive)" guard stays quiet,
+#     and `POSTGRES_PASSWORD` is injected inline from the project
+#     `.env` so dev hosts don't need `/etc/scalper-v2/pg_password`.
+#   * Port: publishes `127.0.0.1:5432:5432` so host-side `psql` and
+#     asyncpg from the dev virtualenv can reach the DB. Localhost-bound
+#     only; never exposed on the LAN.
+#
+# `POSTGRES_USER` / `POSTGRES_DB` are not redeclared — map merge by key
+# propagates the base's values. Only the deltas appear here.
+
+services:
+  postgres:
+    volumes: !override
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD_FILE: ""
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    secrets: !reset null
+    ports:
+      - "127.0.0.1:5432:5432"
+
+volumes:
+  postgres_data:

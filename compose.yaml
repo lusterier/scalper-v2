@@ -1,0 +1,49 @@
+# Production docker-compose for scalper-v2 (brief §18.1, §19 F0 bullet 2).
+#
+# Grown incrementally per F0 plan:
+#   T-009 (this task): postgres.
+#   T-012: nats.
+#   T-013: prometheus, grafana.
+#   T-014: nginx, cloudflared.
+#
+# Services and volumes reflect the production shape: `/mnt/data/*` bind
+# mounts on the Ubuntu host, Docker secret file for the DB password, no
+# published ports (ingress lands in T-014 via nginx + cloudflared).
+#
+# For local development, overlay with compose.dev.yaml:
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d postgres
+#
+# Production pre-up steps (one-time per host) — see infra/postgres/README.md:
+#   sudo mkdir -p /mnt/data/postgres /mnt/data/backups/postgres
+#   sudo chown 999:999 /mnt/data/postgres /mnt/data/backups/postgres
+#   sudo install -m 0600 -o root -g root <pwfile> /etc/scalper-v2/pg_password
+
+services:
+  postgres:
+    image: timescale/timescaledb:2.26.3-pg16
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - /mnt/data/postgres:/var/lib/postgresql/data
+      - /mnt/data/backups/postgres:/backups
+    environment:
+      POSTGRES_USER: scalper
+      POSTGRES_DB: scalper
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets:
+      - pg_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scalper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  backend:
+    driver: bridge
+
+secrets:
+  pg_password:
+    file: /etc/scalper-v2/pg_password
