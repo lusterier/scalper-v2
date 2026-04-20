@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from packages.core import ScalperError
 
-__all__ = ["BusError", "NotConnectedError"]
+__all__ = ["BusError", "NotConnectedError", "PublishError", "SubscribeError"]
 
 
 class BusError(ScalperError):
@@ -19,3 +19,18 @@ class BusError(ScalperError):
 
 class NotConnectedError(BusError):
     """Raised when a publish/subscribe is attempted before :meth:`connect`."""
+
+
+class PublishError(BusError):
+    """Raised when :meth:`NatsClient.publish` fails.
+
+    Wraps the underlying :mod:`nats` exception (stream not found, quota
+    exceeded, timeout waiting for ``PubAck``, …) as ``__cause__``.
+    """
+
+
+class SubscribeError(BusError):
+    """Raised when :meth:`NatsClient.subscribe` fails.
+
+    Wraps the underlying :mod:`nats` exception as ``__cause__``.
+    """

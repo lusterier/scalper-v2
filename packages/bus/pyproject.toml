@@ -1,15 +1,18 @@
 [project]
 name = "scalper-v2-bus"
 version = "0.1.0"
-description = "NATS JetStream envelope and schemas. T-008a ships `MessageEnvelope` (§8.3) + error taxonomy; `NatsClient` lands with T-008b."
+description = "NATS JetStream envelope, error taxonomy, and `NatsClient` wrapper (§8, §5.7)."
 requires-python = ">=3.12"
 dependencies = [
+    "nats-py==2.14.0",
     "pydantic==2.13.2",
     "scalper-v2-core",
+    "scalper-v2-observability",
 ]
 
 [tool.uv.sources]
 scalper-v2-core = { workspace = true }
+scalper-v2-observability = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

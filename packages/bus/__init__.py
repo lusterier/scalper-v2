@@ -1,19 +1,31 @@
 """NATS JetStream bus primitives (§8, §3.3).
 
-T-008a ships the envelope contract (:class:`MessageEnvelope`, §8.3)
-and error taxonomy (:class:`BusError`, :class:`NotConnectedError`).
-The `NatsClient` wrapper with ``connect``/``publish``/``subscribe``
-and the concrete payload schemas under :mod:`packages.bus.schemas`
-land in subsequent tasks (T-008b and owner-service tasks respectively).
+Public surface:
+
+* :class:`MessageEnvelope` — §8.3 envelope shared by every publish.
+* :class:`NatsClient` — async wrapper around ``nats-py`` (§8, §5.7),
+  with JetStream publish + core-NATS ephemeral subscribe.
+* :class:`ConnectionState` — lifecycle enum exposed for readiness
+  probes and integration tests.
+* Error hierarchy rooted at :class:`BusError` (itself a
+  :class:`~packages.core.ScalperError`).
+
+Concrete payload schemas under :mod:`packages.bus.schemas` land with
+their owning services.
 """
 
 from __future__ import annotations
 
+from .client import ConnectionState, NatsClient
 from .envelope import MessageEnvelope
-from .errors import BusError, NotConnectedError
+from .errors import BusError, NotConnectedError, PublishError, SubscribeError
 
 __all__ = [
     "BusError",
+    "ConnectionState",
     "MessageEnvelope",
+    "NatsClient",
     "NotConnectedError",
+    "PublishError",
+    "SubscribeError",
 ]
