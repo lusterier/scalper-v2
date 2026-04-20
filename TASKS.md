@@ -7,6 +7,7 @@ Unlocked: 2026-04-19
 (none)
 
 ## Done (last 10)
+- [x] T-009: Docker Compose — PostgreSQL 16 + TimescaleDB service (2026-04-20)
 - [x] T-008b: `packages/bus` — `NatsClient` wrapper (2026-04-20)
 - [x] T-008a: `packages/bus` — MessageEnvelope + error taxonomy scaffold (2026-04-20)
 - [x] T-007: `packages/db` — asyncpg pool factory + query helper skeleton (2026-04-19)
@@ -22,7 +23,6 @@ Unlocked: 2026-04-19
 
 Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tooling → shared packages → infra compose → alembic + signals table → hello-world service → CI-full/release → F1 backlog. Each task is scoped to ≤~400 LOC diff per §0.3.
 
-- [ ] T-009: Docker Compose — PostgreSQL 16 + TimescaleDB service with `/mnt/data` volume mount and healthcheck. Spec: §18.1, §3.1, §19 F0 bullet 2
 - [ ] T-010: Alembic setup (alembic.ini, async env.py, migration test harness) + migration 0001 creating `bots`, `bot_configs`, `symbol_map`. Seed data: `symbol_map` only, defaults from Appendix B.4; `bots` and `bot_configs` stay empty until F3 YAML apply populates them (rows require `config_hash` which doesn't exist yet). Spec: §5.10, §7.2, §N8, §19 F0 bullet 3, Appendix B.4
 - [ ] T-011: Migration 0002 — `signals` hypertable with unique index `(idempotency_key, received_at)`, `(symbol, received_at DESC)` index, and GIN on `payload`. Spec: §7.2, §N8, §19 F0 exit criterion ("a DB signals row")
 - [ ] T-012: Docker Compose — NATS JetStream service with `infra/nats/server.conf` and stream bootstrap for SIGNALS/ORDERS/MARKET/etc. Spec: §2.1, §8.1-8.2, §18.1, §19 F0 bullet 2
