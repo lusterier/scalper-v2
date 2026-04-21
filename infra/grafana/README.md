@@ -19,10 +19,9 @@ edits hot-reload without a restart.
 ### Datasources
 
 Single `datasources/prometheus.yml` declares the Prometheus
-datasource with fixed `uid: ds_prom`. Dashboard JSON (current
-placeholder + T-013b's real panels) references the datasource by
-UID — decouples dashboard portability from Grafana's
-auto-generated IDs.
+datasource with fixed `uid: ds_prom`. Dashboard JSON
+(`overview.json`) references the datasource by UID — decouples
+dashboard portability from Grafana's auto-generated IDs.
 
 `editable: false` blocks UI edits to the provisioned datasource;
 reconciliation lands via file change only, preventing drift
@@ -32,10 +31,9 @@ between committed YAML and runtime state.
 
 `dashboards/dashboards.yml` declares a file provider scanning
 `/var/lib/grafana/dashboards/` (bind-mounted from
-`./infra/grafana/dashboards/`). T-013a ships a single placeholder
-JSON (`overview.json`, one text panel stating its temporary role);
-T-013b replaces it with the real overview — stat panel (services
-up) + table panel (per-target status).
+`./infra/grafana/dashboards/`). `overview.json` holds a stat
+panel (targets-up count) and a table panel (per-target status
+with last-scrape timestamp) over the Prometheus `up` metric.
 
 `disableDeletion: true` + `allowUiUpdates: false` match the
 datasource treatment: UI is read-only, committed file is source
@@ -105,10 +103,8 @@ Expected:
 
 ## Forward references
 
-- T-013b: `dashboards/overview.json` placeholder replaced with
-  real stat + table panels over the `up` metric.
 - T-017: dashboard test harness (`tests/grafana/`) asserts panel
-  queries parse against Prometheus; T-013a ships the first
+  queries parse against Prometheus; `overview.json` is the first
   provisioned JSON for it to target.
 - F1+: `ds_ts_main` TimescaleDB datasource lands alongside a
   `postgres_exporter` scrape entry when Timescale-backed panels

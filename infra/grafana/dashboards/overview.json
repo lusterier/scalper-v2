@@ -4,15 +4,108 @@
   "title": "scalper-v2 Overview",
   "tags": ["scalper-v2"],
   "timezone": "browser",
+  "time": {"from": "now-15m", "to": "now"},
+  "refresh": "15s",
   "panels": [
     {
       "id": 1,
-      "type": "text",
-      "title": "Provisioning placeholder",
-      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0},
+      "type": "stat",
+      "title": "Targets up",
+      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "sum(up)",
+          "instant": true
+        }
+      ],
       "options": {
-        "mode": "markdown",
-        "content": "**Provisioning placeholder — replaced in T-013b.**\n\nThe T-013b dashboard lands here: stat panel (services up) + table panel (per-target status)."
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Scrape targets",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "up",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"__name__": true},
+            "indexByName": {
+              "job": 0,
+              "instance": 1,
+              "Value": 2,
+              "Time": 3
+            },
+            "renameByName": {
+              "job": "Job",
+              "instance": "Instance",
+              "Value": "Status",
+              "Time": "Last scrape"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Status"},
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {"text": "DOWN", "color": "red", "index": 0},
+                      "1": {"text": "UP", "color": "green", "index": 1}
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {"type": "color-text"}
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Last scrape"},
+            "properties": [
+              {"id": "unit", "value": "dateTimeAsIso"}
+            ]
+          }
+        ]
       }
     }
   ]

@@ -75,8 +75,6 @@ Expected: `prometheus` and `grafana` report `health: "up"`;
 
 ## Forward references
 
-- T-013b: overview dashboard consumes the `up` metric from every
-  scrape to drive its stat + table panels.
 - T-015 signal-gateway adds the `/metrics` endpoint that lights
   up the `signal-gateway` job.
 - Follow-up task: `prometheus-nats-exporter` sidecar + a `nats`
