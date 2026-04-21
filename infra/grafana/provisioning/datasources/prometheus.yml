@@ -1,0 +1,19 @@
+# Grafana datasource provisioning (brief §15.4, §16.6).
+#
+# Fixed `uid: ds_prom` so T-013b's dashboard JSON can reference
+# the datasource by UID — decouples dashboard portability from
+# Grafana's auto-generated IDs. The URL resolves `prometheus`
+# over the compose backend network; no auth, fenced per §16.6.
+# `editable: false` makes this provisioned datasource read-only
+# in the UI — reconciliation lands via file change, not click.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: ds_prom
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

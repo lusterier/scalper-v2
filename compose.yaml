@@ -2,8 +2,8 @@
 #
 # Grown incrementally per F0 plan:
 #   T-009: postgres.
-#   T-012 (this task): nats + nats-init (JetStream topology bootstrap).
-#   T-013: prometheus, grafana.
+#   T-012: nats + nats-init (JetStream topology bootstrap).
+#   T-013a (this task): prometheus, grafana + provisioning.
 #   T-014: nginx, cloudflared.
 #
 # Services and volumes reflect the production shape: `/mnt/data/*` bind
@@ -14,13 +14,17 @@
 #
 #   docker compose -f compose.yaml -f compose.dev.yaml up -d postgres nats
 #
-# Production pre-up steps (one-time per host) — see infra/postgres/README.md
-# and infra/nats/README.md:
+# Production pre-up steps (one-time per host) — see README under each
+# infra/<service>/ subdirectory:
 #   sudo mkdir -p /mnt/data/postgres /mnt/data/backups/postgres
 #   sudo chown 999:999 /mnt/data/postgres /mnt/data/backups/postgres
 #   sudo install -m 0600 -o root -g root <pwfile> /etc/scalper-v2/pg_password
 #   sudo mkdir -p /mnt/data/nats/jetstream
 #   sudo chmod 0700 /mnt/data/nats/jetstream
+#   sudo mkdir -p /mnt/data/prometheus
+#   sudo chown 65534:65534 /mnt/data/prometheus
+#   sudo mkdir -p /mnt/data/grafana
+#   sudo chown 472:0 /mnt/data/grafana
 
 services:
   postgres:
@@ -87,6 +91,62 @@ services:
       - ./infra/nats/bootstrap.sh:/bootstrap.sh:ro
       - ./infra/nats/streams:/etc/nats/streams:ro
     entrypoint: ["/bin/sh", "/bootstrap.sh"]
+
+  # Prometheus — metrics scrape (brief §15.3, §16.6, §18.1). Config in
+  # infra/prometheus/prometheus.yml, bind-mounted read-only. TSDB lives
+  # under /mnt/data/prometheus with 15d retention. Client port 9090 is
+  # unpublished on the prod host; Grafana proxies queries over the
+  # backend network. See infra/prometheus/README.md for pre-up detail.
+  prometheus:
+    image: prom/prometheus:v3.11.2
+    restart: unless-stopped
+    networks: [backend]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      # --web.enable-lifecycle enables /-/reload for hot config
+      # reload via POST without container restart (handy when
+      # prometheus.yml changes). /-/healthy used by the healthcheck
+      # below is always available regardless of this flag.
+      - --web.enable-lifecycle
+    volumes:
+      - /mnt/data/prometheus:/prometheus
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  # Grafana — dashboards (brief §15.4, §16.6, §18.1). Anonymous Viewer
+  # auth is intentional: the backend network is fenced per §16.6 and
+  # T-014's nginx only exposes signal-gateway + analytics-api, so
+  # Grafana is never reachable from the public internet. Password
+  # auth would add friction without a reachable attack surface. The
+  # GF_SECURITY_ADMIN_PASSWORD=admin is a development default retained
+  # for provisioning API calls; revisit if F1+ introduces UI-authored
+  # dashboards. See infra/grafana/README.md for pre-up detail.
+  grafana:
+    image: grafana/grafana:13.0.1
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - /mnt/data/grafana:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
 
 networks:
   backend:

@@ -31,8 +31,23 @@
 #     to sequence keys, so the conf is re-listed explicitly).
 #   * Port: publishes `127.0.0.1:4222:4222` so host-side `nats` CLI /
 #     smoke tests can reach the server. 8222 stays internal in both
-#     prod and dev — T-013 Prometheus scrape runs over the backend
-#     network.
+#     prod and dev — monitoring is consumed over the backend network
+#     (a follow-up task adds a prometheus-nats-exporter sidecar; see
+#     infra/nats/README.md forward references).
+#
+# prometheus:
+#   * Volume: `!override` swaps the `/mnt/data/prometheus` bind for a
+#     named docker volume (`prometheus_data`), and re-lists the
+#     `prometheus.yml` config bind via the same list-replacement.
+#   * Port: publishes `127.0.0.1:9090:9090` so the Prometheus web UI
+#     and host-side `curl /api/v1/targets` smoke tests are reachable.
+#
+# grafana:
+#   * Volume: `!override` swaps the `/mnt/data/grafana` bind for a
+#     named docker volume (`grafana_data`), and re-lists the
+#     `provisioning` + `dashboards` binds via the same list-replacement.
+#   * Port: publishes `127.0.0.1:3000:3000` so the Grafana UI is
+#     reachable from the dev host browser at http://127.0.0.1:3000.
 #
 # nats-init needs no dev override — it runs identically on both
 # environments, reading the same stream JSONs via bind mount and
@@ -59,6 +74,23 @@ services:
     ports:
       - "127.0.0.1:4222:4222"
 
+  prometheus:
+    volumes: !override
+      - prometheus_data:/prometheus
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    volumes: !override
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+
 volumes:
   postgres_data:
   nats_data:
+  prometheus_data:
+  grafana_data:

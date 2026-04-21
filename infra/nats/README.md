@@ -134,8 +134,13 @@ failing CLI invocation; fix the JSON or the inline call and
 
 ## Forward references
 
-- T-013 wires Prometheus to scrape `http://nats:8222/varz` over
-  the backend network.
+- A follow-up task adds a `prometheus-nats-exporter` sidecar
+  with its own Prometheus scrape entry. Direct scrape of
+  `http://nats:8222/varz` isn't viable — it returns JSON, not
+  Prometheus text format. T-013a intentionally omits a nats
+  scrape job for this reason; shipping a permanently-DOWN
+  target for a healthy service would be a false-negative
+  signal that masks real outages.
 - T-015 signal-gateway will publish to `signals.*` (§8.1) using
   the T-008b `NatsClient` wrapper's `Nats-Msg-Id` header, relying
   on `SIGNALS.duplicate_window = 2m` for server-side dedup.

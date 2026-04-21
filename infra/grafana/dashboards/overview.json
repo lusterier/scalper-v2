@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 41,
+  "uid": "scalper-v2-overview",
+  "title": "scalper-v2 Overview",
+  "tags": ["scalper-v2"],
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Provisioning placeholder",
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "mode": "markdown",
+        "content": "**Provisioning placeholder — replaced in T-013b.**\n\nThe T-013b dashboard lands here: stat panel (services up) + table panel (per-target status)."
+      }
+    }
+  ]
+}

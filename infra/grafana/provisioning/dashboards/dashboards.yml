@@ -1,0 +1,26 @@
+# Grafana dashboard provisioning (brief §15.4, §16.6).
+#
+# File-based provider scanning the container-side mount
+# `/var/lib/grafana/dashboards`, which compose bind-mounts from
+# `infra/grafana/dashboards/`. T-013a ships a placeholder JSON
+# under that directory; T-013b replaces it with the overview
+# dashboard (stat + table panels).
+#
+# `disableDeletion` + `allowUiUpdates: false` keep provisioned
+# dashboards read-only in the UI — same treatment as the
+# provisioned datasource. Reconciliation via file edit only.
+# `updateIntervalSeconds: 10` is Grafana's documented default.
+
+apiVersion: 1
+
+providers:
+  - name: scalper-v2
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 10
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

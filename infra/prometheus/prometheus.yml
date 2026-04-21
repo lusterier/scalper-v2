@@ -1,0 +1,38 @@
+# scalper-v2 Prometheus scrape config (brief §15.3, §16.6, §18.1).
+#
+# All three F0 jobs resolve over the compose backend network by
+# service name — no host publish, no auth, fenced per §16.6.
+# Scrape cadence is 15s globally; T-013b's overview dashboard
+# derives "services up" from the `up` metric emitted by every
+# scrape regardless of target health.
+#
+# NATS is intentionally absent. /varz returns JSON, not
+# Prometheus text format, so direct scrape isn't viable — a
+# permanently-DOWN target for a healthy service is a
+# false-negative signal that masks real outages behind chronic
+# red. A follow-up task adds a prometheus-nats-exporter sidecar
+# with its own scrape entry; see infra/nats/README.md forward
+# references.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Self-scrape — Prometheus exports /metrics on its client port.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["prometheus:9090"]
+
+  # Grafana — /metrics native Prometheus endpoint, always on.
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]
+
+  # signal-gateway — FastAPI :8000/metrics from the Python
+  # prometheus_client lib; the service ships in T-015, so this
+  # target stays down (up=0) until then. Port/path contract is
+  # frozen here so T-015 picks it up without config churn.
+  - job_name: signal-gateway
+    static_configs:
+      - targets: ["signal-gateway:8000"]
