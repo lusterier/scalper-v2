@@ -6,7 +6,8 @@ Unlocked: 2026-04-19
 ## In progress
 (none)
 
-## Done (last 10)
+## Done
+- [x] T-012: Docker Compose — NATS JetStream service + stream bootstrap (2026-04-21)
 - [x] T-011: Migration 0002 — `signals` hypertable (2026-04-20)
 - [x] T-010: Alembic setup + migration 0001 — bots, bot_configs, symbol_map + seed (2026-04-20)
 - [x] T-009: Docker Compose — PostgreSQL 16 + TimescaleDB service (2026-04-20)
@@ -25,7 +26,6 @@ Unlocked: 2026-04-19
 
 Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tooling → shared packages → infra compose → alembic + signals table → hello-world service → CI-full/release → F1 backlog. Each task is scoped to ≤~400 LOC diff per §0.3.
 
-- [ ] T-012: Docker Compose — NATS JetStream service with `infra/nats/server.conf` and stream bootstrap for SIGNALS/ORDERS/MARKET/etc. Spec: §2.1, §8.1-8.2, §18.1, §19 F0 bullet 2
 - [ ] T-013: Docker Compose — Prometheus + Grafana with provisioning and one dashboard showing signal-gateway up/down. Spec: §15.3-15.4, §18.1, §19 F0 bullet 2 + exit criterion
 - [ ] T-014: Docker Compose — nginx reverse proxy + Cloudflare Tunnel (`cloudflared`) with configuration. Spec: §2.1, §18.1, §19 F0 bullet 2
 - [ ] T-015: Hello-world `signal-gateway` — FastAPI skeleton with `/webhook` (NATS publish, signals row insert, JSON log), `/health`, `/ready`, `/metrics`. Spec: §9.1 (subset), §5.7, §19 F0 bullet 8. Split note per §0.2+§0.3: if the diff approaches 400 LOC during implementation, split into T-015a (skeleton + /health + /ready + /metrics) and T-015b (/webhook + NATS publish + DB insert + JSON log) rather than absorb overflow.
