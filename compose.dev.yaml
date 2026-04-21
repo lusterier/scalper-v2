@@ -2,10 +2,11 @@
 #
 # Activate with:
 #
-#   docker compose -f compose.yaml -f compose.dev.yaml up -d postgres
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d postgres nats
 #
 # Deltas vs compose.yaml (production base):
 #
+# postgres:
 #   * Volume: wholesale replaces the base's two bind mounts with a single
 #     named docker volume (works on any host, no sudo or `/mnt/data`
 #     provisioning). `!override` is required — Compose v2 merge appends
@@ -22,6 +23,21 @@
 #     asyncpg from the dev virtualenv can reach the DB. Localhost-bound
 #     only; never exposed on the LAN.
 #
+# nats:
+#   * Volume: `!override` swaps the `/mnt/data/nats/jetstream` bind for a
+#     named docker volume (`nats_data`), and drops the `server.conf`
+#     bind entry via the same list-replacement — the conf re-enters
+#     below via map-merge on `volumes` (NOTE: map-merge doesn't apply
+#     to sequence keys, so the conf is re-listed explicitly).
+#   * Port: publishes `127.0.0.1:4222:4222` so host-side `nats` CLI /
+#     smoke tests can reach the server. 8222 stays internal in both
+#     prod and dev — T-013 Prometheus scrape runs over the backend
+#     network.
+#
+# nats-init needs no dev override — it runs identically on both
+# environments, reading the same stream JSONs via bind mount and
+# talking to `nats` over the backend network.
+#
 # `POSTGRES_USER` / `POSTGRES_DB` are not redeclared — map merge by key
 # propagates the base's values. Only the deltas appear here.
 
@@ -36,5 +52,13 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
 
+  nats:
+    volumes: !override
+      - nats_data:/data
+      - ./infra/nats/server.conf:/etc/nats/server.conf:ro
+    ports:
+      - "127.0.0.1:4222:4222"
+
 volumes:
   postgres_data:
+  nats_data:

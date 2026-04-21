@@ -1,0 +1,16 @@
+{
+  "name": "AUDIT",
+  "description": "audit.events — config changes, admin actions (brief §16.8). max_age 365d; duplicate_window 24h gives compliance-grade dedup on admin-action replays without eroding the forward history. Brief §8.1, §8.2.",
+  "subjects": ["audit.events"],
+  "retention": "limits",
+  "storage": "file",
+  "num_replicas": 1,
+  "discard": "old",
+  "max_age": 31536000000000000,
+  "duplicate_window": 86400000000000,
+  "max_msgs": -1,
+  "max_msgs_per_subject": -1,
+  "max_bytes": -1,
+  "max_msg_size": -1,
+  "max_consumers": -1
+}

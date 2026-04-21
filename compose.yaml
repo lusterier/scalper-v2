@@ -1,8 +1,8 @@
 # Production docker-compose for scalper-v2 (brief §18.1, §19 F0 bullet 2).
 #
 # Grown incrementally per F0 plan:
-#   T-009 (this task): postgres.
-#   T-012: nats.
+#   T-009: postgres.
+#   T-012 (this task): nats + nats-init (JetStream topology bootstrap).
 #   T-013: prometheus, grafana.
 #   T-014: nginx, cloudflared.
 #
@@ -12,12 +12,15 @@
 #
 # For local development, overlay with compose.dev.yaml:
 #
-#   docker compose -f compose.yaml -f compose.dev.yaml up -d postgres
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d postgres nats
 #
-# Production pre-up steps (one-time per host) — see infra/postgres/README.md:
+# Production pre-up steps (one-time per host) — see infra/postgres/README.md
+# and infra/nats/README.md:
 #   sudo mkdir -p /mnt/data/postgres /mnt/data/backups/postgres
 #   sudo chown 999:999 /mnt/data/postgres /mnt/data/backups/postgres
 #   sudo install -m 0600 -o root -g root <pwfile> /etc/scalper-v2/pg_password
+#   sudo mkdir -p /mnt/data/nats/jetstream
+#   sudo chmod 0700 /mnt/data/nats/jetstream
 
 services:
   postgres:
@@ -39,6 +42,51 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  # NATS JetStream — message bus + KV store (ADR-0001). Client 4222 and
+  # monitoring 8222 are unpublished on the prod host; reachability is
+  # fenced by the backend network (§16.6). Storage lives under
+  # /mnt/data/nats/jetstream — subpath under /mnt/data/nats/ leaves room
+  # for sibling artifacts (backups, archives) added in F1+. This deviates
+  # from §18.1's verbatim /mnt/data/nats path but mirrors the
+  # /mnt/data/postgres convention's intent (one root per service).
+  nats:
+    image: nats:2.12.7-alpine
+    # Single source of truth for JetStream enablement and store_dir is
+    # infra/nats/server.conf. Brief §18.1 shows `-js -sd /data` on the
+    # CLI; dropping both here so removing the `jetstream {}` block from
+    # the conf can never silently fall back to JS-enabled with a
+    # default (ephemeral) store.
+    command: ["-c", "/etc/nats/server.conf"]
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - /mnt/data/nats/jetstream:/data
+      - ./infra/nats/server.conf:/etc/nats/server.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz?js-enabled-only=true"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # One-shot topology applier — runs on every `up`, exits 0 when streams
+  # and KV buckets have converged on the spec under infra/nats/streams/.
+  # Idempotent: existing resources are updated, missing ones are created.
+  # See infra/nats/README.md "Bootstrap architecture".
+  nats-init:
+    image: natsio/nats-box:0.19.3
+    restart: "no"
+    networks: [backend]
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      NATS_URL: nats://nats:4222
+    volumes:
+      - ./infra/nats/bootstrap.sh:/bootstrap.sh:ro
+      - ./infra/nats/streams:/etc/nats/streams:ro
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
 
 networks:
   backend:

@@ -1,0 +1,16 @@
+{
+  "name": "ORDERS",
+  "description": "Per-bot order flow: orders.requests.<bot_id> (strategy → execution) and orders.events.<bot_id> (execution → all listeners). max_age 30d; duplicate_window 30s is a fast-fail guard for publish retries, kept tight because market orders are @non_idempotent per H-003 and callers must never retry on timeout. Brief §8.1, §8.2.",
+  "subjects": ["orders.requests.>", "orders.events.>"],
+  "retention": "limits",
+  "storage": "file",
+  "num_replicas": 1,
+  "discard": "old",
+  "max_age": 2592000000000000,
+  "duplicate_window": 30000000000,
+  "max_msgs": -1,
+  "max_msgs_per_subject": -1,
+  "max_bytes": -1,
+  "max_msg_size": -1,
+  "max_consumers": -1
+}

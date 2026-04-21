@@ -1,0 +1,16 @@
+{
+  "name": "FEATURES",
+  "description": "feature-engine pub/sub channel: features.updated.<feature_name>.<symbol>. max_age 7d; duplicate_window 60s covers feature-engine publish retries on closed-candle events. Brief §8.1, §8.2.",
+  "subjects": ["features.updated.>"],
+  "retention": "limits",
+  "storage": "file",
+  "num_replicas": 1,
+  "discard": "old",
+  "max_age": 604800000000000,
+  "duplicate_window": 60000000000,
+  "max_msgs": -1,
+  "max_msgs_per_subject": -1,
+  "max_bytes": -1,
+  "max_msg_size": -1,
+  "max_consumers": -1
+}

@@ -1,0 +1,16 @@
+{
+  "name": "TRADING_EVENTS",
+  "description": "trading.events — persisted order-lifecycle events (same payload shape as orders.events.* but a separate long-retention stream). max_age 365d; duplicate_window 60s covers publisher retries without bloating the server-side dedup cache. Brief §8.1, §8.2.",
+  "subjects": ["trading.events"],
+  "retention": "limits",
+  "storage": "file",
+  "num_replicas": 1,
+  "discard": "old",
+  "max_age": 31536000000000000,
+  "duplicate_window": 60000000000,
+  "max_msgs": -1,
+  "max_msgs_per_subject": -1,
+  "max_bytes": -1,
+  "max_msg_size": -1,
+  "max_consumers": -1
+}
