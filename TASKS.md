@@ -7,6 +7,7 @@ Unlocked: 2026-04-19
 (none)
 
 ## Done
+- [x] T-015a: Hello-world `signal-gateway` — FastAPI skeleton with `/health`, `/ready`, `/metrics`. Spec: §9.1, §19 F0 bullet 8 (partial). (2026-04-22)
 - [x] T-014: Docker Compose — nginx reverse proxy + Cloudflare Tunnel (`cloudflared`) (2026-04-22)
 - [x] T-013b: Overview dashboard — stat + table panels over the up metric (2026-04-21)
 - [x] T-013a: Prometheus + Grafana services with provisioning (2026-04-21)
@@ -29,7 +30,7 @@ Unlocked: 2026-04-19
 
 Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tooling → shared packages → infra compose → alembic + signals table → hello-world service → CI-full/release → F1 backlog. Each task is scoped to ≤~400 LOC diff per §0.3.
 
-- [ ] T-015: Hello-world `signal-gateway` — FastAPI skeleton with `/webhook` (NATS publish, signals row insert, JSON log), `/health`, `/ready`, `/metrics`. Spec: §9.1 (subset), §5.7, §19 F0 bullet 8. Split note per §0.2+§0.3: if the diff approaches 400 LOC during implementation, split into T-015a (skeleton + /health + /ready + /metrics) and T-015b (/webhook + NATS publish + DB insert + JSON log) rather than absorb overflow.
+- [ ] T-015b: `signal-gateway` full §9.1 pipeline — `POST /webhook` with HMAC (shared secret, SHA256 over body; per-bot routing via `X-Bot-Signal-Source` + timestamp-replay deferred to F1 with ADR), sliding-window rate limit (20/60s per IP), dedup ring (10s TTL), `SignalEnvelope` Pydantic validation, `symbol_map` query + 60s in-process cache (`packages/db/queries/signal_gateway.py`), `signals` hypertable insert, NATS publish to `signals.raw` + `signals.validated` (`SignalValidated` → `packages/bus/schemas/signals.py` per T-008a namespace pointer), service counters + `webhook_processing_seconds` histogram, integration test via testcontainers (PG + NATS), property test (Hypothesis) for dedup under concurrent inputs. Spec: §9.1, §5.7, §8.4, §15.3, §19 F0 bullet 8. Hazards addressed: H-006, H-010.
 - [ ] T-016: CI-full workflow (.github/workflows/ci-full.yml) — integration stage using testcontainers for PG+NATS. Spec: §6.5, §17.6, §19 F0 bullet 1
 - [ ] T-017: Dashboard test harness stub — `tests/grafana/` placeholder (dashboard JSON query tests) wired into CI-full. Spec: §4, §17, §19 F0 bullet 10
 - [ ] T-018: Release workflow (.github/workflows/release.yml) — Docker image build + tag on git tag push, per-service images. Spec: §3.1, §6.5, §18, §19 F0 bullet 11
