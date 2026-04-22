@@ -1,5 +1,41 @@
 [project]
 name = "scalper-v2-signal-gateway"
 version = "0.1.0"
-description = "Webhook ingress service: HMAC validation, schema validation, dedup, NATS publish. Scaffold stub; hello-world implementation lands in T-015; full service in F1."
+description = "Webhook ingress service (FastAPI): HMAC, schema, dedup, symbol map, signals publish. §9.1, §19 F0 bullet 8. T-015a: skeleton; T-015b: full pipeline."
 requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.136.0",
+    "pydantic-settings==2.13.1",
+    "scalper-v2-bus",
+    "scalper-v2-core",
+    "scalper-v2-db",
+    "scalper-v2-observability",
+    "uvicorn[standard]==0.45.0",
+    "uvloop==0.22.1",
+]
+
+[tool.uv.sources]
+scalper-v2-bus = { workspace = true }
+scalper-v2-core = { workspace = true }
+scalper-v2-db = { workspace = true }
+scalper-v2-observability = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Hatch scaffold per ADR-0002 (services/ analogue of the packages/ pattern):
+# flat-layout source files live directly in services/signal_gateway/; sources
+# remap adds the `services/signal_gateway/` wheel prefix so imports resolve as
+# `from services.signal_gateway import ...`. Repo-root services/__init__.py is
+# outside the wheel glob (PEP 420 at install time). dev-mode-dirs = ["."]
+# bypasses hatchling's editable-mode detection, which trips on sources-remap
+# + subpackages (pfmoore/editables#20) — load-bearing here because app/ is a
+# subpackage of the service.
+[tool.hatch.build.targets.wheel]
+include = ["*.py", "py.typed"]
+exclude = ["tests/**", "**/__pycache__/**"]
+dev-mode-dirs = ["."]
+
+[tool.hatch.build.targets.wheel.sources]
+"" = "services/signal_gateway"

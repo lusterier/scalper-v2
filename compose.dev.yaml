@@ -107,6 +107,21 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
 
+  # signal-gateway dev overlay. Drops the base's /etc/scalper-v2/secrets.env
+  # reference (same EACCES-on-parent rationale as cloudflared — see
+  # T-014 comment) and instead wires the two service secrets from the
+  # project-root .env via explicit environment overrides. `cp .env.example
+  # .env` is already required for the postgres dev flow, so no new
+  # setup step. Loopback publish on 127.0.0.1:8000 lets host-side
+  # `curl` reach /health, /ready, /metrics.
+  signal-gateway:
+    env_file: !reset null
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      SIGNAL_GATEWAY_HMAC_SECRET: ${SIGNAL_GATEWAY_HMAC_SECRET}
+    ports:
+      - "127.0.0.1:8000:8000"
+
   cloudflared:
     env_file: !reset null
 

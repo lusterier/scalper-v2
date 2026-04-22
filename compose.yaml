@@ -151,6 +151,49 @@ services:
       retries: 5
       start_period: 20s
 
+  # signal-gateway — TradingView webhook ingress service (brief §9.1,
+  # §18.1, §19 F0 bullet 8). T-015a ships the skeleton: /health, /ready,
+  # /metrics; T-015b adds the full §9.1 validation pipeline at /webhook.
+  # Built locally from this repo (release workflow with published images
+  # is the T-018 forward ref). Port 8000 / path contract frozen by T-013a
+  # infra/prometheus/prometheus.yml + T-014 infra/nginx/nginx.conf.
+  # Internal-only per §16.6 — no host publish in the prod base; the dev
+  # overlay (compose.dev.yaml) adds a loopback publish for smoke.
+  signal-gateway:
+    build:
+      context: .
+      dockerfile: services/signal_gateway/Dockerfile
+    image: scalper-v2/signal-gateway:dev
+    restart: unless-stopped
+    networks: [backend]
+    env_file:
+      # required: false — prod hosts populate /etc/scalper-v2/secrets.env
+      # with DATABASE_URL + SIGNAL_GATEWAY_HMAC_SECRET. Dev hosts drop
+      # this reference via compose.dev.yaml `env_file: !reset null` and
+      # supply the two vars via `environment:` overrides that expand from
+      # the project-root .env (matches the T-009 POSTGRES_PASSWORD flow).
+      - path: /etc/scalper-v2/secrets.env
+        required: false
+    environment:
+      SERVICE_NAME: signal-gateway
+      LOG_LEVEL: INFO
+      NATS_URL: nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      nats-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # python -c against /health — slim runtime image has no curl or
+      # wget, but python + urllib are always on PATH via /app/.venv.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2); sys.exit(0)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
   # nginx reverse proxy (brief §2.1, §16.3, §16.6, §18.1). Terminal
   # backend for cloudflared; single server block with path-based
   # dispatch. /webhook, /health, /ready proxy to signal-gateway

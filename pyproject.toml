@@ -36,6 +36,11 @@ dev = [
     # `connection.run_sync(...)` in async env.py).
     "alembic==1.18.4",
     "sqlalchemy[asyncio]==2.0.49",
+    # httpx backs fastapi.testclient.TestClient — used by service unit
+    # tests starting with T-015a signal-gateway. Brief §3.1 names httpx
+    # as the project-wide HTTP client; dev-group placement keeps it out
+    # of runtime images until a service legitimately needs it in prod.
+    "httpx~=0.28",
 ]
 
 # -----------------------------------------------------------------------------
