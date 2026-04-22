@@ -49,6 +49,24 @@
 #   * Port: publishes `127.0.0.1:3000:3000` so the Grafana UI is
 #     reachable from the dev host browser at http://127.0.0.1:3000.
 #
+# nginx:
+#   * No volume / port / env delta — the prod base's
+#     `127.0.0.1:8080:80` loopback publish is already dev-friendly,
+#     and nginx is stateless (config bind is the same read-only
+#     mount in both environments).
+#
+# cloudflared:
+#   * `env_file: !reset null` drops the `/etc/scalper-v2/cloudflared.env`
+#     reference. Matches the T-009 `secrets: !reset` pattern for
+#     `pg_password`: keeps the service defined (so the compose
+#     graph is identical) but prevents `docker compose config` on
+#     dev hosts from EACCESing on the root-owned `/etc/scalper-v2/`
+#     directory. (`required: false` in the base only handles
+#     "file missing"; "parent unreadable" still hard-fails.)
+#     cloudflared is prod-only; dev operators omit it from
+#     `docker compose up -d <selection>` entirely — see
+#     infra/cloudflared/README.md.
+#
 # nats-init needs no dev override — it runs identically on both
 # environments, reading the same stream JSONs via bind mount and
 # talking to `nats` over the backend network.
@@ -88,6 +106,9 @@ services:
       - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
       - "127.0.0.1:3000:3000"
+
+  cloudflared:
+    env_file: !reset null
 
 volumes:
   postgres_data:

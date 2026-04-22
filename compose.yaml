@@ -3,12 +3,14 @@
 # Grown incrementally per F0 plan:
 #   T-009: postgres.
 #   T-012: nats + nats-init (JetStream topology bootstrap).
-#   T-013a (this task): prometheus, grafana + provisioning.
-#   T-014: nginx, cloudflared.
+#   T-013a: prometheus, grafana + provisioning.
+#   T-014 (this task): nginx, cloudflared.
 #
 # Services and volumes reflect the production shape: `/mnt/data/*` bind
-# mounts on the Ubuntu host, Docker secret file for the DB password, no
-# published ports (ingress lands in T-014 via nginx + cloudflared).
+# mounts on the Ubuntu host, Docker secret file for the DB password.
+# Public ingress is via cloudflared → nginx on the backend network; the
+# only host-side publish is `127.0.0.1:8080` on nginx for prod-host
+# debugging only (loopback-bound, never LAN-exposed).
 #
 # For local development, overlay with compose.dev.yaml:
 #
@@ -25,6 +27,7 @@
 #   sudo chown 65534:65534 /mnt/data/prometheus
 #   sudo mkdir -p /mnt/data/grafana
 #   sudo chown 472:0 /mnt/data/grafana
+#   sudo install -m 0600 -o root -g root <cloudflared.env> /etc/scalper-v2/cloudflared.env
 
 services:
   postgres:
@@ -147,6 +150,65 @@ services:
       timeout: 3s
       retries: 5
       start_period: 20s
+
+  # nginx reverse proxy (brief §2.1, §16.3, §16.6, §18.1). Terminal
+  # backend for cloudflared; single server block with path-based
+  # dispatch. /webhook, /health, /ready proxy to signal-gateway
+  # (T-015 — 502 until then, variable-based proxy_pass + Docker
+  # embedded DNS defers resolution so nginx doesn't crash at boot).
+  # Security headers + JSON access logs on all responses. See
+  # infra/nginx/README.md for routing map and smoke verification.
+  nginx:
+    image: nginx:1.30.0-alpine
+    restart: unless-stopped
+    networks: [backend]
+    ports:
+      # Loopback publish for prod-host debugging only; cloudflared
+      # reaches nginx via service-name DNS on the backend network,
+      # not through this publish. LAN is never exposed (§16.6).
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      # 127.0.0.1 (not `localhost`): busybox wget in nginx:alpine
+      # resolves `localhost` to ::1 first, and nginx's `listen 80`
+      # is IPv4-only — would return "Connection refused" and keep
+      # the service stuck unhealthy. Sibling services
+      # (prom/grafana/nats) use `localhost` safely because their
+      # default listen is dual-stack; nginx is not.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # Cloudflare Tunnel egress (brief §2.1, §16.3). Env-var token
+  # mode: ingress rules live in the Cloudflare dashboard, not in
+  # repo. TLS terminates at Cloudflare edge; cloudflared → nginx
+  # is plain HTTP over the backend network. Dev hosts omit this
+  # service from `docker compose up -d <selection>`; the dev
+  # overlay resets env_file (`!reset null`) so `docker compose
+  # config` renders cleanly without /etc/scalper-v2/cloudflared.env
+  # being readable. `required: false` in the base covers the
+  # "file missing" case, but not "parent unreadable" (EACCES on
+  # 0750 /etc/scalper-v2 during `config` rendering).
+  #
+  # No healthcheck: the image is distroless (no shell / wget /
+  # curl — verified via `docker image inspect`, User=65532:65532).
+  # §18.4 divergence; liveness comes from restart: unless-stopped
+  # + Cloudflare dashboard tunnel health + compose logs. See
+  # infra/cloudflared/README.md for tunnel + token pre-up.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.3.0
+    restart: unless-stopped
+    networks: [backend]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    env_file:
+      - path: /etc/scalper-v2/cloudflared.env
+        required: false
+    depends_on:
+      nginx:
+        condition: service_healthy
 
 networks:
   backend:
