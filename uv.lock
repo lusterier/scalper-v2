@@ -515,6 +515,18 @@ wheels = [
 ]
 
 [[package]]
+name = "hypothesis"
+version = "6.152.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sortedcontainers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/64/b1/c32bcddb9aab9e3abc700f1f56faf14e7655c64a16ca47701a57362276ea/hypothesis-6.152.1.tar.gz", hash = "sha256:4f4ed934eee295dd84ee97592477d23e8dc03e9f12ae0ee30a4e7c9ef3fca3b0", size = 465029, upload-time = "2026-04-14T22:29:24.062Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/83/860fb3075e00b0fc19a22a2301bc3c96f00437558c3911bdd0a3573a4a53/hypothesis-6.152.1-py3-none-any.whl", hash = "sha256:40a3619d9e0cb97b018857c7986f75cf5de2e5ec0fa8a0b172d00747758f749e", size = 530752, upload-time = "2026-04-14T22:29:20.893Z" },
+]
+
+[[package]]
 name = "identify"
 version = "2.6.19"
 source = { registry = "https://pypi.org/simple" }
@@ -1255,6 +1267,7 @@ dev = [
     { name = "asyncpg-stubs" },
     { name = "bandit" },
     { name = "httpx" },
+    { name = "hypothesis" },
     { name = "mypy" },
     { name = "pip-audit" },
     { name = "pre-commit" },
@@ -1273,6 +1286,7 @@ dev = [
     { name = "asyncpg-stubs", specifier = "~=0.30" },
     { name = "bandit", extras = ["toml"], specifier = "~=1.7" },
     { name = "httpx", specifier = "~=0.28" },
+    { name = "hypothesis", specifier = "~=6.152" },
     { name = "mypy", specifier = "~=1.11" },
     { name = "pip-audit", specifier = "~=2.7" },
     { name = "pre-commit", specifier = "~=4.0" },

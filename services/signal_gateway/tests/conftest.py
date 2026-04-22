@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     """Settings populated with values safe for in-process tests."""
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host:5432/db")
-    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "unit-test-secret")
+    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "unit-test-secret-padded-32chars!")
     monkeypatch.setenv("NATS_URL", "nats://test-nats:4222")
     return Settings()  # type: ignore[call-arg]
 

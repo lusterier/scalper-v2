@@ -9,12 +9,13 @@ model.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-# SecretStr appears only as a BaseSettings field type; pydantic-settings
-# evaluates that annotation at class-creation time (schema construction),
-# so the import is runtime-required, not typing-only.
-from pydantic import SecretStr  # noqa: TC002
+# SecretStr + Field are runtime-required — pydantic-settings evaluates
+# the Annotated[SecretStr, Field(min_length=32)] annotation at class
+# creation for schema construction. Ruff's TC002 heuristic picks this
+# up via the Field(...) runtime call in the metadata position.
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = ["LogLevel", "Settings"]
@@ -44,6 +45,9 @@ class Settings(BaseSettings):
     # asyncpg DSN; scheme-validated by packages.db.create_pool at pool init.
     database_url: str
 
-    # Shared HMAC-SHA256 secret for webhook auth (§16.3). Loaded in T-015a
-    # but unused until the /webhook handler lands in T-015b.
-    signal_gateway_hmac_secret: SecretStr
+    # Shared HMAC-SHA256 secret for webhook auth (§16.3). min_length=32 is
+    # the HMAC-SHA256 strength floor (256 bits) — an empty or short secret
+    # would let hmac.compare_digest fail-open on the T-015b2 /webhook
+    # handler, so we reject at startup. Validator runs at Settings()
+    # construction; a short value fails the lifespan before port bind.
+    signal_gateway_hmac_secret: Annotated[SecretStr, Field(min_length=32)]

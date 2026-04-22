@@ -1,14 +1,16 @@
 """Concrete NATS payload schemas (§8.4).
 
 Each payload type lives with the service that owns it and is added to
-this namespace as the owning task lands (SignalValidated with T-015,
-OrderRequest/OrderEvent* with F2 execution, OHLCCandle with F1
-market-data, FeatureUpdate with F1 feature-engine).
+this namespace as the owning task lands:
 
-T-008a ships the namespace empty so the package structure is in
-place before the first owner arrives.
+* :class:`SignalValidated` — owned by signal-gateway, landed T-015b1.
+* ``OrderRequest`` / ``OrderEvent*`` — F2 execution.
+* ``OHLCCandle`` — F1 market-data.
+* ``FeatureUpdate`` — F1 feature-engine.
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from .signals import SignalValidated, message_id_for
+
+__all__ = ["SignalValidated", "message_id_for"]

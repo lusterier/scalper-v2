@@ -41,6 +41,11 @@ dev = [
     # as the project-wide HTTP client; dev-group placement keeps it out
     # of runtime images until a service legitimately needs it in prod.
     "httpx~=0.28",
+    # hypothesis powers the property-based DedupRing concurrency test in
+    # T-015b1 (signal-gateway primitives). Brief §17.1 names Hypothesis
+    # as the project-wide property-testing library; §0.9 justification =
+    # first use lands here. Dev-group placement keeps it out of runtime.
+    "hypothesis~=6.152",
 ]
 
 # -----------------------------------------------------------------------------

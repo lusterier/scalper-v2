@@ -13,7 +13,7 @@ def test_accepts_minimal_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in ("SERVICE_NAME", "LOG_LEVEL", "HTTP_PORT", "NATS_URL"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
-    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "shh")
+    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "unit-test-secret-padded-32chars!")
     s = Settings()  # type: ignore[call-arg]
     assert s.service_name == "signal-gateway"
     assert s.log_level == "INFO"
@@ -25,7 +25,7 @@ def test_accepts_minimal_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_rejects_missing_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "shh")
+    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "unit-test-secret-padded-32chars!")
     with pytest.raises(ValidationError):
         Settings()  # type: ignore[call-arg]
 
@@ -39,7 +39,7 @@ def test_rejects_missing_hmac_secret(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_rejects_invalid_log_level(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
-    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "shh")
+    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "unit-test-secret-padded-32chars!")
     monkeypatch.setenv("LOG_LEVEL", "VERBOSE")
     with pytest.raises(ValidationError):
         Settings()  # type: ignore[call-arg]
@@ -47,15 +47,23 @@ def test_rejects_invalid_log_level(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_secret_is_redacted_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
-    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "the-actual-secret-42")
+    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "ultra-secret-value-not-in-repr-x")
     s = Settings()  # type: ignore[call-arg]
-    assert "the-actual-secret-42" not in repr(s)
+    assert "ultra-secret-value-not-in-repr-x" not in repr(s)
 
 
 def test_extra_env_vars_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     """POSTGRES_USER + TUNNEL_TOKEN are sibling-service vars; must not error."""
     monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
-    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "shh")
+    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "unit-test-secret-padded-32chars!")
     monkeypatch.setenv("POSTGRES_USER", "scalper")
     monkeypatch.setenv("TUNNEL_TOKEN", "xyz")
     Settings()  # type: ignore[call-arg]
+
+
+def test_rejects_hmac_secret_too_short(monkeypatch: pytest.MonkeyPatch) -> None:
+    """min_length=32 (§16.3 HMAC-SHA256 floor) rejects short secrets at startup."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
+    monkeypatch.setenv("SIGNAL_GATEWAY_HMAC_SECRET", "short")
+    with pytest.raises(ValidationError):
+        Settings()  # type: ignore[call-arg]
