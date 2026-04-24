@@ -7,6 +7,7 @@ Unlocked: 2026-04-19
 (none)
 
 ## Done
+- [x] T-015c: .dockerignore to exclude build-cache from docker context (2026-04-24) — hotfix for T-015a residue; `packages/__pycache__/` from local pytest/mypy runs was leaking into docker build context and tripping uv workspace glob.
 - [x] T-015b1: `signal-gateway` primitives — `verify_hmac`, `RateLimiter`, `DedupRing`, `SymbolMapCache`, `SignalValidated` schema + `message_id_for` helper (`packages.bus.schemas.signals`), `packages.db.queries.signal_gateway` (`fetch_symbol_mapping` + `insert_signal`), Hypothesis property test for `DedupRing`. (2026-04-22)
 - [x] T-015a: Hello-world `signal-gateway` — FastAPI skeleton with `/health`, `/ready`, `/metrics`. Spec: §9.1, §19 F0 bullet 8 (partial). (2026-04-22)
 - [x] T-014: Docker Compose — nginx reverse proxy + Cloudflare Tunnel (`cloudflared`) (2026-04-22)
@@ -39,6 +40,8 @@ Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tool
 
 ## Backlog
 (F1-F5 tasks will be added as phases approach; F1 is populated by T-019)
+
+- [ ] T-F1+: install docker-buildx-plugin on lab host. Current compose falls back to legacy builder with Bake warning. Fine for F0 single-arch builds; becomes relevant for T-016 CI-full (testcontainers may need BuildKit features) and any future multi-arch. Out of T-015c scope.
 
 ## Parked
 (none)
