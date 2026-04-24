@@ -1,0 +1,12 @@
+**/__pycache__
+**/*.py[co]
+.venv/
+.git/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+dist/
+build/
