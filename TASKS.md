@@ -7,6 +7,7 @@ Unlocked: 2026-04-19
 (none)
 
 ## Done
+- [x] T-015d: `insert_signal` marked `@non_idempotent` (§N3 / §5.8) (2026-04-25) — erratum on T-015b1; query landed without the idempotency classification, T-015b2 handler adds four no-retry call sites so the marker question could no longer wait. Decorator is marker-only, no behaviour change.
 - [x] T-015c: .dockerignore to exclude build-cache from docker context (2026-04-24) — hotfix for T-015a residue; `packages/__pycache__/` from local pytest/mypy runs was leaking into docker build context and tripping uv workspace glob.
 - [x] T-015b1: `signal-gateway` primitives — `verify_hmac`, `RateLimiter`, `DedupRing`, `SymbolMapCache`, `SignalValidated` schema + `message_id_for` helper (`packages.bus.schemas.signals`), `packages.db.queries.signal_gateway` (`fetch_symbol_mapping` + `insert_signal`), Hypothesis property test for `DedupRing`. (2026-04-22)
 - [x] T-015a: Hello-world `signal-gateway` — FastAPI skeleton with `/health`, `/ready`, `/metrics`. Spec: §9.1, §19 F0 bullet 8 (partial). (2026-04-22)
