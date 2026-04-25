@@ -11,6 +11,9 @@ Public surface:
   the §9.2 reconnect contract (H-007 exp backoff 1s→60s, full jitter,
   long-disconnect signal).
 * :class:`ConnectionState` — lifecycle enum for readiness probes.
+* :class:`SubscriptionManager` — refcounted facade over
+  :class:`BinanceWsClient` per H-014; per-symbol context-manager API
+  yielding a :class:`SymbolFeed` async iterator of multiplex frames.
 * Error hierarchy rooted at :class:`MarketError`
   (a :class:`~packages.core.ScalperError`).
 
@@ -29,6 +32,7 @@ from .errors import (
     NotConnectedError,
 )
 from .rest import BinanceRestClient, OhlcCandle
+from .subscription import SubscriptionManager, SymbolFeed
 from .ws import BinanceWsClient, ConnectionState
 
 __all__ = [
@@ -40,5 +44,7 @@ __all__ = [
     "MarketError",
     "NotConnectedError",
     "OhlcCandle",
+    "SubscriptionManager",
+    "SymbolFeed",
     "exp_backoff_delays",
 ]
