@@ -1,7 +1,7 @@
 # Tasks
 
-## Current Phase: F0 — Foundation
-Unlocked: 2026-04-19
+## Current Phase: F1 — Data and Signals
+Unlocked: 2026-04-25
 
 ## In progress
 (none)
