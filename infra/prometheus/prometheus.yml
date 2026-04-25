@@ -36,3 +36,14 @@ scrape_configs:
   - job_name: signal-gateway
     static_configs:
       - targets: ["signal-gateway:8000"]
+
+  # market-data-svc — FastAPI :8000/metrics, default Prometheus
+  # collectors only (T-100 ships no service-specific metrics per §0.8;
+  # `up` reflects scrape liveness regardless). Port/path contract
+  # frozen here so future market-data metrics tasks (likely in the
+  # T-110 feature-engine track or the alerting F5 timeline) pick it
+  # up without config churn. Compose service-name DNS resolves
+  # market-data-svc:8000 distinctly from signal-gateway:8000.
+  - job_name: market-data-svc
+    static_configs:
+      - targets: ["market-data-svc:8000"]

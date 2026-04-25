@@ -1396,7 +1396,31 @@ requires-dist = [
 [[package]]
 name = "scalper-v2-market-data"
 version = "0.1.0"
-source = { virtual = "services/market_data" }
+source = { editable = "services/market_data" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "pydantic-settings" },
+    { name = "scalper-v2-bus" },
+    { name = "scalper-v2-core" },
+    { name = "scalper-v2-db" },
+    { name = "scalper-v2-market" },
+    { name = "scalper-v2-observability" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvloop" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = "==0.136.0" },
+    { name = "pydantic-settings", specifier = "==2.13.1" },
+    { name = "scalper-v2-bus", editable = "packages/bus" },
+    { name = "scalper-v2-core", editable = "packages/core" },
+    { name = "scalper-v2-db", editable = "packages/db" },
+    { name = "scalper-v2-market", editable = "packages/market" },
+    { name = "scalper-v2-observability", editable = "packages/observability" },
+    { name = "uvicorn", extras = ["standard"], specifier = "==0.45.0" },
+    { name = "uvloop", specifier = "==0.22.1" },
+]
 
 [[package]]
 name = "scalper-v2-observability"

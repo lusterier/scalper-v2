@@ -194,6 +194,59 @@ services:
       retries: 5
       start_period: 15s
 
+  # market-data-svc — Binance WS consumer + OHLC pipeline (brief §9.2,
+  # §18.1, §19 F1 bullet 2). T-100 ships the skeleton: lifespan wires
+  # asyncpg.Pool + NatsClient + BinanceWsClient + SubscriptionManager
+  # (T-102) + OhlcPipeline (T-104b); /health, /ready (bus + db + ws
+  # checks), /metrics. Internal-only per §16.6 — no nginx route, no
+  # public surface; communication is DB writes + NATS publishes.
+  # Port 8000 internal; compose service-name DNS isolates from
+  # signal-gateway:8000. Symbol seed via MARKET_DATA_SYMBOLS env
+  # (F1 stopgap; F1+ swaps to bots+bot_configs JOIN once F3 lands the
+  # bot registry — empty default → no consumer tasks → service still
+  # healthy + ready).
+  market-data-svc:
+    build:
+      context: .
+      dockerfile: services/market_data/Dockerfile
+    image: scalper-v2/market-data-svc:dev
+    restart: unless-stopped
+    networks: [backend]
+    env_file:
+      # required: false — prod hosts populate /etc/scalper-v2/secrets.env
+      # with DATABASE_URL (shared with signal-gateway). Dev hosts drop
+      # this reference via compose.dev.yaml `env_file: !reset null` and
+      # supply DATABASE_URL via `environment:` overrides expanded from
+      # the project-root .env (matches the T-009 / T-015a flow).
+      - path: /etc/scalper-v2/secrets.env
+        required: false
+    environment:
+      SERVICE_NAME: market-data-svc
+      LOG_LEVEL: INFO
+      NATS_URL: nats://nats:4222
+      # F1 stopgap symbol seed. Operator overrides per deployment with
+      # the comma-separated list of canonical Bybit-shape symbols, e.g.
+      # "BTCUSDT,ETHUSDT". Empty (default) → OhlcPipeline.start([]) →
+      # no consumer tasks → service stays healthy + ready emitting 0
+      # rows. F1+ swap to bots+bot_configs JOIN once F3 ships the bot
+      # registry.
+      MARKET_DATA_SYMBOLS: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      nats-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # python -c against /health — slim runtime image has no curl or
+      # wget, but python + urllib are always on PATH via /app/.venv.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2); sys.exit(0)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
   # nginx reverse proxy (brief §2.1, §16.3, §16.6, §18.1). Terminal
   # backend for cloudflared; single server block with path-based
   # dispatch. /webhook, /health, /ready proxy to signal-gateway
