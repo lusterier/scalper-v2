@@ -27,8 +27,7 @@ Wired surface:
    ``test_trace_middleware_runs_before_rate_limit_middleware`` in
    ``tests/test_app_factory.py`` — if that test ever flips, swap the
    two registrations here.
-4. ``POST /webhook`` is **not** wired here — it lands with the handler
-   in T-015b2b's ``include_router`` call.
+4. ``POST /webhook`` is wired via :mod:`.webhook` (T-015b2b).
 """
 
 from __future__ import annotations
@@ -57,6 +56,7 @@ from .metrics import build_registry, build_signal_gateway_metrics
 from .middleware import RateLimitMiddleware
 from .rate_limit import RateLimiter
 from .symbol_map import SymbolMapCache
+from .webhook import router as webhook_router
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -171,5 +171,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     app.include_router(health_router)
+    app.include_router(webhook_router)
     app.mount("/metrics", make_metrics_asgi_app(registry))
     return app

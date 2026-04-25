@@ -59,14 +59,9 @@ def test_metrics_endpoint_returns_prometheus_text(client: TestClient) -> None:
     assert "python_info" in response.text
 
 
-def test_no_webhook_route_pre_b2b(app_with_mocks: FastAPI) -> None:
-    """``POST /webhook`` is T-015b2b; T-015b2a wires only the middleware.
-
-    The middleware is path-gated to ``POST /webhook`` so it remains
-    inert until T-015b2b's ``include_router`` lands; verified
-    functionally below by a 404 to that path.
-    """
-    assert "/webhook" not in _route_paths(app_with_mocks)
+def test_app_exposes_webhook_route(app_with_mocks: FastAPI) -> None:
+    """``POST /webhook`` is wired via :mod:`.webhook` router (T-015b2b)."""
+    assert "/webhook" in _route_paths(app_with_mocks)
 
 
 # ---- T-015b2a additions ----------------------------------------------------
@@ -106,17 +101,6 @@ def test_rate_limit_middleware_registered(app_with_mocks: FastAPI) -> None:
         m.cls is RateLimitMiddleware  # type: ignore[comparison-overlap]
         for m in app_with_mocks.user_middleware
     )
-
-
-def test_webhook_post_returns_404_pre_b2b(client: TestClient) -> None:
-    """``POST /webhook`` 404s — handler lands in T-015b2b, not T-015b2a.
-
-    Functional companion to :func:`test_no_webhook_route_pre_b2b`. The
-    middleware path-gate triggers but ``call_next`` resolves to 404
-    because no route is registered.
-    """
-    response = client.post("/webhook", content=b"{}")
-    assert response.status_code == 404
 
 
 def test_trace_middleware_runs_before_rate_limit_middleware(
