@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from packages.core import non_idempotent
+
 if TYPE_CHECKING:
     from datetime import datetime
     from typing import Any
@@ -46,6 +48,7 @@ async def fetch_symbol_mapping(
     return str(value) if value is not None else None
 
 
+@non_idempotent
 async def insert_signal(
     conn: _DbExecutor,
     *,
@@ -61,6 +64,15 @@ async def insert_signal(
     correlation_id: str,
 ) -> int:
     """Insert one row into ``signals`` and return the generated ``id``.
+
+    Marked ``@non_idempotent`` per §N3 / §5.8: callers (T-015b2
+    ``/webhook`` handler) do **not** retry on failure — a DB error
+    surfaces as ``500 internal``, the operator / TradingView re-sends
+    the webhook, and the row lands on the second attempt. The
+    ``signals_idempotency`` unique index on ``(idempotency_key,
+    received_at)`` is a separate dedup guard against double-writes
+    within the same ``received_at`` instant; it is **not** retry
+    safety and must not be relied on for that purpose.
 
     Column order + types match migration 0002 (§7.2 signals DDL). The
     ``payload`` dict is serialised via :func:`json.dumps` and cast to
