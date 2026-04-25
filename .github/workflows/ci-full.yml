@@ -103,5 +103,9 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --all-packages --group dev --frozen
-      - run: uv run pip-audit
+      # --skip-editable suppresses workspace members (scalper-v2-{bus,core,db,
+      # observability,signal-gateway}) which are uv-workspace editable installs,
+      # not PyPI-published. --ignore-vuln CVE-2026-3219 covers a pip-26.0.1
+      # advisory with no upstream fix yet; revisit when pip publishes one.
+      - run: uv run pip-audit --skip-editable --ignore-vuln CVE-2026-3219
       - run: uv run bandit -r services packages -c pyproject.toml
