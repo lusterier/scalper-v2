@@ -1,0 +1,96 @@
+"""market-data-svc query module (§5.10, §7.2).
+
+Owned by ``services/market_data`` (T-100, future); imported by the
+T-104 ``OhlcPipeline`` for the closed-candle persistence write.
+Raw asyncpg per brief §5.10 ("all queries in hot paths are raw SQL
+via asyncpg, parameterized").
+
+The active-symbol-set lookup (``bots`` JOIN ``bot_configs`` per
+brief §9.2 line 1454) is **not** in this module — that query lives
+with the composition root (T-100 lifespan) and was left out of T-104
+per §0.8 (the pipeline accepts ``symbols: list[str]`` at start, no
+DB query of its own).
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from datetime import datetime
+    from decimal import Decimal
+
+    import asyncpg
+    from asyncpg.pool import PoolConnectionProxy
+
+    # asyncpg-stubs splits pool-acquired connections from raw
+    # asyncpg.connect() results into nominally-distinct classes that
+    # share the structural query surface. Accept either so callers can
+    # pass `async with pool.acquire() as conn` results without casting.
+    type _DbExecutor = asyncpg.Connection[asyncpg.Record] | PoolConnectionProxy[asyncpg.Record]
+
+__all__ = ["insert_ohlc_1m"]
+
+
+async def insert_ohlc_1m(
+    conn: _DbExecutor,
+    *,
+    symbol: str,
+    bucket_start: datetime,
+    open: Decimal,  # noqa: A002  # SQL column name; kwarg-only, no positional confusion
+    high: Decimal,
+    low: Decimal,
+    close: Decimal,
+    volume: Decimal,
+    source: str,
+) -> None:
+    """Insert one closed candle into ``ohlc_1m``; idempotent via PK + ON CONFLICT.
+
+    PK ``(symbol, bucket_start, source)`` per migration 0003 / §7.2.
+    ON CONFLICT DO UPDATE (last-write-wins, not DO NOTHING) so that
+    T-105 backfill via REST ``/api/v3/klines`` can repair a corrupted
+    WS-stored row — REST historical is the canonical truth, and a
+    bug that mis-classified an in-progress frame as closed must be
+    repairable. Closed-bucket WS frames are deterministic per Binance
+    spec, so the typical re-write is a no-op against identical values
+    (one WAL record per re-write at scale of ~1 candle/min/symbol;
+    negligible).
+
+    Genuinely idempotent (same inputs → same row state regardless of
+    call count) — no ``@non_idempotent`` marker. Differs from
+    :func:`packages.db.queries.signal_gateway.insert_signal`, which
+    returns a fresh ``id`` per call and is therefore non-idempotent.
+
+    Caller (the :class:`packages.market.OhlcPipeline` ``_handle``
+    method) wraps the call in a try/except so a transient PG error
+    (timeout, connection blip) is logged + dropped rather than killing
+    the per-symbol consumer task; the next minute's frame for the same
+    symbol carries no information about the prior, and T-105 fills
+    any gap on the next reconnect or service restart.
+    """
+    # `open` and `bucket_start` shadow Python builtins / common names
+    # only at the parameter scope; the SQL substitution doesn't see
+    # those names. Per §5.10 keyword-only by design (no positional
+    # confusion across 8 fields).
+    await conn.execute(
+        """
+        INSERT INTO ohlc_1m (
+            symbol, bucket_start, open, high, low, close, volume, source
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (symbol, bucket_start, source) DO UPDATE SET
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            volume = EXCLUDED.volume
+        """,
+        symbol,
+        bucket_start,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        source,
+    )
