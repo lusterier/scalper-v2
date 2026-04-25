@@ -118,7 +118,10 @@ async def test_migration_0002_creates_signals_hypertable(migrated_db_dsn: str) -
         assert "signals_payload_gin" in index_defs
         assert "USING gin (payload)" in index_defs["signals_payload_gin"]
 
+        # Permissive — successor migrations advance head; this test asserts
+        # the post-0002 shape, not the tail revision. Mirrors test_0001
+        # pattern. Each test_00NN_migration.py owns its own head assertion.
         version = await conn.fetchval("SELECT version_num FROM alembic_version")
-        assert version == "0002"
+        assert version is not None
     finally:
         await conn.close()
