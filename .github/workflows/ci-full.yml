@@ -1,0 +1,107 @@
+name: ci-full
+
+# Integration + security on every push and pull request.
+# Spec: §0.4, §6.5, §17.6, §19 F0 bullet 1.
+#
+# Hybrid container strategy: PG runs as a GitHub Actions service container
+# (env-driven config, GH-managed health gating); NATS runs via `docker run`
+# because GH service containers cannot pass CMD args, and JetStream enable
+# requires `-c /etc/nats/server.conf` against the prod conf bind-mount
+# (compose.yaml line 67 mirror). The bootstrap step reuses the production
+# `infra/nats/bootstrap.sh` + `infra/nats/streams/*.json` verbatim via
+# nats-box, so the SIGNALS stream topology is identical to prod and dev.
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: timescale/timescaledb:2.26.3-pg16
+        env:
+          POSTGRES_USER: scalper
+          POSTGRES_PASSWORD: scalper
+          POSTGRES_DB: scalper
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scalper"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+
+      # NATS as a `docker run` step (not a service container) because GH
+      # services cannot supply a CMD; JetStream enable lives in
+      # infra/nats/server.conf and requires `-c <path>` to be picked up.
+      - name: Start NATS with JetStream
+        run: |
+          docker run -d --name nats \
+            -p 4222:4222 -p 8222:8222 \
+            -v ${{ github.workspace }}/infra/nats/server.conf:/etc/nats/server.conf:ro \
+            nats:2.12.7-alpine \
+            -c /etc/nats/server.conf
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://localhost:8222/healthz?js-enabled-only=true" >/dev/null 2>&1; then
+              echo "nats: ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "nats: not ready within 30s"
+          docker logs nats || true
+          exit 1
+
+      # Reuse production bootstrap verbatim — same nats-box image, same
+      # script, same stream JSONs as the compose `nats-init` sidecar.
+      - name: Bootstrap NATS topology
+        run: |
+          docker run --rm --network host \
+            -v ${{ github.workspace }}/infra/nats/streams:/etc/nats/streams:ro \
+            -v ${{ github.workspace }}/infra/nats/bootstrap.sh:/bootstrap.sh:ro \
+            -e NATS_URL=nats://localhost:4222 \
+            natsio/nats-box:0.19.3 \
+            sh /bootstrap.sh
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-packages --group dev --frozen
+
+      # Explicit integration paths only — ci-fast already covers the unit
+      # suite. Service-level integration suites added in F1+ get appended
+      # here (e.g. services/market_data/tests/integration).
+      - name: Run integration tests
+        env:
+          POSTGRES_TEST_DSN: postgresql://scalper:scalper@localhost:5432/scalper
+          NATS_TEST_URL: nats://localhost:4222
+        run: |
+          uv run pytest -q \
+            tests/integration \
+            services/signal_gateway/tests/integration
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ci-full-coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  security:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-packages --group dev --frozen
+      - run: uv run pip-audit
+      - run: uv run bandit -r services packages -c pyproject.toml
