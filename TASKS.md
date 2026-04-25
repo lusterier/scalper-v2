@@ -44,6 +44,7 @@ Proposed Phase F0 breakdown. Order reflects dependency chain: root scaffold/tool
 (F1-F5 tasks will be added as phases approach; F1 is populated by T-019)
 
 - [ ] T-F1+: install docker-buildx-plugin on lab host. Current compose falls back to legacy builder with Bake warning. Fine for F0 single-arch builds; becomes relevant for any future multi-arch. Out of T-015c scope.
+- [ ] T-F1+: align `tests/integration/migrations/conftest.py` env-gate with `tests/grafana/conftest.py` module-level skip pattern. Currently uses fixture-level skip with no-op `allow_module_level=True` flag (the flag is only honored when `pytest.skip` is called at module import time). Module-level guard gives true collection skip + non-misleading flag usage. ~10-line edit; behaviour-preserving. Slot: opportunistic.
 - [ ] T-F1+: refine `SignalEnvelope._migrate_unknown_keys` docstring to distinguish None coalescing ("payload omitted" shorthand) from other non-dict pass-through. Currently the docstring implies all non-dict values pass through unchanged, but `None` is special-cased to `{}` so extras still merge. ~3-line docstring edit; behaviour locked by `test_payload_as_none_treated_as_missing` in `test_models.py`.
 
 ## Parked
