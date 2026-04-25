@@ -14,6 +14,8 @@ Public surface:
 * :class:`SubscriptionManager` — refcounted facade over
   :class:`BinanceWsClient` per H-014; per-symbol context-manager API
   yielding a :class:`SymbolFeed` async iterator of multiplex frames.
+* :class:`OhlcPipeline` — closed-bucket detection + persist + publish
+  loop driven off SubscriptionManager feeds (T-104b).
 * Error hierarchy rooted at :class:`MarketError`
   (a :class:`~packages.core.ScalperError`).
 
@@ -31,6 +33,7 @@ from .errors import (
     MarketError,
     NotConnectedError,
 )
+from .ohlc import OhlcPipeline
 from .rest import BinanceRestClient, OhlcCandle
 from .subscription import SubscriptionManager, SymbolFeed
 from .ws import BinanceWsClient, ConnectionState
@@ -44,6 +47,7 @@ __all__ = [
     "MarketError",
     "NotConnectedError",
     "OhlcCandle",
+    "OhlcPipeline",
     "SubscriptionManager",
     "SymbolFeed",
     "exp_backoff_delays",
