@@ -1,0 +1,36 @@
+[project]
+name = "scalper-v2-market"
+version = "0.1.0"
+description = "Binance REST + WebSocket clients for market-data ingest (§9.2, §3.1)."
+requires-python = ">=3.12"
+dependencies = [
+    # Async WebSocket client per brief §3.1. First runtime use of the
+    # `websockets` library in the workspace; §0.9 justification — brief
+    # names it as the project-wide async WS client and T-101 BinanceWsClient
+    # is its first consumer.
+    "websockets==15.0.1",
+    # Async HTTP client per brief §3.1. Already in the dev group from
+    # T-015a (FastAPI TestClient backing); promoted to runtime here for
+    # BinanceRestClient.get_klines.
+    "httpx==0.28.1",
+    "scalper-v2-core",
+    "scalper-v2-observability",
+]
+
+[tool.uv.sources]
+scalper-v2-core = { workspace = true }
+scalper-v2-observability = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Hatch scaffold mirrors packages/bus per ADR-0002 — see that file's
+# comment block for the sources-remap / dev-mode-dirs rationale.
+[tool.hatch.build.targets.wheel]
+include = ["*.py", "py.typed"]
+exclude = ["tests/**", "**/__pycache__/**"]
+dev-mode-dirs = ["."]
+
+[tool.hatch.build.targets.wheel.sources]
+"" = "packages/market"
