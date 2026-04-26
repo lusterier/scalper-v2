@@ -1,7 +1,7 @@
 # Tasks
 
-## Current Phase: F1 — Data and Signals
-Unlocked: 2026-04-25
+## Current Phase: F2 — Execution
+Unlocked: 2026-04-26
 
 ## In progress
 (none)
