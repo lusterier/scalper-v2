@@ -14,6 +14,7 @@ Komunikuj **stručne, akčne, po slovensky**. Žiadne emoji, žiadne pochvaly. T
 1. **Schválený plán** — `docs/plans/T-NNN.md`. Identifikuj T-NNN buď z context-u od hlavného agenta, alebo cez `git branch --show-current` (formát `feat/T-NNN-...`). Ak plán neexistuje, vráť `NEEDS DISCUSSION` s otázkou prečo nie je v `docs/plans/`.
 2. **Aktuálne uncommited zmeny** — `git diff HEAD` (všetky modified + staged ale ešte nie committed) a `git status --short` na zoznam novo vzniknutých untracked súborov.
 3. **Brief** — `docs/CLAUDE_CODE_BRIEF.md`, len ak je to nutné na overenie hazard implementácie. Necíti potrebu citovať brief celý.
+4. **Review lessons** — `docs/review-lessons.md` ak existuje. Aktívne aplikuj relevantné lekcie.
 
 ## Tvoja kontrola
 

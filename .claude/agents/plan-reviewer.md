@@ -22,6 +22,7 @@ Pred-implementačný review plánu. Vráť `APPROVE`, `REVISE`, alebo `NEEDS DIS
 3. **Brief** — `docs/CLAUDE_CODE_BRIEF.md`. Cez Grep vyhľadaj relevantné sekcie pre dotknutý modul. **Vždy** preveruj §0, §1.2, §6.2 (module design template), §19 (phases), §20 (hazards relevantné pre dotknutý kód).
 4. **CLAUDE.md** — operátorove preferencie a non-negotiables zhrnutie.
 5. **Existujúce ADRs** — `ls docs/adr/` a Read posledných 3 ak sa týkajú podobnej oblasti.
+6. **Review lessons** — `docs/review-lessons.md` ak existuje. Obsahuje patterns ktoré review systém zachytil v minulosti (každá lekcia má pattern + active control). **Aktívne aplikuj relevantné lekcie pri review aktuálneho plánu** — napr. ak L-001 hovorí "name_template literál môže drift-ovať od briefu", explicitne to over v aktuálnom plane.
 
 ## Checklist (v poradí závažnosti)
 
@@ -79,8 +80,14 @@ S poznámkou ak je niečo nice-to-have:
 ```
 APPROVE
 T-NNN: <popis>. Phase: FX. Scope: ~Y LOC. Hazards covered: H-XXX.
-Poznámka: edge case "NATS reconnect mid-publish" by sa hodil do plánu, ale nieje blocker.
+
+## Write-time guidance (must be addressed during implementation)
+1. <konkrétna inštrukcia, akčná>
+2. <ďalšia, ak je>
+3. <ďalšia, max 5 položiek; viac → REVISE namiesto APPROVE>
 ```
+
+**Dôležité o Write-time guidance**: tieto položky musia byť **akčné** (konkrétne čo má kód obsahovať / robiť), nie filozofické pripomienky. Hlavný Claude Code zapíše tento checklist do `docs/plans/T-NNN.md` a brief-reviewer pred SHIP overí že každá položka je adresovaná v staged diff.
 
 ### `REVISE` (plán potrebuje úpravy pred ďalším krokom)
 

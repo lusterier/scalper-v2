@@ -45,6 +45,7 @@ These are invariants. Violating them is a regression that must be called out and
 1. `TASKS.md` — what is done, in progress, next.
 2. The 3 most recent ADRs in `docs/adr/`.
 3. `docs/status.md` if present.
+4. `docs/review-lessons.md` if present — review patterns from prior tasks.
 
 Then post a short summary:
 
@@ -62,9 +63,13 @@ Wait for "proceed" before starting work.
 
 **Branching.** One branch per task: `feat/T-NNN-short-name`. Fast-forward merge to master. Delete branch after merge.
 
-**End of session.** Update `TASKS.md`. Mark done items, note new tasks discovered, note blockers. Post a one-message summary with what was completed, what's in progress, what's next.
+**End of session.** Update `TASKS.md`. Mark done items, note new tasks discovered, note blockers. Append 2-3 line summary to `docs/status.md` if anything notable for next session (lessons, deferred decisions, watch-outs). Post a one-message summary with what was completed, what's in progress, what's next.
 
-## Pre-implementation review — MANDATORY
+## Review system — four-gate architecture
+
+Every non-trivial task passes through up to four review gates. Each gate has a specific scope and is invoked at a specific point. Trivial tasks (typo fix, doc-only single-line change) may skip gates if no logical content is at risk.
+
+### Gate 1: pre-implementation plan review — MANDATORY
 
 **Before writing any code for a new task, invoke the `plan-reviewer` subagent on the consolidated plan.**
 
@@ -74,49 +79,89 @@ When the operator approves starting a new task T-NNN:
 2. Draft an initial plan. For new modules, this is a `docs/modules/<n>.md` per the §6.2 template (Purpose / Public interface / Dependencies / Lifecycle / Edge cases / Testing strategy / Open questions). For changes to existing modules, an inline plan with: scope, files touched, new types/functions, hazards relevant from §20, test strategy, open questions.
 3. **If the plan has open questions** (decisions not determinable from brief alone — defaults, library choices, scope boundaries, etc.): list them with proposed defaults and present to the operator. Wait for operator's answers ("use defaults" is a valid answer).
 4. **Consolidate the plan** with operator's decisions baked in. The resulting plan must contain no unresolved questions — every decision is committed.
-5. **Invoke `plan-reviewer` with the CONSOLIDATED plan as input.** Do not invoke it on the draft with open questions — it would flag them as blockers.
+5. **For tasks involving non-trivial financial math** (indicator implementations, P&L computations, Wilder/EMA smoothing, statistical operations): include a `## Hand verification` section in the plan with step-by-step worked examples for warmup_candles, seed conventions, and any closed-form values. Plan-reviewer doesn't auto-verify math; this section gives math-validator something to compare against later.
+6. **Invoke `plan-reviewer` with the CONSOLIDATED plan as input.**
 
 The reviewer returns one of three verdicts:
 
-- **`APPROVE`** — plan is sound. **Write the consolidated plan to `docs/plans/T-NNN.md`** so the drift-checker subagent can read it during implementation. Then show one-line summary to operator: *"Plan approved: X. Proceed with implementation?"*. Wait for "proceed".
+- **`APPROVE`** — plan is sound. **Write the consolidated plan to `docs/plans/T-NNN.md`** so drift-checker can read it during implementation. If the reviewer's APPROVE included a `## Write-time guidance` checklist, copy it verbatim into the saved plan. Then show one-line summary to operator: *"Plan approved: X. Proceed with implementation?"*. Wait for "proceed".
 - **`REVISE`** — plan has issues. Apply the listed fixes (this may mean going back to the operator if the issue requires their input), then re-run `plan-reviewer`. Do not start coding until reviewer approves.
 - **`NEEDS DISCUSSION`** — plan touches an architectural decision or brief gap. Show the reviewer's question to the operator. The result is typically an ADR draft (§0.6, §6.3) — write it, get it reviewed by `plan-reviewer` again, then proceed.
 
-Do not start coding before `plan-reviewer` says `APPROVE`. The point is to catch architecture and process issues at the cheapest stage — the plan — rather than after 400 lines of code.
-
-For trivial tasks (typo fixes, doc-only edits, single-file refactors with no architectural impact) the reviewer will return `APPROVE` quickly; this is not a bottleneck.
-
-## Mid-implementation drift check — RECOMMENDED
+### Gate 2: mid-implementation drift check — RECOMMENDED
 
 **During implementation, invoke the `drift-checker` subagent at natural checkpoints to verify the work-in-progress matches the approved plan in `docs/plans/T-NNN.md`.**
 
-Natural checkpoints are:
+Natural checkpoints:
 
 1. After completing any single file larger than ~50 LOC, before moving to the next file.
 2. After the test suite first passes for the current change, before adding more functionality.
 3. As a final self-check just before invoking `brief-reviewer` for pre-commit review.
 
-The drift-checker compares uncommitted changes (`git diff HEAD`) against the approved plan and returns:
+Returns:
 
 - **`ON TRACK`** — implementation matches plan. Continue.
 - **`DRIFT`** — scope creep, premature abstraction, missing hazard implementation, or unauthorized additions detected. Either refactor back to the plan, or update the plan via ADR if the deviation is intentional.
 - **`NEEDS DISCUSSION`** — drift-checker found something that needs operator input.
 
-Skip drift-checker for trivial diffs (<30 LOC) — it adds no value at that scale. For substantive implementation work it catches the kind of mid-stream divergence the pre-commit reviewer cannot (because pre-commit reviewer doesn't know the plan, only the brief).
+Skip drift-checker for trivial diffs (<30 LOC).
 
-## Pre-commit review — MANDATORY
+### Gate 3: pre-commit brief review — MANDATORY
 
-**Before every `git commit`, invoke the `brief-reviewer` subagent on staged changes.** This is the second of the two review gates (the first being `plan-reviewer` before coding starts).
+**Before every `git commit`, invoke the `brief-reviewer` subagent on staged changes.** Brief-reviewer also verifies that every item in the plan's `## Write-time guidance` section (if present) is addressed in the staged diff.
 
-The reviewer returns one of three verdicts:
+Returns:
 
-- **`SHIP`** — clean. Proceed with commit. Show the reviewer's one-line summary in the terminal so the operator can see it ran.
-- **`FIX FIRST`** — issues found. Fix them, then re-run the reviewer. Do not commit until the reviewer says SHIP.
-- **`NEEDS DISCUSSION`** — reviewer is uncertain or sees a brief deviation that needs an operator decision. **Stop. Show the reviewer's question to the operator and wait.** Do not commit.
+- **`SHIP`** — clean. Proceed with commit. Show the reviewer's one-line summary in the terminal.
+- **`FIX FIRST`** — issues found. Fix them, then re-run the reviewer. Do not commit until SHIP.
+- **`NEEDS DISCUSSION`** — reviewer is uncertain or sees a brief deviation that needs an operator decision. Stop. Show the reviewer's question to the operator and wait.
 
-The reviewer is the quality gate that replaces the operator's manual desktop-side review. Do not skip it. If it fails for technical reasons (missing file, config error), stop and report — do not bypass.
+### Gate 4: math validation — CONDITIONAL (financial math only)
 
-For trivial commits (typo fix, doc-only, single log message) the reviewer will return `SHIP` quickly; this is not a delay.
+**After `brief-reviewer` SHIP, if and only if the staged diff touches `packages/features/builtins/`, `packages/features/protocols.py`, `packages/features/types.py`, `packages/pnl/`, `services/feature-engine/`, `services/execution/`, or `services/scoring/`, invoke the `math-validator` subagent.**
+
+Math-validator verifies:
+- Test fixtures are hand-computable (not implementation-against-itself / library round-trip).
+- Seed conventions match the plan's `## Hand verification` section.
+- No silent Decimal→float casts (§N1 / §5.3).
+- Numeric edge cases handled (division by zero, empty series, zero-volume periods).
+- For indicator cross-checks: golden tests verify mathematical consistency between implementations.
+
+Returns:
+
+- **`VERIFIED`** — math is sound. Proceed with commit.
+- **`MATH FAIL`** — math error or non-hand-computable fixture. Stop. Operator must be informed even if other gates passed. Math errors in financial code = capital loss.
+- **`NEEDS DISCUSSION`** — math-validator sees a legitimate ambiguity (e.g., reference book fixture that needs operator verification).
+
+If the diff is out of math scope, math-validator returns `VERIFIED — out of scope, math-validator skipped` immediately. This is a fast no-op for non-math tasks.
+
+### Gate sequence summary
+
+```
+[plan stage]    Plan-reviewer (APPROVE) ─┐
+                                         │
+[code stage]    drift-checker (ON TRACK) │  multiple invocations
+                                         │
+[commit stage]  brief-reviewer (SHIP)    │
+                math-validator (VERIFIED)│  IF math scope only
+                                         │
+[commit happens]
+```
+
+## Learning loop — review lessons
+
+Maintain `docs/review-lessons.md` as the persistent memory of patterns the review system has caught.
+
+- **When a reviewer (plan, drift, brief, or math) returns REVISE / DRIFT / FIX FIRST / MATH FAIL with a generalizable lesson** (not just task-specific), append a new entry to `docs/review-lessons.md` after the issue is resolved.
+- Format:
+  ```
+  ## L-NNN (T-XXX, <reviewer> <verdict>, <date>)
+  Pattern: <one-sentence description of what to watch out for>
+  Active control: <what reviewers should now check explicitly going forward>
+  ```
+- Reviewers consult `docs/review-lessons.md` at start of each invocation and apply relevant lessons.
+
+This turns one-off catches into permanent immunity. Don't add lessons for every catch — only for patterns that could repeat.
 
 ## What NOT to do
 
@@ -127,6 +172,7 @@ For trivial commits (typo fix, doc-only, single log message) the reviewer will r
 - Don't write merge commits. Fast-forward only.
 - Don't create files outside the working directory without an explicit task reason.
 - Don't add CI/CD ceremony (extra workflows, docker variants, etc.) the brief doesn't ask for.
+- Don't skip math-validator on financial math changes. The other gates don't catch math correctness.
 
 ## Key file locations
 
@@ -135,5 +181,6 @@ For trivial commits (typo fix, doc-only, single log message) the reviewer will r
 - `TASKS.md` — single source of truth for task state
 - `docs/adr/NNNN-title.md` — Architecture Decision Records
 - `docs/modules/{name}.md` — per-module design docs (BRIEF §6.2)
-- `docs/plans/T-NNN.md` — consolidated approved plan per task (written after `plan-reviewer` APPROVE; read by `drift-checker` during implementation)
+- `docs/plans/T-NNN.md` — consolidated approved plan per task (written after `plan-reviewer` APPROVE; read by `drift-checker` during implementation; read by `brief-reviewer` for write-time guidance verification; read by `math-validator` for hand-verification cross-checks)
+- `docs/review-lessons.md` — persistent learning memory across tasks (read by all reviewers, appended after generalizable catches)
 - `docs/status.md` — operator notes for next session (if present)

@@ -17,6 +17,18 @@ Pred commitom skontroluj zmeny proti pravidlám briefu a aktuálnemu tasku. Vrá
 2. **Aktuálny task** — `TASKS.md` sekcia "In progress". Identifikuj T-NNN a aký scope (súbory, moduly) má.
 3. **Brief** — `docs/CLAUDE_CODE_BRIEF.md`. Konkrétne sekcie §0 (Operating Rules), §1.2 (Non-negotiables), §6 (Workflow), §20 (Hazards). Brief je 3176 riadkov — necituj ho celý, vyhľadaj cez Grep len relevantné §.
 4. **CLAUDE.md** — operátorove preferencie a non-negotiables zhrnutie.
+5. **Schválený plán** — `docs/plans/T-NNN.md` ak existuje. Najmä sekcia `## Write-time guidance` ak je v ňom.
+6. **Review lessons** — `docs/review-lessons.md` ak existuje. Aktívne aplikuj relevantné lekcie pri review aktuálneho diff-u.
+
+## Write-time guidance verification
+
+Ak `docs/plans/T-NNN.md` obsahuje sekciu `## Write-time guidance`, **každá položka v nej musí byť adresovaná** v staged diff. Pre každú položku:
+
+- Hľadaj v diffe cez Grep / Read že príslušný kód / test / doc je prítomný.
+- Ak položka nie je adresovaná → `FIX FIRST` s [BLOCKER] *"Write-time guidance #N nie je adresovaná v diffe: <citácia položky>. Pridaj alebo odôvodni prečo nie je relevantná."*
+- Ak je adresovaná, spomeň to v output-e (`Write-time guidance: 3/3 ✓`).
+
+Toto zabezpečuje že nice-to-have z plan-revieweru sa nestratia pri implementácii.
 
 ## Checklist (v poradí závažnosti)
 
