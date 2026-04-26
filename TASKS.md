@@ -46,7 +46,7 @@ Unlocked: 2026-04-25
 
 ## Next (do not start without operator approval)
 
-- [ ] T-107: 6 built-in indicators — EMA, RSI, ATR, VWAP, Bollinger, MACD. Spec: §9.3, §19 F1 bullet 3. Est: M (~300 LOC). Unblocked by T-106. First subpackage (`packages/features/builtins/`) triggers ADR-0002 surprise 1 — the `[build-system]` + hatch scaffold (`dev-mode-dirs = ["."]` + sources remap) lands here, promoting `scalper-v2-features` from virtual stub. §N4 TDD-for-financial-math activates: each indicator gets deterministic tests against known candle fixtures (Wilder's RSI on the canonical 14-bar fixture, EMA seed = SMA convention, ATR true-range edge cases, etc.).
+- [ ] T-107a: 3 scalar built-in indicators — EMA, RSI, ATR + tests. Spec: §9.3, §B.2, §19 F1 bullet 3. Est: M (~350 LOC). Unblocked by T-106. **First subpackage `packages/features/builtins/` triggers ADR-0002 surprise 1** — the `[build-system]` + hatch scaffold (`dev-mode-dirs = ["."]` + sources remap, identical to `packages/db`) lands here, promoting `scalper-v2-features` from virtual stub. §N4 TDD-for-financial-math activates: deterministic fixtures per indicator (Wilder's canonical 14-bar RSI, SMA-seed EMA progression, true-range ATR edge cases). Conventions baked into the plan: SMA seed for EMA / Wilder's smoothing with SMA seed for RSI+ATR / Decimal output via `value_num` / underflow `len(candles) < warmup_candles` raises new `FeatureUnderflowError(ValueError)` in `packages/features/errors.py` / `name_template` instance-baked with indicator-specific tokens (`{symbol}`/`{interval}` only left for T-111 registry).
 
 ## Backlog
 
@@ -54,11 +54,12 @@ F1 bullet 1 (full signal-gateway) absorbed into F0 (T-015a..T-015b2b); per-bot H
 
 ### F1 numbered
 
+- [ ] T-107b: 3 dict/scalar built-in indicators — VWAP, Bollinger, MACD + tests. Spec: §9.3, §B.2, §19 F1 bullet 3. Est: M (~300 LOC). Blocked by T-107a (which lands the `builtins/` subpackage + pyproject promotion + `FeatureUnderflowError`). Conventions: VWAP daily-only session (UTC midnight reset, typical price `(h+l+c)/3`, `value_num` Decimal), Bollinger population std_dev with `value_json={"upper", "middle", "lower"}`, MACD standard EMA fast/slow + EMA-on-MACD signal with `value_json={"macd", "signal", "histogram"}`. Same operator decisions from T-107a apply (SMA/Wilder seed paradigms, raise-on-underflow, instance-baked `name_template`).
 - [ ] T-108: migration 0004 — `features` hypertable. Spec: §7.2, §19 F1 bullet 4. Est: S (~100 LOC).
 - [ ] T-109: feature-engine service skeleton — FastAPI, Dockerfile, compose. Spec: §9.3, §19 F1 bullet 3. Est: S (~150 LOC).
-- [ ] T-110: feature-engine computation loop + warmup — subscribe `market.ohlc.*`, dispatch, persist, KV update, publish. Spec: §9.3 lines 1491-1513. Est: M (~350; close to §0.3 cap, pre-split candidate). Blocked by T-104b, T-106, T-107, T-108, T-109.
+- [ ] T-110: feature-engine computation loop + warmup — subscribe `market.ohlc.*`, dispatch, persist, KV update, publish. Spec: §9.3 lines 1491-1513. Est: M (~350; close to §0.3 cap, pre-split candidate). Blocked by T-104b, T-106, T-107a, T-107b, T-108, T-109.
 - [ ] T-111: YAML registration — `configs/features/indicators.yaml` + plugin discovery. Spec: §9.3, §B.2. Est: S (~150 LOC). Blocked by T-110.
-- [ ] T-112: `scripts/backfill_features.py` CLI — idempotent historical compute. Spec: §9.3 lines 1515-1518, §19 F1 exit criterion. Est: M (~200 LOC). Blocked by T-107, T-108.
+- [ ] T-112: `scripts/backfill_features.py` CLI — idempotent historical compute. Spec: §9.3 lines 1515-1518, §19 F1 exit criterion. Est: M (~200 LOC). Blocked by T-107a, T-107b, T-108.
 
 ### F1+ opportunistic
 
