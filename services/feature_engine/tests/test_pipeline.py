@@ -199,7 +199,8 @@ def _build_pipeline(
 async def test_closed_candle_pushes_buffer_then_dispatches() -> None:
     """Closed candle: buffer holds candle + feature.compute called."""
     pipeline, _bus, _pool, feature, _registry = _build_pipeline()
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     await pipeline._on_envelope(_envelope(_payload()))
     assert len(feature.calls) == 1
     assert feature.calls[0][0].symbol == "BTCUSDT"
@@ -209,7 +210,8 @@ async def test_closed_candle_pushes_buffer_then_dispatches() -> None:
 async def test_in_progress_candle_skipped() -> None:
     """I1: in-progress (is_closed=False) → no buffer push, no dispatch."""
     pipeline, _bus, _pool, feature, _registry = _build_pipeline()
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     await pipeline._on_envelope(_envelope(_payload(is_closed=False)))
     assert feature.calls == []
 
@@ -218,7 +220,8 @@ async def test_in_progress_candle_skipped() -> None:
 async def test_unregistered_symbol_skipped() -> None:
     """I2: ETHUSDT not in registry → no dispatch."""
     pipeline, bus, pool, feature, _registry = _build_pipeline()
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     await pipeline._on_envelope(_envelope(_payload(symbol="ETHUSDT")))
     assert feature.calls == []
     assert bus.published == []
@@ -229,7 +232,8 @@ async def test_unregistered_symbol_skipped() -> None:
 async def test_dispatch_persists_then_kv_then_publishes_in_order() -> None:
     """DB → KV → publish call order recorded across the fakes."""
     pipeline, bus, pool, _feature, _registry = _build_pipeline()
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     await pipeline._on_envelope(_envelope(_payload()))
     assert len(pool.executed) == 1
     assert len(bus.kv_puts) == 1
@@ -261,7 +265,8 @@ async def test_per_feature_error_isolation() -> None:
         features_by_key=features_by_key,
         logger=logger,
     )
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     await pipeline._on_envelope(_envelope(_payload()))
     assert len(feature_b.calls) == 1
     assert len(pool.executed) == 1  # only feature_b persisted
@@ -273,7 +278,8 @@ async def test_db_persist_error_skips_kv_and_publish() -> None:
     """I4: DB-fail short-circuits KV+publish (canonical-store-first)."""
     pipeline, bus, pool, _feature, _registry = _build_pipeline()
     pool.execute_error = RuntimeError("db down")
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     await pipeline._on_envelope(_envelope(_payload()))
     assert bus.kv_puts == []
     assert bus.published == []
@@ -284,7 +290,8 @@ async def test_kv_error_does_not_block_publish() -> None:
     """I5: KV-fail still allows publish (KV is best-effort cache)."""
     pipeline, bus, pool, _feature, _registry = _build_pipeline()
     bus.kv_error = RuntimeError("kv bucket missing")
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     await pipeline._on_envelope(_envelope(_payload()))
     assert len(pool.executed) == 1
     assert len(bus.published) == 1
@@ -295,7 +302,8 @@ async def test_publish_error_logs_and_continues() -> None:
     """I6: publish-fail leaves DB+KV intact; loop continues."""
     pipeline, bus, pool, _feature, _registry = _build_pipeline()
     bus.publish_error = RuntimeError("nats down")
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     await pipeline._on_envelope(_envelope(_payload()))
     assert len(pool.executed) == 1
     assert len(bus.kv_puts) == 1
@@ -305,7 +313,8 @@ async def test_publish_error_logs_and_continues() -> None:
 async def test_computed_at_is_bucket_end_not_now() -> None:
     """I7: feature_update.computed_at == candle.bucket_start + 1 minute."""
     pipeline, bus, _pool, _feature, _registry = _build_pipeline()
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     payload = _payload(minute=15)
     await pipeline._on_envelope(_envelope(payload))
     # FeatureUpdate is in published envelope payload
@@ -317,7 +326,8 @@ async def test_computed_at_is_bucket_end_not_now() -> None:
 async def test_correlation_id_format() -> None:
     """I8: correlation_id == feature:{feature_name}:{symbol}:{computed_at.isoformat()}."""
     pipeline, bus, _pool, _feature, _registry = _build_pipeline()
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     await pipeline._on_envelope(_envelope(_payload()))
     envelope = bus.published[0][1]
     assert (
@@ -329,7 +339,8 @@ async def test_correlation_id_format() -> None:
 async def test_publisher_is_feature_engine() -> None:
     """I9: published envelope has publisher='feature-engine'."""
     pipeline, bus, _pool, _feature, _registry = _build_pipeline()
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     await pipeline._on_envelope(_envelope(_payload()))
     assert bus.published[0][1].publisher == "feature-engine"
 
@@ -356,14 +367,31 @@ def test_decimal_to_float_seam_value_json() -> None:
     assert isinstance(update.value_json["upper"], float)
 
 
-@pytest.mark.asyncio
-async def test_start_acquires_handles_then_subscribes() -> None:
-    """Order: handles acquired BEFORE subscribe; ref counts incremented first."""
+def test_acquire_handles_creates_handle_per_key() -> None:
+    """Q11 split (sync): acquire_handles allocates buffers without subscribing.
+
+    No `@pytest.mark.asyncio` — `acquire_handles` is sync. Subscribe must
+    NOT happen before warmup_load (T-110d composition root pattern); test
+    asserts no NATS traffic after acquire alone.
+    """
     pipeline, bus, _pool, _feature, registry = _build_pipeline()
     assert ("BTCUSDT", "1m") not in registry._counts
-    assert bus.subscribed == []
-    await pipeline.start()
+    pipeline.acquire_handles()
     assert registry._counts[("BTCUSDT", "1m")] == 1
+    assert bus.subscribed == []  # subscribe deferred to start_consuming
+
+
+@pytest.mark.asyncio
+async def test_start_consuming_subscribes_market_ohlc_1m() -> None:
+    """Q11 split (async): start_consuming subscribes to the wildcard.
+
+    Caller must have invoked acquire_handles first (T-110d ordering);
+    here the test invokes both in sequence and asserts the subscribe
+    payload.
+    """
+    pipeline, bus, _pool, _feature, _registry = _build_pipeline()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     assert len(bus.subscribed) == 1
     assert bus.subscribed[0][0] == "market.ohlc.1m.>"
 
@@ -372,7 +400,8 @@ async def test_start_acquires_handles_then_subscribes() -> None:
 async def test_stop_releases_all_handles() -> None:
     """All BufferHandles released on stop; refcount decremented."""
     pipeline, _bus, _pool, _feature, registry = _build_pipeline()
-    await pipeline.start()
+    pipeline.acquire_handles()
+    await pipeline.start_consuming()
     assert registry._counts[("BTCUSDT", "1m")] == 1
     await pipeline.stop()
     # 1→0 transition deallocates the buffer entirely

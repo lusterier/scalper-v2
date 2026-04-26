@@ -70,6 +70,7 @@ async def test_defaults_passed_to_asyncpg() -> None:
         max_size=10,
         command_timeout=30.0,
         server_settings={"application_name": "svc"},
+        init=None,
     )
 
 
@@ -88,6 +89,28 @@ async def test_custom_values_passed_to_asyncpg() -> None:
         max_size=20,
         command_timeout=60.0,
         server_settings={"application_name": "execution"},
+        init=None,
+    )
+
+
+async def test_init_callback_passed_to_asyncpg() -> None:
+    """``init`` callback is forwarded to asyncpg.create_pool verbatim (T-110d)."""
+
+    async def _codec_init(conn: object) -> None: ...
+
+    with patch(_PATCH_TARGET, new=AsyncMock()) as mock_create:
+        await create_pool(
+            "postgresql://u@h/d",
+            application_name="feature-engine",
+            init=_codec_init,
+        )
+    mock_create.assert_awaited_once_with(
+        dsn="postgresql://u@h/d",
+        min_size=2,
+        max_size=10,
+        command_timeout=30.0,
+        server_settings={"application_name": "feature-engine"},
+        init=_codec_init,
     )
 
 

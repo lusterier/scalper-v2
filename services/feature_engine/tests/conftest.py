@@ -6,15 +6,15 @@ lifespan path without touching real Postgres / NATS:
 * :func:`packages.db.create_pool` is monkey-patched at the
   ``services.feature_engine.app.main`` boundary to return a mock pool.
 * :class:`packages.bus.NatsClient` patched similarly.
+* :func:`build_features` defaults to returning an empty registry so
+  the lifespan exercises acquire_handles → warmup_load → start_consuming
+  as no-ops. Tests that need a populated registry override the
+  ``build_features`` patch with their own fixture.
 
-The lifespan then runs end-to-end against the mocks, attaching them
-to ``app.state`` exactly as it would in production. Tests mutate
-``mock_bus.state`` / pool-acquire behaviour to simulate outages for
-the ``/ready`` coverage matrix.
-
-T-110 will extend this conftest with feature-registry / dispatcher /
-per-feature consumer mocks; T-109 ships skeleton-only fixtures
-mirroring T-100 minus the WS/SubMgr/Pipeline/Rest stand-ins.
+The lifespan then runs end-to-end against the mocks, attaching pool /
+bus / buffer_registry / pipeline to ``app.state`` exactly as it would
+in production. Tests mutate ``mock_bus.state`` / pool-acquire behaviour
+to simulate outages for the ``/ready`` coverage matrix.
 """
 
 from __future__ import annotations
@@ -49,9 +49,6 @@ def mock_pool() -> MagicMock:
 
     ``pool.close()`` is async, so it's an :class:`AsyncMock`.
     ``pool.acquire`` is synchronous (returns an async context manager).
-    Tests override ``pool.acquire.return_value.__aenter__`` to simulate
-    pool timeouts or :class:`asyncpg.InterfaceError` /
-    :class:`asyncpg.PostgresError`.
     """
     pool = MagicMock()
     pool.close = AsyncMock()
@@ -71,6 +68,8 @@ def mock_bus() -> MagicMock:
     bus.connect = AsyncMock()
     bus.close = AsyncMock()
     bus.publish = AsyncMock()
+    bus.subscribe = AsyncMock()
+    bus.kv_put = AsyncMock(return_value=1)
     return bus
 
 
@@ -81,7 +80,14 @@ def app_with_mocks(
     mock_bus: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> FastAPI:
-    """Build the real app with create_pool / NatsClient patched."""
+    """Build the real app with create_pool / NatsClient / build_features patched.
+
+    ``build_features`` returns empty mapping by default so the T-110d
+    lifespan goes acquire (no-op) → warmup (no-op) → start_consuming
+    (no-op). Tests that need a populated registry override the
+    ``build_features`` patch via their own monkeypatch.setattr call
+    BEFORE calling this fixture (or build their own factory).
+    """
     monkeypatch.setattr(
         "services.feature_engine.app.main.create_pool",
         AsyncMock(return_value=mock_pool),
@@ -89,6 +95,10 @@ def app_with_mocks(
     monkeypatch.setattr(
         "services.feature_engine.app.main.NatsClient",
         MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.build_features",
+        lambda: {},
     )
     return create_app(settings=settings)
 

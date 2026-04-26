@@ -81,7 +81,6 @@ __all__ = ["FeaturePipeline"]
 
 _PUBLISHER = "feature-engine"
 _KV_BUCKET = "feature_latest"
-_SOURCE_BINANCE = "binance"
 _SUBJECT_WILDCARD = "market.ohlc.1m.>"
 
 # Bucket-end offset per interval. Pre-emptive forward-compat for F1+
@@ -111,23 +110,39 @@ class FeaturePipeline:
         self._logger = logger
         self._handles: dict[tuple[str, str], BufferHandle] = {}
 
-    async def start(self) -> None:
-        """Acquire one :class:`BufferHandle` per registered key, then subscribe.
+    def acquire_handles(self) -> None:
+        """Synchronously acquire one :class:`BufferHandle` per registered key.
 
-        Order is load-bearing: handles acquired BEFORE subscribe so the
-        first incoming NATS message hits a registered buffer. Empty
-        registry → no subscription, no-op. The acquired handles are
-        kept on ``self._handles`` keyed by ``(symbol, interval)`` so
-        :meth:`_dispatch` can call ``handle.tail(...)`` against the
-        public API; the pipeline never ``_release``-s mid-operation,
-        which preserves the T-110a H-014 refcount contract.
+        Split out of the prior monolithic ``start()`` (T-110d) so a
+        composition root can sequence ``acquire_handles → warmup_load →
+        start_consuming``. Without this split, warmup pushes silent-drop
+        on un-allocated buffers OR race live frames and wedge
+        out-of-order data into the deque.
+
+        Sync because :meth:`BufferRegistry.acquire` is sync (T-110a is
+        pure-domain). Empty registry → no-op; ``_handles`` stays empty.
         """
         if not self._features_by_key:
-            self._logger.info("feature_pipeline_started_empty")
             return
         for key in self._features_by_key:
             symbol, interval = key
             self._handles[key] = self._buffer_registry.acquire(symbol, interval)
+
+    async def start_consuming(self) -> None:
+        """Subscribe to ``market.ohlc.1m.>`` so live frames begin arriving.
+
+        Caller MUST invoke :meth:`acquire_handles` first; warmup_load
+        (if any) must run between the two so the first live frame
+        hits a populated tail. Empty registry → no subscription, no-op
+        (matches T-104b empty-symbols precedent). The acquired handles
+        are kept on ``self._handles`` keyed by ``(symbol, interval)``
+        so :meth:`_dispatch` can call ``handle.tail(...)`` against the
+        public API; the pipeline never ``_release``-s mid-operation,
+        preserving the T-110a H-014 refcount contract.
+        """
+        if not self._features_by_key:
+            self._logger.info("feature_pipeline_started_empty")
+            return
         await self._bus.subscribe(_SUBJECT_WILDCARD, self._on_envelope)
         self._logger.info(
             "feature_pipeline_started",

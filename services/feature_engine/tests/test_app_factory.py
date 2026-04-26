@@ -4,26 +4,27 @@ Verifies that:
 
 * The factory returns a :class:`FastAPI` instance with `/health`,
   `/ready`, `/metrics` registered.
-* Sync state (settings, logger) attaches before the lifespan runs
-  (relevant for tests that hit endpoints without entering the
-  TestClient lifespan context).
-* Async lifespan state (pool, bus) attaches after lifespan entry —
-  verified by exercising the lifespan via :class:`TestClient` and
-  asserting the mocks are reachable on ``app.state``.
-* Lifespan teardown closes resources in reverse order: bus first
-  (drains in-flight publishes against the still-open pool), then
-  pool (releases asyncpg connections).
+* Sync state (settings, logger) attaches before the lifespan runs.
+* Async lifespan state (pool, bus, buffer_registry, pipeline) attaches
+  after lifespan entry — verified by exercising the lifespan via
+  :class:`TestClient`.
+* T-110d lifespan ordering: ``acquire_handles → warmup_load →
+  start_consuming`` (Q11 race resolution); reverse on shutdown
+  (``pipeline.stop → bus.close → pool.close``).
+* T-110d JSONB codec: ``_register_jsonb_codec`` is passed as
+  ``init=`` to :func:`packages.db.create_pool` and registers the
+  ``jsonb`` codec on a freshly-acquired connection.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-if TYPE_CHECKING:
-    from unittest.mock import MagicMock
+from services.feature_engine.app.main import _register_jsonb_codec
 
 
 def test_create_app_returns_fastapi_instance(app_with_mocks: FastAPI) -> None:
@@ -70,14 +71,11 @@ def test_lifespan_attaches_pool_and_bus_and_closes_in_reverse_order(
     mock_pool: MagicMock,
     mock_bus: MagicMock,
 ) -> None:
-    """pool / bus land on app.state inside lifespan; teardown closes bus before pool.
+    """pool / bus land on app.state inside lifespan; teardown reverse-order.
 
-    The TestClient context manager runs the lifespan startup on enter
-    and teardown on exit. While inside the ``with`` block, both pool
-    and bus must be reachable on ``app.state``. After exit, both
-    ``close`` coroutines must have been awaited, with bus.close
-    called before pool.close (reverse-order shutdown contract:
-    bus drains in-flight publishes against the still-open pool).
+    Empty registry (default conftest fixture) → pipeline.stop is a
+    no-op against an empty handles dict, so the observable shutdown
+    order is bus.close → pool.close (T-109 contract).
     """
     call_order: list[str] = []
     mock_bus.close.side_effect = lambda: call_order.append("bus")
@@ -90,3 +88,65 @@ def test_lifespan_attaches_pool_and_bus_and_closes_in_reverse_order(
     mock_bus.close.assert_awaited_once()
     mock_pool.close.assert_awaited_once()
     assert call_order == ["bus", "pool"]
+
+
+def test_lifespan_attaches_buffer_registry_and_pipeline_to_state(
+    app_with_mocks: FastAPI,
+) -> None:
+    """T-110d: buffer_registry + pipeline are reachable on app.state."""
+    with TestClient(app_with_mocks):
+        assert app_with_mocks.state.buffer_registry is not None
+        assert app_with_mocks.state.pipeline is not None
+
+
+def test_jsonb_codec_init_passed_to_create_pool(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-110d Decision #3: ``init=_register_jsonb_codec`` flows to create_pool.
+
+    Asserts identity pass-through; the callback's contract (calling
+    ``set_type_codec("jsonb", ...)``) is verified separately by
+    ``test_register_jsonb_codec_calls_set_type_codec`` (Write-time
+    guidance #3).
+    """
+    create_pool_mock = AsyncMock(return_value=mock_pool)
+    monkeypatch.setattr("services.feature_engine.app.main.create_pool", create_pool_mock)
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.NatsClient",
+        MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr("services.feature_engine.app.main.build_features", lambda: {})
+    from services.feature_engine.app.main import create_app
+
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+    create_pool_mock.assert_awaited_once()
+    assert create_pool_mock.await_args is not None
+    kwargs = create_pool_mock.await_args.kwargs
+    assert kwargs["init"] is _register_jsonb_codec
+
+
+@pytest.mark.asyncio
+async def test_register_jsonb_codec_calls_set_type_codec() -> None:
+    """T-110d Write-time guidance #3: callback contract verified at unit level.
+
+    Mocks ``asyncpg.Connection`` and asserts the JSONB codec is
+    registered with the expected encoder/decoder/schema (mirror T-108
+    ``test_0004_migration:55-62`` per-connection pattern, lifted to
+    the pool init callback).
+    """
+    import json as _json
+
+    mock_conn = MagicMock()
+    mock_conn.set_type_codec = AsyncMock()
+    await _register_jsonb_codec(mock_conn)
+    mock_conn.set_type_codec.assert_awaited_once_with(
+        "jsonb",
+        encoder=_json.dumps,
+        decoder=_json.loads,
+        schema="pg_catalog",
+    )
