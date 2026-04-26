@@ -18,7 +18,10 @@ the ``features`` hypertable landed exactly as specified:
   float, bool, JSONB), SELECT back via PK, assert types and values
   round-trip. asyncpg JSONB codec is registered explicitly so JSONB
   yields a Python dict instead of the default raw JSON string.
-* The ``alembic_version`` row reports revision ``0004``.
+* The ``alembic_version`` row exists. Permissive — successor
+  migrations legitimately advance head; this test asserts the
+  post-0004 artifact shape, not the tail revision. Mirrors test_0001
+  / test_0002 / test_0003 pattern.
 
 Skipped at collection time when ``POSTGRES_TEST_DSN`` is unset — see
 ``conftest.py`` docstring.
@@ -226,6 +229,9 @@ async def test_migration_0004_creates_features_hypertable(migrated_db_dsn: str) 
         assert json_row["value_bool"] is None
 
         version = await conn.fetchval("SELECT version_num FROM alembic_version")
-        assert version == "0004"
+        # The migration suite upgrades to head, so newer migrations
+        # legitimately advance alembic_version beyond 0004. This test
+        # asserts 0004 artifacts, not that 0004 is the current head.
+        assert version is not None
     finally:
         await conn.close()
