@@ -48,13 +48,37 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import asyncpg
+# Self-bootstrap: ensure repo root is on sys.path so `import packages.*`
+# resolves whether invoked as `python scripts/backfill_features.py` (the
+# brief §19 line 2511 literal F1 exit-criterion form) or as
+# `python -m scripts.backfill_features`. Hatch editable workspace install
+# (ADR-0002 with `dev-mode-dirs = ["."]`) writes `.pth` files containing
+# each member's project root (`packages/features/`, etc.) but does NOT
+# create a top-level `packages/` namespace in site-packages — imports
+# resolve via repo-root `packages/__init__.py` at dev time. pytest adds
+# repo root via its rootdir discovery; direct subprocess invocation does
+# not. Without this bootstrap, the property test in
+# `tests/integration/scripts/test_backfill_features_property.py` calling
+# `subprocess.run([sys.executable, scripts/backfill_features.py, ...])`
+# fails at module load with `ModuleNotFoundError: No module named 'packages'`
+# (root cause of ci-full #64 red on commit 0aaf7cc).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from packages.db.queries.feature_engine import fetch_ohlc_range, insert_feature
-from packages.features.intervals import INTERVAL_DELTA
-from packages.features.types import OhlcCandle
-from packages.features.yaml import INDICATORS_YAML_PATH, load_indicators_yaml
-from packages.observability import configure, get_logger
+import asyncpg  # noqa: E402  # repo-root sys.path bootstrap above
+
+from packages.db.queries.feature_engine import (  # noqa: E402  # bootstrap above
+    fetch_ohlc_range,
+    insert_feature,
+)
+from packages.features.intervals import INTERVAL_DELTA  # noqa: E402
+from packages.features.types import OhlcCandle  # noqa: E402
+from packages.features.yaml import (  # noqa: E402
+    INDICATORS_YAML_PATH,
+    load_indicators_yaml,
+)
+from packages.observability import configure, get_logger  # noqa: E402
 
 if TYPE_CHECKING:
     from structlog.stdlib import BoundLogger
