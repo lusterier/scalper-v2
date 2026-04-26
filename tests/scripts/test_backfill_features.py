@@ -11,8 +11,11 @@ not used (backfill uses raw deque). Tests cover:
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,9 +31,12 @@ from scripts.backfill_features import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from packages.features.types import OhlcCandle
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_BACKFILL_SCRIPT = _REPO_ROOT / "scripts" / "backfill_features.py"
 
 
 # ---------------------------------------------------------------------------
@@ -304,3 +310,62 @@ def test_main_invalid_feature_format_exits_1(monkeypatch: pytest.MonkeyPatch) ->
         AsyncMock(side_effect=AssertionError("connect should not be called")),
     )
     assert main() == 1
+
+
+# ---------------------------------------------------------------------------
+# subprocess-import regression — locks ModuleNotFoundError out of stderr
+# ---------------------------------------------------------------------------
+
+
+def test_subprocess_invocation_does_not_raise_module_not_found() -> None:
+    """`python scripts/backfill_features.py` must not fail at import time.
+
+    Locks the regression behind ci-full #64 (commit 0aaf7cc): hatch
+    editable workspace install (ADR-0002 ``dev-mode-dirs=["."]``) writes
+    per-member ``.pth`` files but no top-level ``packages/`` namespace
+    in site-packages; subprocess invocation lacks repo-root on
+    ``sys.path`` → ``import packages.*`` → ``ModuleNotFoundError`` →
+    exit 1. Self-bootstrap at top of ``scripts/backfill_features.py``
+    prepends repo-root, restoring import resolution.
+
+    Not env-gated (no DB needed): drives subprocess past argparse with
+    a malformed ``--feature`` arg so ``_parse_feature_name`` raises
+    ``ValueError`` and ``main()`` returns 1 cleanly. We assert exit
+    code is 1 (script ran to completion of arg validation) AND
+    ``"ModuleNotFoundError"`` is absent from stderr (script reached
+    ``_main`` and parsed args; import bootstrap held).
+
+    Runs in ci-fast (no service containers) and locally without
+    ``POSTGRES_TEST_DSN``. Companion to env-gated property test in
+    ``tests/integration/scripts/test_backfill_features_property.py``
+    which exercises the full DB round-trip.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_BACKFILL_SCRIPT),
+            "--feature",
+            "foo",  # malformed → _parse_feature_name raises → main returns 1
+            "--from",
+            "2026-04-01",
+            "--to",
+            "2026-04-26",
+            "--database-url",
+            "postgresql://u@h/d",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,  # we want to inspect non-zero exit code
+        cwd=_REPO_ROOT,
+    )
+    assert "ModuleNotFoundError" not in result.stderr, (
+        f"Import-time regression: stderr contained ModuleNotFoundError.\n"
+        f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
+    )
+    # Exit 1 is expected (malformed --feature path). Anything else (0
+    # = unexpected success; 2 = argparse error; >1 = traceback) means
+    # the script took a different path than intended.
+    assert result.returncode == 1, (
+        f"expected exit 1 (graceful arg-validation fail); got {result.returncode}\n"
+        f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
+    )
