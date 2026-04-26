@@ -79,6 +79,15 @@ async def migrated_db_dsn(base_dsn: str) -> AsyncIterator[str]:
             env={**os.environ, _ALEMBIC_URL_ENV_VAR: throwaway_dsn},
             cwd=_REPO_ROOT,
         )
+        # T-113: drop the ohlc_15m cagg auto-refresh policy in the throwaway
+        # DB so tests' manual `CALL refresh_continuous_aggregate('ohlc_15m',
+        # NULL, NULL)` cannot race the bgw_job at the cagg lock. Production
+        # migration 0003 keeps the policy; only test fixtures opt out.
+        policy_conn = await asyncpg.connect(dsn=throwaway_dsn)
+        try:
+            await policy_conn.execute("SELECT remove_continuous_aggregate_policy('ohlc_15m')")
+        finally:
+            await policy_conn.close()
         yield throwaway_dsn
     finally:
         admin_conn = await asyncpg.connect(dsn=base_dsn)
