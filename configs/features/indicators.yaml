@@ -1,0 +1,36 @@
+features:
+  - name_template: ind.{symbol}.15m.ema_20
+    type: builtin.ema
+    interval: 15m
+    params: { period: 20 }
+    source_version: builtin.ema.v1
+
+  - name_template: ind.{symbol}.15m.ema_50
+    type: builtin.ema
+    interval: 15m
+    params: { period: 50 }
+    source_version: builtin.ema.v1
+
+  - name_template: ind.{symbol}.15m.ema_200
+    type: builtin.ema
+    interval: 15m
+    params: { period: 200 }
+    source_version: builtin.ema.v1
+
+  - name_template: ind.{symbol}.15m.rsi_14
+    type: builtin.rsi
+    interval: 15m
+    params: { period: 14 }
+    source_version: builtin.rsi.v1
+
+  - name_template: ind.{symbol}.15m.atr_14
+    type: builtin.atr
+    interval: 15m
+    params: { period: 14 }
+    source_version: builtin.atr.v1
+
+  - name_template: ind.{symbol}.1m.vwap_session
+    type: builtin.vwap
+    interval: 1m
+    params: { session: daily }
+    source_version: builtin.vwap.v1

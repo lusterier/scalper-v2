@@ -118,7 +118,10 @@ def test_jsonb_codec_init_passed_to_create_pool(
         "services.feature_engine.app.main.NatsClient",
         MagicMock(return_value=mock_bus),
     )
-    monkeypatch.setattr("services.feature_engine.app.main.build_features", lambda: {})
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.build_features",
+        lambda symbols: {},
+    )
     from services.feature_engine.app.main import create_app
 
     app = create_app(settings=settings)  # type: ignore[arg-type]

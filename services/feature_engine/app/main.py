@@ -122,8 +122,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Composition root for async resources. See module docstring."""
-        # 1-3. Build registry from feature_set.
-        features_by_key = build_features()
+        # 1-3. Build registry from feature_set (T-111: YAML-driven).
+        features_by_key = build_features(settings.symbols)
         capacity_map = {
             key: max(feature.warmup_candles for _, feature in entries)
             for key, entries in features_by_key.items()

@@ -26,6 +26,11 @@ dev = [
     # without a py.typed marker; the community stubs package tracks its
     # API so mypy --strict has real types instead of Any.
     "asyncpg-stubs~=0.30",
+    # Type stubs for PyYAML (used by services/feature_engine/app/yaml_loader.py
+    # for indicators.yaml registry loader; T-111). PyYAML itself ships without
+    # a py.typed marker; types-PyYAML tracks its API so mypy --strict has real
+    # types instead of Any.
+    "types-PyYAML~=6.0",
     # Alembic + SQLAlchemy land here (dev group, not packages/db runtime)
     # for T-010: migrations run via the Alembic CLI on the dev host and in
     # the deploy-time one-shot container (§18.5, deferred to T-018). No

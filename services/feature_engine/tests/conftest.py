@@ -98,7 +98,7 @@ def app_with_mocks(
     )
     monkeypatch.setattr(
         "services.feature_engine.app.main.build_features",
-        lambda: {},
+        lambda symbols: {},
     )
     return create_app(settings=settings)
 

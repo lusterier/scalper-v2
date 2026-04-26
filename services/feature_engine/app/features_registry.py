@@ -1,47 +1,50 @@
-"""Hardcoded feature registry for T-110c demo (T-111 replaces with YAML loader).
+"""YAML-driven feature registry (T-111).
 
-:func:`build_features` returns ``Mapping[(symbol, interval), list[tuple[str, Feature]]]``
-where the leading ``str`` in each tuple is the **pre-substituted feature_name**.
-Substitution happens here at registration time per T-107a docstring
-("T-111 substitutes at registration time"); :mod:`pipeline` NEVER
-re-substitutes — single source of truth in this layer.
+Replaces T-110c's hardcoded ``build_features()`` demo with a thin
+delegate to :func:`yaml_loader.load_indicators_yaml`. Composition root
+(T-110d ``main.py``) calls ``build_features(symbols)`` at lifespan
+start; ``symbols`` derives from ``settings.symbols`` parsed from the
+``FEATURE_ENGINE_SYMBOLS`` env-stopgap (mirror of ``MARKET_DATA_SYMBOLS``).
 
-The example feature is EMA-20 on ``BTCUSDT`` 1m so the T-110c live path
-(1m subscribe → dispatch → persist+KV+publish) is exercised end-to-end.
-Higher-interval features can be added here ahead of T-110d's warmup
-wiring; their buffers will be populated at startup but not live-updated
-until F1+ multi-interval cagg-trigger.
+Path resolution: this module lives at
+``services/feature_engine/app/features_registry.py`` →
+``parents[3]`` is the repo root → ``configs/features/indicators.yaml``.
 
-Symbol case in feature_name = lowercase per §1.7 line 244 / §7.2 line 904
-/ §8.4 line 1382 example literals (``ind.btcusdt.15m.ema_20``); routing-
-key tuple stays canonical Bybit-shape (e.g., ``BTCUSDT``) since that is
-what :class:`packages.bus.schemas.OhlcCandlePayload.symbol` carries.
-
-T-111 will replace this module with a ``configs/features/indicators.yaml``
-loader behind the same ``Mapping[tuple[str, str], list[tuple[str, Feature]]]``
-signature so T-110c/T-110d wiring stays untouched at the indicator-
-registration swap.
+T-111 is BUILTINS-only YAML registration. Plugin discovery
+(§9.3 line 1486 ``plugin_registry.yaml``) is F1+ deferred.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from packages.features.builtins.ema import EmaFeature
+from .yaml_loader import load_indicators_yaml
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from packages.features.protocols import Feature
 
 
-__all__ = ["build_features"]
+__all__ = ["INDICATORS_YAML_PATH", "build_features"]
 
 
-def build_features() -> Mapping[tuple[str, str], list[tuple[str, Feature]]]:
-    """Return the demo feature registry with pre-substituted names."""
-    symbol = "BTCUSDT"
-    interval = "1m"
-    feature = EmaFeature(period=20, interval=interval)
-    feature_name = feature.name_template.format(symbol=symbol.lower(), interval=interval)
-    return {(symbol, interval): [(feature_name, feature)]}
+# Repo-root-relative resolution: services/feature_engine/app/features_registry.py
+# parents[3] = repo root → configs/features/indicators.yaml.
+INDICATORS_YAML_PATH = (
+    Path(__file__).resolve().parents[3] / "configs" / "features" / "indicators.yaml"
+)
+
+
+def build_features(
+    symbols: Sequence[str],
+) -> Mapping[tuple[str, str], list[tuple[str, Feature]]]:
+    """Load + cross-product ``indicators.yaml`` against ``symbols``.
+
+    Empty ``symbols`` → empty mapping (no-op composition per T-110d
+    Decision #5). T-111 plan §"Decisions committed" #11: the
+    ``symbols: Sequence[str]`` parameter replaces T-110c's no-arg
+    signature. T-110d ``main.py`` callsite passes ``settings.symbols``.
+    """
+    return load_indicators_yaml(INDICATORS_YAML_PATH, symbols)

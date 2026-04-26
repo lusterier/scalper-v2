@@ -10,7 +10,7 @@ from services.feature_engine.app.config import Settings
 
 def test_accepts_minimal_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """With only required env vars set, documented defaults apply."""
-    for key in ("SERVICE_NAME", "LOG_LEVEL", "HTTP_PORT", "NATS_URL"):
+    for key in ("SERVICE_NAME", "LOG_LEVEL", "HTTP_PORT", "NATS_URL", "FEATURE_ENGINE_SYMBOLS"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
     s = Settings()  # type: ignore[call-arg]
@@ -19,6 +19,8 @@ def test_accepts_minimal_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.http_port == 8000
     assert s.nats_url == "nats://nats:4222"
     assert s.database_url == "postgresql://u@h/d"
+    assert s.feature_engine_symbols == ""
+    assert s.symbols == []
 
 
 def test_rejects_missing_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -64,3 +66,36 @@ def test_env_overrides(
     monkeypatch.setenv(env_key, env_value)
     s = Settings()  # type: ignore[call-arg]
     assert getattr(s, attr) == expected
+
+
+# ---------------------------------------------------------------------------
+# Settings.symbols (FEATURE_ENGINE_SYMBOLS env-stopgap; mirror MARKET_DATA_SYMBOLS)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        ("", []),
+        ("BTCUSDT", ["BTCUSDT"]),
+        ("BTCUSDT,ETHUSDT", ["BTCUSDT", "ETHUSDT"]),
+        ("BTCUSDT,,ETHUSDT", ["BTCUSDT", "ETHUSDT"]),  # repeated separator → drop empty
+        (",BTCUSDT,", ["BTCUSDT"]),  # leading/trailing → drop empty
+        ("  BTCUSDT  , ETHUSDT ", ["BTCUSDT", "ETHUSDT"]),  # whitespace stripped
+        (",,,", []),  # only separators → empty list
+        ("   ", []),  # only whitespace → empty list
+    ],
+)
+def test_feature_engine_symbols_split_strip_drops_empty_fragments(
+    monkeypatch: pytest.MonkeyPatch,
+    env_value: str,
+    expected: list[str],
+) -> None:
+    """Empty default + repeated-separator + whitespace cases all parse correctly.
+
+    Mirrors market_data ``test_symbols_split_strip_drops_empty_fragments``.
+    """
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
+    monkeypatch.setenv("FEATURE_ENGINE_SYMBOLS", env_value)
+    s = Settings()  # type: ignore[call-arg]
+    assert s.symbols == expected

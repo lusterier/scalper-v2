@@ -1,37 +1,44 @@
-"""Tests for :mod:`services.feature_engine.app.features_registry` (T-110c).
+"""Tests for :mod:`services.feature_engine.app.features_registry` (T-111).
 
-Pins decision #16 (EMA-20 BTCUSDT 1m demo) and decision #25/#26
-(template substitution at registration time + lowercase symbol
-convention). T-111 will replace `build_features` with a YAML loader
-behind the same API; these tests carry the substitution invariant
-forward.
+Refactored from T-110c hardcoded EMA-20 demo to a thin delegation test.
+T-111 ships :func:`build_features` as a wrapper over
+:func:`yaml_loader.load_indicators_yaml`; the loader's behaviour is
+exhaustively covered by ``test_yaml_loader.py``. This file pins:
+
+* Pass-through: ``build_features(symbols)`` calls
+  ``load_indicators_yaml(INDICATORS_YAML_PATH, symbols)`` verbatim.
+* Path resolution: ``INDICATORS_YAML_PATH`` resolves to
+  ``<repo-root>/configs/features/indicators.yaml`` so the lifespan
+  finds the file in production.
 """
 
 from __future__ import annotations
 
-from packages.features.builtins.ema import EmaFeature
-from services.feature_engine.app.features_registry import build_features
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
+
+from services.feature_engine.app.features_registry import (
+    INDICATORS_YAML_PATH,
+    build_features,
+)
+
+if TYPE_CHECKING:
+    import pytest
 
 
-def test_build_features_returns_ema_20_btcusdt_1m() -> None:
-    """Registry holds (BTCUSDT, 1m) → [(ind.btcusdt.1m.ema_20, EmaFeature(20))].
-
-    The pre-substituted feature_name verifies decision #25 (substitution
-    at registration time) + decision #26 (lowercase symbol per §1.7
-    line 244 / §7.2 line 904 / §8.4 line 1382 example literals).
-    """
-    registry = build_features()
-    bucket = registry.get(("BTCUSDT", "1m"))
-    assert bucket is not None
-    assert len(bucket) == 1
-    feature_name, feature = bucket[0]
-    assert feature_name == "ind.btcusdt.1m.ema_20"
-    assert isinstance(feature, EmaFeature)
-    assert feature.period == 20
-    assert feature.interval == "1m"
+def test_build_features_delegates_to_yaml_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``build_features(symbols)`` forwards verbatim to ``load_indicators_yaml``."""
+    sentinel: dict[tuple[str, str], list[tuple[str, object]]] = {}
+    loader_mock = MagicMock(return_value=sentinel)
+    monkeypatch.setattr(
+        "services.feature_engine.app.features_registry.load_indicators_yaml",
+        loader_mock,
+    )
+    result = build_features(["BTCUSDT", "ETHUSDT"])
+    assert result is sentinel
+    loader_mock.assert_called_once_with(INDICATORS_YAML_PATH, ["BTCUSDT", "ETHUSDT"])
 
 
-def test_build_features_only_one_key() -> None:
-    """Demo registry registers exactly one (symbol, interval) key."""
-    registry = build_features()
-    assert list(registry) == [("BTCUSDT", "1m")]
+def test_indicators_yaml_path_resolves_to_repo_configs_features() -> None:
+    """Path is repo-root-relative ``configs/features/indicators.yaml``."""
+    assert INDICATORS_YAML_PATH.parts[-3:] == ("configs", "features", "indicators.yaml")
