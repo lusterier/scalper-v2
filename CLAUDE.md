@@ -78,13 +78,31 @@ When the operator approves starting a new task T-NNN:
 
 The reviewer returns one of three verdicts:
 
-- **`APPROVE`** — plan is sound. Show one-line summary to operator: *"Plan approved: X. Proceed with implementation?"*. Wait for "proceed".
+- **`APPROVE`** — plan is sound. **Write the consolidated plan to `docs/plans/T-NNN.md`** so the drift-checker subagent can read it during implementation. Then show one-line summary to operator: *"Plan approved: X. Proceed with implementation?"*. Wait for "proceed".
 - **`REVISE`** — plan has issues. Apply the listed fixes (this may mean going back to the operator if the issue requires their input), then re-run `plan-reviewer`. Do not start coding until reviewer approves.
 - **`NEEDS DISCUSSION`** — plan touches an architectural decision or brief gap. Show the reviewer's question to the operator. The result is typically an ADR draft (§0.6, §6.3) — write it, get it reviewed by `plan-reviewer` again, then proceed.
 
 Do not start coding before `plan-reviewer` says `APPROVE`. The point is to catch architecture and process issues at the cheapest stage — the plan — rather than after 400 lines of code.
 
 For trivial tasks (typo fixes, doc-only edits, single-file refactors with no architectural impact) the reviewer will return `APPROVE` quickly; this is not a bottleneck.
+
+## Mid-implementation drift check — RECOMMENDED
+
+**During implementation, invoke the `drift-checker` subagent at natural checkpoints to verify the work-in-progress matches the approved plan in `docs/plans/T-NNN.md`.**
+
+Natural checkpoints are:
+
+1. After completing any single file larger than ~50 LOC, before moving to the next file.
+2. After the test suite first passes for the current change, before adding more functionality.
+3. As a final self-check just before invoking `brief-reviewer` for pre-commit review.
+
+The drift-checker compares uncommitted changes (`git diff HEAD`) against the approved plan and returns:
+
+- **`ON TRACK`** — implementation matches plan. Continue.
+- **`DRIFT`** — scope creep, premature abstraction, missing hazard implementation, or unauthorized additions detected. Either refactor back to the plan, or update the plan via ADR if the deviation is intentional.
+- **`NEEDS DISCUSSION`** — drift-checker found something that needs operator input.
+
+Skip drift-checker for trivial diffs (<30 LOC) — it adds no value at that scale. For substantive implementation work it catches the kind of mid-stream divergence the pre-commit reviewer cannot (because pre-commit reviewer doesn't know the plan, only the brief).
 
 ## Pre-commit review — MANDATORY
 
@@ -117,4 +135,5 @@ For trivial commits (typo fix, doc-only, single log message) the reviewer will r
 - `TASKS.md` — single source of truth for task state
 - `docs/adr/NNNN-title.md` — Architecture Decision Records
 - `docs/modules/{name}.md` — per-module design docs (BRIEF §6.2)
+- `docs/plans/T-NNN.md` — consolidated approved plan per task (written after `plan-reviewer` APPROVE; read by `drift-checker` during implementation)
 - `docs/status.md` — operator notes for next session (if present)
