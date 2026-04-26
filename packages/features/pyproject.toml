@@ -1,5 +1,30 @@
 [project]
 name = "scalper-v2-features"
 version = "0.1.0"
-description = "Feature port + FeatureValue/OhlcCandle domain types (§9.3). Built-in implementations (EMA/RSI/ATR/VWAP/Bollinger/MACD) land in T-107."
+description = "Feature port + 6 built-in indicators (EMA/RSI/ATR/VWAP/Bollinger/MACD). T-107a ships EMA/RSI/ATR; T-107b ships the rest. Spec: §9.3, §B.2."
 requires-python = ">=3.12"
+dependencies = ["scalper-v2-core"]
+
+[tool.uv.sources]
+scalper-v2-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Hatch scaffold per ADR-0002: flat-layout source files live directly in
+# packages/features/; sources remap adds the `packages/features/` wheel
+# prefix so imports resolve as `from packages.features import ...`.
+# Repo-root packages/__init__.py is excluded from every member wheel
+# (PEP 420 at install time). dev-mode-dirs = ["."] bypasses hatchling's
+# editable-mode detection, which trips on sources-remap + subpackages
+# (pfmoore/editables#20). builtins/ is the first multi-component
+# subpackage in packages/features/, which is exactly the ADR-0002
+# surprise 1 trigger.
+[tool.hatch.build.targets.wheel]
+include = ["*.py", "py.typed"]
+exclude = ["tests/**", "**/__pycache__/**"]
+dev-mode-dirs = ["."]
+
+[tool.hatch.build.targets.wheel.sources]
+"" = "packages/features"

@@ -9,7 +9,14 @@ precision (converted to ``float`` at the wire boundary).
 
 from __future__ import annotations
 
+from .errors import FeaturesError, FeatureUnderflowError
 from .protocols import Feature
 from .types import FeatureValue, OhlcCandle
 
-__all__ = ["Feature", "FeatureValue", "OhlcCandle"]
+__all__ = [
+    "Feature",
+    "FeatureUnderflowError",
+    "FeatureValue",
+    "FeaturesError",
+    "OhlcCandle",
+]

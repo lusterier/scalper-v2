@@ -1372,7 +1372,13 @@ source = { virtual = "services/feature_engine" }
 [[package]]
 name = "scalper-v2-features"
 version = "0.1.0"
-source = { virtual = "packages/features" }
+source = { editable = "packages/features" }
+dependencies = [
+    { name = "scalper-v2-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "scalper-v2-core", editable = "packages/core" }]
 
 [[package]]
 name = "scalper-v2-market"
