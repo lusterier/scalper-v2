@@ -64,9 +64,31 @@ Wait for "proceed" before starting work.
 
 **End of session.** Update `TASKS.md`. Mark done items, note new tasks discovered, note blockers. Post a one-message summary with what was completed, what's in progress, what's next.
 
+## Pre-implementation review — MANDATORY
+
+**Before writing any code for a new task, invoke the `plan-reviewer` subagent on the consolidated plan.**
+
+When the operator approves starting a new task T-NNN:
+
+1. Read `TASKS.md` task entry, the spec reference (brief section or `docs/modules/<n>.md`), and the 3 most recent ADRs.
+2. Draft an initial plan. For new modules, this is a `docs/modules/<n>.md` per the §6.2 template (Purpose / Public interface / Dependencies / Lifecycle / Edge cases / Testing strategy / Open questions). For changes to existing modules, an inline plan with: scope, files touched, new types/functions, hazards relevant from §20, test strategy, open questions.
+3. **If the plan has open questions** (decisions not determinable from brief alone — defaults, library choices, scope boundaries, etc.): list them with proposed defaults and present to the operator. Wait for operator's answers ("use defaults" is a valid answer).
+4. **Consolidate the plan** with operator's decisions baked in. The resulting plan must contain no unresolved questions — every decision is committed.
+5. **Invoke `plan-reviewer` with the CONSOLIDATED plan as input.** Do not invoke it on the draft with open questions — it would flag them as blockers.
+
+The reviewer returns one of three verdicts:
+
+- **`APPROVE`** — plan is sound. Show one-line summary to operator: *"Plan approved: X. Proceed with implementation?"*. Wait for "proceed".
+- **`REVISE`** — plan has issues. Apply the listed fixes (this may mean going back to the operator if the issue requires their input), then re-run `plan-reviewer`. Do not start coding until reviewer approves.
+- **`NEEDS DISCUSSION`** — plan touches an architectural decision or brief gap. Show the reviewer's question to the operator. The result is typically an ADR draft (§0.6, §6.3) — write it, get it reviewed by `plan-reviewer` again, then proceed.
+
+Do not start coding before `plan-reviewer` says `APPROVE`. The point is to catch architecture and process issues at the cheapest stage — the plan — rather than after 400 lines of code.
+
+For trivial tasks (typo fixes, doc-only edits, single-file refactors with no architectural impact) the reviewer will return `APPROVE` quickly; this is not a bottleneck.
+
 ## Pre-commit review — MANDATORY
 
-**Before every `git commit`, invoke the `brief-reviewer` subagent on staged changes.**
+**Before every `git commit`, invoke the `brief-reviewer` subagent on staged changes.** This is the second of the two review gates (the first being `plan-reviewer` before coding starts).
 
 The reviewer returns one of three verdicts:
 
