@@ -20,7 +20,10 @@ exactly as specified:
 * End-to-end smoke: insert a 1m candle, manually refresh the 5m cagg,
   query it back through the cagg view to confirm the materialized row
   is reachable.
-* The ``alembic_version`` row reports revision ``0003``.
+* The ``alembic_version`` row exists. Permissive — successor
+  migrations legitimately advance head; this test asserts the
+  post-0003 artifact shape, not the tail revision. Mirrors test_0001
+  / test_0002 pattern.
 
 Skipped at collection time when ``POSTGRES_TEST_DSN`` is unset — see
 ``conftest.py`` docstring.
@@ -235,6 +238,9 @@ async def test_migration_0003_creates_ohlc_table_and_caggs(migrated_db_dsn: str)
         assert cagg_row["volume"] == Decimal("1.5")
 
         version = await conn.fetchval("SELECT version_num FROM alembic_version")
-        assert version == "0003"
+        # The migration suite upgrades to head, so newer migrations
+        # legitimately advance alembic_version beyond 0003. This test
+        # asserts 0003 artifacts, not that 0003 is the current head.
+        assert version is not None
     finally:
         await conn.close()
