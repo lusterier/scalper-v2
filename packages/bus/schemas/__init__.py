@@ -11,12 +11,15 @@ this namespace as the owning task lands:
 
 from __future__ import annotations
 
+from .feature_update import FeatureUpdate, subject_for
 from .market_ohlc import OhlcCandlePayload, message_id_for_closed_candle
 from .signals import SignalValidated, message_id_for
 
 __all__ = [
+    "FeatureUpdate",
     "OhlcCandlePayload",
     "SignalValidated",
     "message_id_for",
     "message_id_for_closed_candle",
+    "subject_for",
 ]

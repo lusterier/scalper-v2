@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING
 import nats
 import nats.errors
 
-from packages.core import non_idempotent
+from packages.core import idempotent, non_idempotent
 
 from .envelope import MessageEnvelope
 from .errors import NotConnectedError, PublishError, SubscribeError
@@ -272,6 +272,48 @@ class NatsClient:
         self._subscriptions.append(sub)
         self._logger.info("bus_subscribed", subject=subject)
         return sub
+
+    @idempotent
+    async def kv_put(self, bucket: str, key: str, value: bytes) -> int:
+        """Write ``value`` to JetStream KV ``bucket`` under ``key``.
+
+        Idempotent (§N3): NATS KV PUT replaces by key — last-write-wins
+        on ``(bucket, key)``. Same ``(bucket, key, value)`` yields the
+        same final KV state regardless of call count. JS returns a
+        monotonically increasing revision number which is surfaced for
+        callers that want to assert ordering or log-correlate; callers
+        that don't care can ignore the return value.
+
+        Bucket must be pre-provisioned by infra (T-012
+        ``infra/nats/streams.yaml``). A missing bucket raises
+        :class:`PublishError` (config bug, fail loud per §0.4) — the
+        bus does not auto-create.
+
+        Raises :class:`NotConnectedError` outside ``CONNECTED``.
+        Wraps any :class:`nats.errors.Error` (including bucket-missing)
+        in :class:`PublishError` with the original as ``__cause__``.
+        """
+        if self._state is not ConnectionState.CONNECTED or self._js is None:
+            raise NotConnectedError(f"kv_put called in state {self._state.value!r}")
+        try:
+            kv = await self._js.key_value(bucket)
+            revision = await kv.put(key, value)
+        except nats.errors.Error as exc:
+            self._logger.error(
+                "bus_kv_put_failed",
+                bucket=bucket,
+                key=key,
+                error=str(exc),
+            )
+            raise PublishError(f"kv_put to {bucket!r}/{key!r} failed") from exc
+        self._logger.debug(
+            "bus_kv_put",
+            bucket=bucket,
+            key=key,
+            revision=revision,
+            value_bytes=len(value),
+        )
+        return revision
 
     async def _on_disconnected(self) -> None:
         self._logger.warning("bus_disconnected")
