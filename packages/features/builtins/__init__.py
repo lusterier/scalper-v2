@@ -14,7 +14,17 @@ indicators do not cache prior state on the instance.
 from __future__ import annotations
 
 from .atr import AtrFeature
+from .bollinger import BollingerFeature
 from .ema import EmaFeature
+from .macd import MacdFeature
 from .rsi import RsiFeature
+from .vwap import VwapFeature
 
-__all__ = ["AtrFeature", "EmaFeature", "RsiFeature"]
+__all__ = [
+    "AtrFeature",
+    "BollingerFeature",
+    "EmaFeature",
+    "MacdFeature",
+    "RsiFeature",
+    "VwapFeature",
+]
