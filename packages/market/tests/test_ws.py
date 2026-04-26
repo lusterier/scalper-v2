@@ -493,6 +493,86 @@ async def test_long_disconnect_signal_fires_once_per_outage(
     )
 
 
+async def test_on_connect_callback_fires_on_initial_and_each_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-105 hook: ``on_connect`` callable awaited after every successful connect.
+
+    Two outages → three successful connects (initial + 2 reconnects) →
+    callback called 3x. The hook fires after the SUBSCRIBE frame and
+    the ``binance_ws_connected`` log so the composition root's
+    ``asyncio.create_task(backfill.run_for_symbols(...))`` lands while
+    the receive loop is already armed.
+    """
+    fake_a = _FakeWs(messages=[], end_with=ConnectionClosedError(None, None))
+    fake_b = _FakeWs(messages=[], end_with=ConnectionClosedError(None, None))
+    fake_c = _FakeWs(messages=[])
+    script: list[BaseException | _FakeWs] = [fake_a, fake_b, fake_c]
+
+    fire_count = 0
+
+    async def _on_connect() -> None:
+        nonlocal fire_count
+        fire_count += 1
+
+    # Build the BinanceWsClient directly so we can pass `on_connect`;
+    # `_build_client` doesn't surface that kwarg.
+    import asyncio as _asyncio_real
+
+    connect = _ScriptedConnect(script)
+    monkeypatch.setattr("packages.market.ws.ws_connect", connect)
+
+    async def _capture_sleep(_delay: float) -> None:
+        await _asyncio_real.sleep(0)
+
+    monkeypatch.setattr("packages.market.ws._async_sleep", _capture_sleep)
+
+    async def _default_handler(_msg: dict[str, Any]) -> None:
+        return None
+
+    client = BinanceWsClient(
+        initial_streams=set(),
+        handler=_default_handler,
+        logger=_logger(),
+        rng=random.Random(0xC0FFEE),
+        on_connect=_on_connect,
+    )
+
+    import asyncio
+
+    task = asyncio.create_task(client.run())
+    for _ in range(50):
+        await asyncio.sleep(0)
+    await client.close()
+    await task
+
+    expected = 3
+    assert fire_count == expected, (
+        f"expected {expected} on_connect fires (initial + 2 reconnects), got {fire_count}"
+    )
+
+
+async def test_on_connect_default_none_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backward-compat: ``on_connect=None`` is the default and a no-op."""
+    fake = _FakeWs(messages=[])
+    client, _connect = _build_client(
+        monkeypatch,
+        script=[fake],
+        sleep_capture=[],
+    )
+    import asyncio
+
+    task = asyncio.create_task(client.run())
+    for _ in range(3):
+        await asyncio.sleep(0)
+    await client.close()
+    await task
+    # No assertion needed — reaching here without an AttributeError or
+    # TypeError on the None callback is the contract.
+
+
 async def test_reconnect_resends_subscribe_for_current_streams(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

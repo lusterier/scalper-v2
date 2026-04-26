@@ -86,6 +86,9 @@ def _build_app_with_pipeline_capture(
     pipeline.start = AsyncMock()
     pipeline.stop = AsyncMock()
 
+    rest = MagicMock()
+    rest.close = AsyncMock()
+
     monkeypatch.setattr(
         "services.market_data.app.main.create_pool",
         AsyncMock(return_value=pool),
@@ -97,6 +100,10 @@ def _build_app_with_pipeline_capture(
     monkeypatch.setattr(
         "services.market_data.app.main.BinanceWsClient",
         MagicMock(return_value=ws),
+    )
+    monkeypatch.setattr(
+        "services.market_data.app.main.BinanceRestClient",
+        MagicMock(return_value=rest),
     )
     monkeypatch.setattr(
         "services.market_data.app.main.OhlcPipeline",
@@ -154,8 +161,9 @@ def test_async_state_attached_after_lifespan_entry(
     mock_pool: MagicMock,
     mock_bus: MagicMock,
     mock_ws: MagicMock,
+    mock_rest: MagicMock,
 ) -> None:
-    """pool / bus / ws / subscription_mgr / pipeline land on app.state inside lifespan.
+    """pool / bus / ws / subscription_mgr / pipeline / rest / backfill land on app.state.
 
     The TestClient context manager runs the lifespan startup on enter
     and teardown on exit. The ``with`` block here verifies the post-
@@ -167,6 +175,8 @@ def test_async_state_attached_after_lifespan_entry(
         assert app_with_mocks.state.ws is mock_ws
         assert app_with_mocks.state.subscription_mgr is not None
         assert app_with_mocks.state.pipeline is not None
+        assert app_with_mocks.state.rest is mock_rest
+        assert app_with_mocks.state.backfill is not None
 
 
 # ---------------------------------------------------------------------------

@@ -32,45 +32,56 @@ Lifespan order (load-bearing):
 1. ``pool = await create_pool(...)`` — DSN scheme-validated up front.
 2. ``bus = NatsClient(...); await bus.connect()`` — JetStream context
    acquired; subscriptions/publishes ready.
-3. ``ws = BinanceWsClient(initial_streams=set(), handler=_route_frame, ...)``
-   — handler is a forwarding closure (see "Dispatch handler binding"
-   below). Empty initial set; SubscriptionManager will populate via
-   ``add_stream`` calls.
-4. ``manager = SubscriptionManager(ws=ws, ...)`` — refcount facade
+3. ``rest = BinanceRestClient(...)`` and ``backfill = OhlcBackfill(...)``
+   — T-105 REST client + gap-filler. Constructed before ``ws`` so the
+   ``on_connect`` callback can close over ``backfill``.
+4. ``ws = BinanceWsClient(initial_streams=set(), handler=_route_frame,
+   on_connect=_trigger_backfill, ...)`` — handler is a forwarding
+   closure (see "Dispatch handler binding" below); ``on_connect`` is
+   a fire-and-forget ``create_task`` wrapper around
+   ``backfill.run_for_symbols``. Empty initial stream set;
+   SubscriptionManager populates via ``add_stream`` calls.
+5. ``manager = SubscriptionManager(ws=ws, ...)`` — refcount facade
    per H-014 (T-102).
-5. ``dispatch_holder.append(manager)`` — completes the forwarding
+6. ``dispatch_holder.append(manager)`` — completes the forwarding
    closure binding so ``_route_frame`` resolves dispatch correctly.
-6. ``pipeline = OhlcPipeline(subscription_mgr=manager, pool=pool,
+7. ``pipeline = OhlcPipeline(subscription_mgr=manager, pool=pool,
    bus=bus, ...)`` — T-104b consumer.
-7. Attach pool / bus / ws / manager / pipeline to ``app.state``.
-8. ``ws_task = asyncio.create_task(ws.run(), name="binance_ws_run")``
-   — long-lived loop; ``ws.close()`` triggers exit.
-9. ``await pipeline.start(settings.symbols)`` — spawns one consumer
-   task per symbol (each subscribes via ``manager.subscribe(symbol)``,
-   which calls ``ws.add_stream`` for each kind).
+8. Attach pool / bus / ws / manager / pipeline / rest / backfill to
+   ``app.state``.
+9. ``ws_task = asyncio.create_task(ws.run(), name="binance_ws_run")``
+   — long-lived loop; ``ws.close()`` triggers exit. First successful
+   connect inside the loop fires ``on_connect``, which spawns the
+   backfill task in the background.
+10. ``await pipeline.start(settings.symbols)`` — spawns one consumer
+    task per symbol (each subscribes via ``manager.subscribe(symbol)``,
+    which calls ``ws.add_stream`` for each kind).
 
-   **Race note (steps 8 → 9):** ``pipeline.start()`` may run before
-   ``ws.run()`` has reached ``CONNECTED`` (the WS connect happens
-   inside the loop body, asynchronously after task creation). Per
-   T-101b contract, ``ws.add_stream()`` is safe in any state — when
-   disconnected, it just mutates the internal stream set; the next
-   ``_reconnect_loop`` iteration picks up the new streams via the
-   initial-subscribe step on connect. So no ``ws.wait_connected()``
-   is needed; the optimistic ordering is correct by design.
+    **Race note (steps 9 → 10):** ``pipeline.start()`` may run before
+    ``ws.run()`` has reached ``CONNECTED`` (the WS connect happens
+    inside the loop body, asynchronously after task creation). Per
+    T-101b contract, ``ws.add_stream()`` is safe in any state — when
+    disconnected, it just mutates the internal stream set; the next
+    ``_reconnect_loop`` iteration picks up the new streams via the
+    initial-subscribe step on connect. So no ``ws.wait_connected()``
+    is needed; the optimistic ordering is correct by design.
 
 Shutdown order (reverse of startup; also load-bearing):
 
-10. ``await pipeline.stop()`` — cancels per-symbol tasks, which exit
+11. ``await pipeline.stop()`` — cancels per-symbol tasks, which exit
     via :class:`SubscriptionManager` ``__aexit__`` and call
     ``ws.remove_stream`` UNSUBSCRIBE frames. **Must run before**
     ``ws.close()`` so the UNSUBSCRIBE frames land while the WS is
     still open.
-11. ``await ws.close()`` then ``await ws_task`` with a 5 s timeout.
+12. ``await ws.close()`` then ``await ws_task`` with a 5 s timeout.
     Loop exits on close; task drains. Timeout fallback cancels the
     task — should never fire under normal shutdown.
-12. ``await bus.close()`` — drains tracked subscriptions, then closes
+13. ``await bus.close()`` — drains tracked subscriptions, then closes
     the NATS connection.
-13. ``await pool.close()`` — releases asyncpg connections.
+14. ``await rest.close()`` — drains the httpx pool; in-flight backfill
+    tasks resolve their last REST call, the next ``insert_ohlc_1m``
+    runs against the still-open asyncpg pool.
+15. ``await pool.close()`` — releases asyncpg connections.
 
 Dispatch handler binding (the holder pattern):
 
@@ -105,10 +116,22 @@ healthy + ready until the env var is populated. F1+ entry queued to
 swap to the spec'd query when F3 lands; the swap is mechanical
 because :class:`OhlcPipeline` accepts the symbol list at start.
 
-No backfill in T-100. T-105 (queued, blocked by T-104b — now resolved)
-ships REST ``/api/v3/klines`` backfill on startup + reconnect resync.
-T-100 starts the pipeline cold; the first closed-bucket frame arrives
-at the next minute boundary (≤60 s after WS connect).
+Backfill (T-105) is wired as the :class:`BinanceWsClient`
+``on_connect`` callback. ``rest`` (Binance REST client) and
+``backfill`` (:class:`packages.market.OhlcBackfill`) are constructed
+in the lifespan after ``pool`` and before ``ws``; the callback is a
+small ``asyncio.create_task(backfill.run_for_symbols(...))`` wrapper
+so the WS receive loop is never blocked by a long REST page-loop.
+First WS connect → backfill of the gap from the most recent
+``ohlc_1m`` row (or the configured 24h cold-start window) to ``now``;
+every subsequent reconnect repeats the same gap-fill so frames missed
+during the disconnect window get repaired. Idempotency rides on
+``insert_ohlc_1m`` ``ON CONFLICT DO UPDATE`` (T-104a).
+
+Shutdown order extension: ``rest.close()`` runs after ``bus.close()``
+and before ``pool.close()`` — the REST client owns an httpx pool that
+must be drained before the asyncpg pool tears down (in-flight backfill
+tasks may still be executing inserts when shutdown begins).
 """
 
 from __future__ import annotations
@@ -123,7 +146,9 @@ from fastapi import FastAPI
 from packages.bus import NatsClient
 from packages.db import create_pool
 from packages.market import (
+    BinanceRestClient,
     BinanceWsClient,
+    OhlcBackfill,
     OhlcPipeline,
     SubscriptionManager,
 )
@@ -211,10 +236,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         await bus.connect()
 
+        rest = BinanceRestClient(base_url=settings.binance_rest_url)
+        backfill = OhlcBackfill(
+            rest=rest,
+            pool=pool,
+            logger=logger,
+            initial_hours=settings.backfill_initial_hours,
+        )
+
+        async def _trigger_backfill() -> None:
+            """Fire-and-forget gap-fill on every successful WS connect.
+
+            ``asyncio.create_task`` keeps the receive loop unblocked
+            while backfill pages the REST endpoint per symbol. Two
+            concurrent backfill tasks (e.g. fast reconnect during a
+            running fill) are safe because ``insert_ohlc_1m`` is
+            idempotent on PK ``(symbol, bucket_start, source)``.
+            """
+            asyncio.create_task(  # noqa: RUF006 # fire-and-forget by design
+                backfill.run_for_symbols(settings.symbols),
+                name="ohlc_backfill",
+            )
+
         ws = BinanceWsClient(
             initial_streams=set(),
             handler=_route_frame,
             logger=logger,
+            on_connect=_trigger_backfill,
         )
         manager = SubscriptionManager(ws=ws, logger=logger)
         dispatch_holder.append(manager)
@@ -230,6 +278,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.ws = ws
         app.state.subscription_mgr = manager
         app.state.pipeline = pipeline
+        app.state.rest = rest
+        app.state.backfill = backfill
 
         ws_task = asyncio.create_task(ws.run(), name="binance_ws_run")
         await pipeline.start(settings.symbols)
@@ -256,6 +306,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 with contextlib.suppress(asyncio.CancelledError):
                     await ws_task
             await bus.close()
+            await rest.close()
             await pool.close()
             logger.info("service_stopped")
 

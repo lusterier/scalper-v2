@@ -16,6 +16,9 @@ Public surface:
   yielding a :class:`SymbolFeed` async iterator of multiplex frames.
 * :class:`OhlcPipeline` — closed-bucket detection + persist + publish
   loop driven off SubscriptionManager feeds (T-104b).
+* :class:`OhlcBackfill` — REST-based gap-fill on startup + after every
+  WS reconnect (T-105). Wired as the :class:`BinanceWsClient`
+  ``on_connect`` callback by the composition root.
 * Error hierarchy rooted at :class:`MarketError`
   (a :class:`~packages.core.ScalperError`).
 
@@ -26,6 +29,7 @@ sequence (e.g. T-105 reconnect resync).
 
 from __future__ import annotations
 
+from .backfill import OhlcBackfill
 from .backoff import exp_backoff_delays
 from .errors import (
     BinanceRestError,
@@ -46,6 +50,7 @@ __all__ = [
     "ConnectionState",
     "MarketError",
     "NotConnectedError",
+    "OhlcBackfill",
     "OhlcCandle",
     "OhlcPipeline",
     "SubscriptionManager",

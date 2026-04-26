@@ -11,6 +11,10 @@ lifespan path without touching real Postgres / NATS / Binance:
   :class:`asyncio.Event` until the lifespan's ``ws.close()`` cancels
   it on shutdown — mirrors the production loop's "wait until close"
   shape without the actual socket.
+* :class:`packages.market.BinanceRestClient` patched so backfill never
+  hits the network in unit tests; the patched ``BinanceWsClient``'s
+  ``on_connect`` is wired to the same fixture so ``mock_ws.on_connect``
+  is callable from tests that want to drive the reconnect path.
 
 The lifespan then runs end-to-end against the mocks, attaching them
 to ``app.state`` exactly as it would in production. Tests mutate
@@ -118,14 +122,29 @@ def mock_ws() -> MagicMock:
 
 
 @pytest.fixture
+def mock_rest() -> MagicMock:
+    """BinanceRestClient stand-in.
+
+    The real T-105 backfill path is exercised by
+    ``packages/market/tests/test_backfill.py``; the service-level
+    fixture only needs ``close()`` to be awaitable so the lifespan
+    teardown doesn't blow up.
+    """
+    rest = MagicMock()
+    rest.close = AsyncMock()
+    return rest
+
+
+@pytest.fixture
 def app_with_mocks(
     settings: Settings,
     mock_pool: MagicMock,
     mock_bus: MagicMock,
     mock_ws: MagicMock,
+    mock_rest: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> FastAPI:
-    """Build the real app with create_pool / NatsClient / BinanceWsClient patched."""
+    """Build the real app with create_pool / NatsClient / Binance{Ws,Rest}Client patched."""
     monkeypatch.setattr(
         "services.market_data.app.main.create_pool",
         AsyncMock(return_value=mock_pool),
@@ -137,6 +156,10 @@ def app_with_mocks(
     monkeypatch.setattr(
         "services.market_data.app.main.BinanceWsClient",
         MagicMock(return_value=mock_ws),
+    )
+    monkeypatch.setattr(
+        "services.market_data.app.main.BinanceRestClient",
+        MagicMock(return_value=mock_rest),
     )
     return create_app(settings=settings)
 

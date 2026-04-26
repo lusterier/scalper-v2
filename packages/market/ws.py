@@ -24,6 +24,15 @@ that ``market-data-svc`` (T-100/T-104) drives. Responsibilities:
 Refcounting is **not** in this layer. T-102 ``SubscriptionManager``
 layers refcounts on top, calling ``add_stream``/``remove_stream``
 only on 0↔1 transitions per H-014.
+
+The optional ``on_connect`` callback is awaited after each successful
+connect (initial + every reconnect) and after the SUBSCRIBE frame for
+the current stream set has been sent. The composition root wires
+T-105 ``OhlcBackfill`` here as ``lambda: asyncio.create_task(...)`` so
+the gap-fill kicks off in the background — ``on_connect`` itself
+returns immediately so the receive loop does not block on long-running
+backfill work. A blocking callback would stall every incoming WS frame
+during backfill; the ``create_task`` indirection keeps receive concurrent.
 """
 
 from __future__ import annotations
@@ -78,6 +87,7 @@ class BinanceWsClient:
         url: str = _DEFAULT_URL,
         long_disconnect_threshold_seconds: float = _DEFAULT_LONG_DISCONNECT_SECONDS,
         rng: random.Random | None = None,
+        on_connect: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._url = url
         self._streams: set[str] = set(initial_streams)
@@ -85,6 +95,7 @@ class BinanceWsClient:
         self._logger = logger
         self._long_disconnect_threshold = long_disconnect_threshold_seconds
         self._rng = rng
+        self._on_connect = on_connect
         self._state = ConnectionState.DISCONNECTED
         self._ws: ClientConnection | None = None
         self._next_id = 1
@@ -177,6 +188,8 @@ class BinanceWsClient:
                     disconnect_started_at = None
                     long_disconnect_logged = False
                     attempt = 0
+                    if self._on_connect is not None:
+                        await self._on_connect()
                     await self._receive_until_closed(ws)
             except (WebSocketException, OSError) as exc:
                 if self._state is ConnectionState.CLOSED:

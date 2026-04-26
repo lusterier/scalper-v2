@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     # tasks spawned; service still healthy + ready.
     market_data_symbols: str = ""
 
+    # T-105 backfill — Binance REST endpoint + initial cold-start window.
+    # ``binance_rest_url`` mirrors the WS endpoint's overrideability
+    # (TLS-terminated mock for tests / proxied egress). The 24h initial
+    # window seeds caggs with enough history to verify the F1 exit
+    # criterion on a cold deploy; subsequent restarts fall back to
+    # last_bucket+1m once ``ohlc_1m`` has rows.
+    binance_rest_url: str = "https://api.binance.com"
+    backfill_initial_hours: int = 24
+
     @property
     def symbols(self) -> list[str]:
         """Parsed ``market_data_symbols`` env var as a stripped, non-empty list.

@@ -29,7 +29,33 @@ if TYPE_CHECKING:
     # pass `async with pool.acquire() as conn` results without casting.
     type _DbExecutor = asyncpg.Connection[asyncpg.Record] | PoolConnectionProxy[asyncpg.Record]
 
-__all__ = ["insert_ohlc_1m"]
+__all__ = ["fetch_latest_ohlc_bucket", "insert_ohlc_1m"]
+
+
+async def fetch_latest_ohlc_bucket(
+    conn: _DbExecutor,
+    *,
+    symbol: str,
+    source: str,
+) -> datetime | None:
+    """Return the newest persisted ``bucket_start`` for ``(symbol, source)``.
+
+    Used by T-105 backfill to compute the gap between the last stored
+    candle and ``now`` before fetching missing 1m klines from Binance
+    REST. Returns ``None`` when the symbol has no rows yet (cold-start
+    case → caller falls back to a configurable initial-window default).
+
+    Read-only — no idempotency marker required (markers are for external
+    writes per §N3).
+    """
+    # asyncpg's `fetchval` returns Any; the column type is timestamptz
+    # which asyncpg yields as `datetime | None` (None on empty result).
+    result: datetime | None = await conn.fetchval(
+        "SELECT max(bucket_start) FROM ohlc_1m WHERE symbol = $1 AND source = $2",
+        symbol,
+        source,
+    )
+    return result
 
 
 async def insert_ohlc_1m(

@@ -30,7 +30,10 @@ from typing import TYPE_CHECKING
 import asyncpg
 import pytest
 
-from packages.db.queries.market_data import insert_ohlc_1m
+from packages.db.queries.market_data import (
+    fetch_latest_ohlc_bucket,
+    insert_ohlc_1m,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -227,3 +230,50 @@ async def test_distinct_source_creates_independent_row(conn: _Conn) -> None:
         bucket,
     )
     assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# fetch_latest_ohlc_bucket — T-105 backfill anchor query
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_latest_ohlc_bucket_returns_none_when_empty(conn: _Conn) -> None:
+    """Cold-start case: no rows for the symbol → ``None`` (caller falls back to initial-hours)."""
+    result = await fetch_latest_ohlc_bucket(conn, symbol="BTCUSDT", source="binance")
+    assert result is None
+
+
+async def test_fetch_latest_ohlc_bucket_returns_max_bucket_start(conn: _Conn) -> None:
+    """With multiple rows, returns the newest ``bucket_start`` (gap-fill anchor)."""
+    common: dict[str, object] = {
+        "symbol": "BTCUSDT",
+        "open": Decimal("1.0"),
+        "high": Decimal("2.0"),
+        "low": Decimal("0.5"),
+        "close": Decimal("1.5"),
+        "volume": Decimal("10.0"),
+        "source": "binance",
+    }
+    await insert_ohlc_1m(conn, bucket_start=_bucket(0), **common)  # type: ignore[arg-type]
+    await insert_ohlc_1m(conn, bucket_start=_bucket(2), **common)  # type: ignore[arg-type]
+    await insert_ohlc_1m(conn, bucket_start=_bucket(1), **common)  # type: ignore[arg-type]
+    result = await fetch_latest_ohlc_bucket(conn, symbol="BTCUSDT", source="binance")
+    assert result == _bucket(2)
+
+
+async def test_fetch_latest_ohlc_bucket_filters_by_source(conn: _Conn) -> None:
+    """Source filter isolates per-exchange bucket history (binance vs paper, etc)."""
+    common: dict[str, object] = {
+        "symbol": "BTCUSDT",
+        "open": Decimal("1.0"),
+        "high": Decimal("2.0"),
+        "low": Decimal("0.5"),
+        "close": Decimal("1.5"),
+        "volume": Decimal("10.0"),
+    }
+    await insert_ohlc_1m(conn, bucket_start=_bucket(0), source="binance", **common)  # type: ignore[arg-type]
+    await insert_ohlc_1m(conn, bucket_start=_bucket(5), source="bybit", **common)  # type: ignore[arg-type]
+    binance_latest = await fetch_latest_ohlc_bucket(conn, symbol="BTCUSDT", source="binance")
+    bybit_latest = await fetch_latest_ohlc_bucket(conn, symbol="BTCUSDT", source="bybit")
+    assert binance_latest == _bucket(0)
+    assert bybit_latest == _bucket(5)
