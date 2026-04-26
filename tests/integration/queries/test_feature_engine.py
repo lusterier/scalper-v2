@@ -41,6 +41,7 @@ import asyncpg
 import pytest
 
 from packages.db.queries.feature_engine import (
+    fetch_ohlc_range,
     fetch_warmup_window,
     insert_feature,
 )
@@ -321,3 +322,54 @@ async def test_fetch_warmup_window_under_fill_returns_short_list(conn: _Conn) ->
     await _seed_ohlc_1m(conn, n=3)
     rows = await fetch_warmup_window(conn, symbol=_SYMBOL, interval="1m", n=10, source="binance")
     assert len(rows) == 3
+
+
+# ---------------------------------------------------------------------------
+# fetch_ohlc_range — T-112 backfill query helper
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_ohlc_range_returns_rows_in_range_ASC(conn: _Conn) -> None:
+    """Date range filter [from, to] inclusive; ASC by bucket_start."""
+    await _seed_ohlc_1m(conn, n=5)  # buckets at 11:00..11:04
+    from_dt = _bucket(1)  # 11:01
+    to_dt = _bucket(3)  # 11:03
+    rows = await fetch_ohlc_range(
+        conn,
+        symbol=_SYMBOL,
+        interval="1m",
+        source="binance",
+        from_dt=from_dt,
+        to_dt=to_dt,
+    )
+    assert len(rows) == 3
+    # ASC ordering: 11:01, 11:02, 11:03
+    assert rows[0][1] == _bucket(1)
+    assert rows[1][1] == _bucket(2)
+    assert rows[2][1] == _bucket(3)
+
+
+async def test_fetch_ohlc_range_empty_range_returns_empty_list(conn: _Conn) -> None:
+    """Range before any seeded data returns ``[]`` without raising."""
+    rows = await fetch_ohlc_range(
+        conn,
+        symbol=_SYMBOL,
+        interval="1m",
+        source="binance",
+        from_dt=_bucket(0),
+        to_dt=_bucket(10),
+    )
+    assert rows == []
+
+
+async def test_fetch_ohlc_range_unknown_interval_raises(conn: _Conn) -> None:
+    """Unknown interval raises ``ValueError`` before any SQL emission."""
+    with pytest.raises(ValueError, match="unknown interval '3m'"):
+        await fetch_ohlc_range(
+            conn,
+            symbol=_SYMBOL,
+            interval="3m",
+            source="binance",
+            from_dt=_bucket(0),
+            to_dt=_bucket(10),
+        )

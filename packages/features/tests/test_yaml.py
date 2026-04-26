@@ -20,7 +20,7 @@ from packages.features.builtins import (
     RsiFeature,
     VwapFeature,
 )
-from services.feature_engine.app.yaml_loader import load_indicators_yaml
+from packages.features.yaml import load_indicators_yaml
 
 if TYPE_CHECKING:
     from pathlib import Path

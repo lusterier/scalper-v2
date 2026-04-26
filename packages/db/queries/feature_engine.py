@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     type _DbExecutor = asyncpg.Connection[asyncpg.Record] | PoolConnectionProxy[asyncpg.Record]
 
 
-__all__ = ["OhlcRow", "fetch_warmup_window", "insert_feature"]
+__all__ = ["OhlcRow", "fetch_ohlc_range", "fetch_warmup_window", "insert_feature"]
 
 
 # Public row alias — T-110c imports for OhlcCandle(*row) mapping on
@@ -178,6 +178,56 @@ async def fetch_warmup_window(
         ORDER BY bucket_start ASC
     """  # noqa: S608  # nosec B608 — `table` is allow-listed above; not user-controlled
     rows = await conn.fetch(sql, symbol, source, n)
+    return [
+        (
+            r["symbol"],
+            r["bucket_start"],
+            r["open"],
+            r["high"],
+            r["low"],
+            r["close"],
+            r["volume"],
+            r["source"],
+        )
+        for r in rows
+    ]
+
+
+async def fetch_ohlc_range(
+    conn: _DbExecutor,
+    *,
+    symbol: str,
+    interval: str,
+    source: str,
+    from_dt: datetime,
+    to_dt: datetime,
+) -> list[OhlcRow]:
+    """Read all OHLC rows in ``[from_dt, to_dt]`` (inclusive) for ``(symbol, interval, source)``.
+
+    For ``interval == "1m"`` queries the raw hypertable ``ohlc_1m``; for
+    higher intervals queries the corresponding T-103 cagg
+    (``ohlc_5m`` / ``_15m`` / ``_1h`` / ``_4h`` / ``_1d``). Mirrors
+    :func:`fetch_warmup_window` shape (allow-list interval routing,
+    materialised tuple list, ASC by ``bucket_start``) but with date-range
+    filter instead of ``LIMIT N``. Used by T-112 ``backfill_features``
+    CLI to iterate historical OHLC and compute feature values.
+
+    Unknown ``interval`` raises :class:`ValueError` (allow-list guard via
+    :data:`_INTERVAL_TO_TABLE`). Empty range returns ``[]``. Read-only
+    — no idempotency marker (markers are for external writes per §N3).
+    """
+    table = _INTERVAL_TO_TABLE.get(interval)
+    if table is None:
+        msg = f"unknown interval {interval!r}; supported intervals: {sorted(_INTERVAL_TO_TABLE)}"
+        raise ValueError(msg)
+    sql = f"""
+        SELECT symbol, bucket_start, open, high, low, close, volume, source
+        FROM {table}
+        WHERE symbol = $1 AND source = $2
+          AND bucket_start >= $3 AND bucket_start <= $4
+        ORDER BY bucket_start ASC
+    """  # noqa: S608  # nosec B608 — `table` is allow-listed above; not user-controlled
+    rows = await conn.fetch(sql, symbol, source, from_dt, to_dt)
     return [
         (
             r["symbol"],

@@ -54,14 +54,14 @@ in the registry layer; T-111 YAML loader inherits the same contract.
 
 from __future__ import annotations
 
-from datetime import timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from packages.bus import MessageEnvelope
 from packages.bus.schemas import FeatureUpdate, OhlcCandlePayload, subject_for
 from packages.core import CorrelationId
 from packages.db.queries.feature_engine import insert_feature
+from packages.features.intervals import INTERVAL_DELTA
 from packages.features.types import OhlcCandle
 
 if TYPE_CHECKING:
@@ -83,12 +83,12 @@ _PUBLISHER = "feature-engine"
 _KV_BUCKET = "feature_latest"
 _SUBJECT_WILDCARD = "market.ohlc.1m.>"
 
-# Bucket-end offset per interval. Pre-emptive forward-compat for F1+
-# multi-interval extension (just add 5m/15m/1h/4h/1d keys when
-# multi-interval cagg-trigger live updates ship). KeyError on unknown
-# interval = fail-loud per §0.4 (T-110c subscribes 1m-only, so unknown
-# can only arrive via misconfigured features_registry — surface the bug).
-_INTERVAL_DELTA: Final[Mapping[str, timedelta]] = {"1m": timedelta(minutes=1)}
+# Bucket-end offset per interval lives at packages.features.intervals
+# (single source of truth per T-112 plan Concern #3 option B). T-110c
+# pipeline subscribes 1m-only; F1+ multi-interval cagg-trigger live
+# updates extend by adding keys to packages.features.intervals.INTERVAL_DELTA
+# (no callsite change here). KeyError on unknown interval = fail-loud
+# per §0.4 (misconfigured registry surfaces immediately).
 
 
 class FeaturePipeline:
@@ -296,11 +296,11 @@ class FeaturePipeline:
           per L-004 ``Mapping[str, object]`` openness (matches T-110b's
           ``dict[str, object] | None`` Pydantic schema).
 
-        ``computed_at`` = ``candle.bucket_start + _INTERVAL_DELTA[candle.interval]``
+        ``computed_at`` = ``candle.bucket_start + INTERVAL_DELTA[candle.interval]``
         (bucket end). KeyError on unknown interval is intentional
         fail-loud — see module docstring.
         """
-        computed_at = candle.bucket_start + _INTERVAL_DELTA[candle.interval]
+        computed_at = candle.bucket_start + INTERVAL_DELTA[candle.interval]
         value_num: float | None = None
         value_bool: bool | None = None
         value_json: dict[str, object] | None = None

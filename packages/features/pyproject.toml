@@ -3,7 +3,10 @@ name = "scalper-v2-features"
 version = "0.1.0"
 description = "Feature port + 6 built-in indicators (EMA/RSI/ATR/VWAP/Bollinger/MACD). T-107a ships EMA/RSI/ATR; T-107b ships the rest. Spec: §9.3, §B.2."
 requires-python = ">=3.12"
-dependencies = ["scalper-v2-core"]
+dependencies = [
+    "PyYAML==6.0.3",
+    "scalper-v2-core",
+]
 
 [tool.uv.sources]
 scalper-v2-core = { workspace = true }
