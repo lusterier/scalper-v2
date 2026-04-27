@@ -1,0 +1,203 @@
+"""Surface invariants for :mod:`packages.exchange.types` (T-201).
+
+Each dataclass is verified for: frozen + slots, expected field set, and
+hazard-driven field exclusions (H-024 → no ``exec_type`` on
+:class:`ExecutionEvent`). Behavioural tests (real Bybit / paper fills)
+land in T-207 / T-211 / T-218.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from datetime import UTC, datetime
+from decimal import Decimal
+
+import pytest
+
+from packages.exchange import (
+    ExecutionEvent,
+    OrderPlaceResult,
+    Position,
+    PositionEvent,
+)
+
+
+def _now() -> datetime:
+    return datetime(2026, 4, 27, 12, 0, 0, tzinfo=UTC)
+
+
+# --- OrderPlaceResult -------------------------------------------------------
+
+
+def test_order_place_result_constructs_with_required_fields() -> None:
+    r = OrderPlaceResult(exchange_order_id="abc-123", placed_at=_now())
+    assert r.exchange_order_id == "abc-123"
+    assert r.placed_at == _now()
+
+
+def test_order_place_result_is_frozen() -> None:
+    r = OrderPlaceResult(exchange_order_id="abc-123", placed_at=_now())
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        r.exchange_order_id = "x"  # type: ignore[misc]
+
+
+def test_order_place_result_uses_slots() -> None:
+    r = OrderPlaceResult(exchange_order_id="abc-123", placed_at=_now())
+    assert not hasattr(r, "__dict__")
+
+
+def test_order_place_result_field_set() -> None:
+    fields = {f.name for f in dataclasses.fields(OrderPlaceResult)}
+    assert fields == {"exchange_order_id", "placed_at"}
+
+
+# --- Position ---------------------------------------------------------------
+
+
+def test_position_open_long() -> None:
+    p = Position(
+        symbol="BTCUSDT",
+        side="buy",
+        size=Decimal("0.05"),
+        entry_price=Decimal("65000.00"),
+        leverage=10,
+        unrealized_pnl=Decimal("12.50"),
+    )
+    assert p.side == "buy"
+    assert p.size == Decimal("0.05")
+
+
+def test_position_flat_uses_none_fields() -> None:
+    p = Position(
+        symbol="BTCUSDT",
+        side=None,
+        size=Decimal("0"),
+        entry_price=None,
+        leverage=None,
+        unrealized_pnl=None,
+    )
+    assert p.side is None
+    assert p.size == Decimal("0")
+    assert p.entry_price is None
+
+
+def test_position_size_is_decimal_not_float() -> None:
+    fields = {f.name: f.type for f in dataclasses.fields(Position)}
+    assert "Decimal" in str(fields["size"])
+
+
+def test_position_field_set_is_minimal_six() -> None:
+    fields = {f.name for f in dataclasses.fields(Position)}
+    assert fields == {
+        "symbol",
+        "side",
+        "size",
+        "entry_price",
+        "leverage",
+        "unrealized_pnl",
+    }
+
+
+def test_position_is_frozen_and_slotted() -> None:
+    p = Position(
+        symbol="BTCUSDT",
+        side=None,
+        size=Decimal("0"),
+        entry_price=None,
+        leverage=None,
+        unrealized_pnl=None,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        p.size = Decimal("1")  # type: ignore[misc]
+    assert not hasattr(p, "__dict__")
+
+
+# --- ExecutionEvent ---------------------------------------------------------
+
+
+def test_execution_event_constructs_with_required_fields() -> None:
+    e = ExecutionEvent(
+        exchange_exec_id="exec-1",
+        exchange_order_id="ord-1",
+        symbol="BTCUSDT",
+        side="buy",
+        price=Decimal("65000.00"),
+        qty=Decimal("0.05"),
+        fee=Decimal("0.0325"),
+        executed_at=_now(),
+    )
+    assert e.exchange_exec_id == "exec-1"
+    assert e.fee == Decimal("0.0325")
+
+
+def test_execution_event_does_not_carry_exec_type() -> None:
+    """H-024: dispatcher (T-218) derives exec_type via DB, not from this event."""
+    fields = {f.name for f in dataclasses.fields(ExecutionEvent)}
+    assert "exec_type" not in fields
+    assert "execType" not in fields
+
+
+def test_execution_event_field_set() -> None:
+    fields = {f.name for f in dataclasses.fields(ExecutionEvent)}
+    assert fields == {
+        "exchange_exec_id",
+        "exchange_order_id",
+        "symbol",
+        "side",
+        "price",
+        "qty",
+        "fee",
+        "executed_at",
+    }
+
+
+def test_execution_event_fee_is_required_decimal() -> None:
+    e = ExecutionEvent(
+        exchange_exec_id="exec-1",
+        exchange_order_id="ord-1",
+        symbol="BTCUSDT",
+        side="sell",
+        price=Decimal("65000.00"),
+        qty=Decimal("0.05"),
+        fee=Decimal("0"),
+        executed_at=_now(),
+    )
+    assert e.fee == Decimal("0")
+
+
+# --- PositionEvent ----------------------------------------------------------
+
+
+def test_position_event_carries_occurred_at_plus_position_fields() -> None:
+    pe_fields = {f.name for f in dataclasses.fields(PositionEvent)}
+    p_fields = {f.name for f in dataclasses.fields(Position)}
+    assert pe_fields == p_fields | {"occurred_at"}
+
+
+def test_position_event_constructs_open_state() -> None:
+    e = PositionEvent(
+        symbol="BTCUSDT",
+        side="sell",
+        size=Decimal("0.10"),
+        entry_price=Decimal("65000.00"),
+        leverage=20,
+        unrealized_pnl=Decimal("-5.00"),
+        occurred_at=_now(),
+    )
+    assert e.side == "sell"
+    assert e.occurred_at == _now()
+
+
+def test_position_event_is_frozen_and_slotted() -> None:
+    e = PositionEvent(
+        symbol="BTCUSDT",
+        side=None,
+        size=Decimal("0"),
+        entry_price=None,
+        leverage=None,
+        unrealized_pnl=None,
+        occurred_at=_now(),
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        e.size = Decimal("1")  # type: ignore[misc]
+    assert not hasattr(e, "__dict__")
