@@ -17,12 +17,14 @@ their owning services.
 from __future__ import annotations
 
 from .client import ConnectionState, NatsClient
+from .dedup import DedupingConsumer
 from .envelope import MessageEnvelope
 from .errors import BusError, NotConnectedError, PublishError, SubscribeError
 
 __all__ = [
     "BusError",
     "ConnectionState",
+    "DedupingConsumer",
     "MessageEnvelope",
     "NatsClient",
     "NotConnectedError",
