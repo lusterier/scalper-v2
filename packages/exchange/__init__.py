@@ -21,6 +21,7 @@ from .errors import (
     RateLimitError,
     UnknownState,
 )
+from .paper import PaperExchange, SlippageModel
 from .protocols import ExchangeClient
 from .types import ExecutionEvent, OrderPlaceResult, Position, PositionEvent
 
@@ -32,8 +33,10 @@ __all__ = [
     "NetworkTimeout",
     "OrderPlaceResult",
     "OrderRejected",
+    "PaperExchange",
     "Position",
     "PositionEvent",
     "RateLimitError",
+    "SlippageModel",
     "UnknownState",
 ]
