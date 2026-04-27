@@ -57,3 +57,13 @@ scrape_configs:
   - job_name: feature-engine
     static_configs:
       - targets: ["feature-engine:8000"]
+
+  # execution-service — FastAPI :8000/metrics, default Prometheus
+  # collectors only (T-214 ships no service-specific metrics per §0.8;
+  # T-216+ will add per-flow counters/histograms once the order-pipeline
+  # / dispatcher / reconciliation / audit-loop tasks land). Compose
+  # service-name DNS resolves execution-service:8000 distinctly from
+  # signal-gateway:8000 + market-data-svc:8000 + feature-engine:8000.
+  - job_name: execution-service
+    static_configs:
+      - targets: ["execution-service:8000"]

@@ -10,10 +10,14 @@ name: release
 #     only `sha-<short>` (no tag in event context). Use for first-time
 #     verification before cutting a real release tag.
 #
-# Service matrix is hardcoded to `signal_gateway` — the only service with
-# a Dockerfile in F0. Each F1 service-ship task appends its name to
-# `strategy.matrix.service` in the same PR that lands its Dockerfile.
-# §0.8: no scaffolding for hypothetical services.
+# Service matrix expanded per service-ship task. The release.yml
+# comment intent ("each F1 service-ship task appends its name in the
+# same PR that lands its Dockerfile") was missed at T-100 (market_data
+# ship) and T-109 (feature_engine ship); T-214 (execution-service
+# ship) backfills both omissions alongside its own append. Forward
+# tasks: any new service-ship PR appends its dir name here.
+# §0.8: no scaffolding for hypothetical services — list grows only
+# alongside actual Dockerfile-shipping tasks.
 #
 # `:latest` is intentionally NOT produced. §18.5 deploy script signature
 # is `./scripts/deploy.sh <git-sha>` — pulls by SHA, no floating handle
@@ -48,7 +52,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        service: [signal_gateway]
+        service: [signal_gateway, market_data, feature_engine, execution]
       # `fail-fast: false` keeps surviving services in the matrix going
       # if one fails — relevant once the matrix has more than one entry.
       fail-fast: false
