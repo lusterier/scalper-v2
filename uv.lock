@@ -1360,6 +1360,16 @@ requires-dist = [
 name = "scalper-v2-exchange"
 version = "0.1.0"
 source = { virtual = "packages/exchange" }
+dependencies = [
+    { name = "asyncpg" },
+    { name = "scalper-v2-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "asyncpg", specifier = "==0.30.0" },
+    { name = "scalper-v2-core", editable = "packages/core" },
+]
 
 [[package]]
 name = "scalper-v2-execution"

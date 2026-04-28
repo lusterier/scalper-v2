@@ -64,6 +64,34 @@ def _make_envelope(
     )
 
 
+def _make_pool() -> MagicMock:
+    """asyncpg.Pool stand-in (T-213b extension).
+
+    Connection mock supports ``async with conn.transaction()``,
+    ``await conn.fetchrow(...)``, ``await conn.execute(...)``. For
+    place_market_order open flow, ``insert_paper_order`` and
+    ``insert_paper_trade`` use ``RETURNING id`` via fetchrow → return a
+    fake row dict. Other helpers use execute and don't care about return.
+    """
+    pool = MagicMock()
+    pool.close = AsyncMock()
+    conn = MagicMock()
+    # Sequential ids returned for INSERT ... RETURNING calls.
+    fake_row = {"id": 1}
+    conn.fetchrow = AsyncMock(return_value=fake_row)
+    conn.execute = AsyncMock(return_value="INSERT 0 1")
+    tx_cm = MagicMock()
+    tx_cm.__aenter__ = AsyncMock(return_value=conn)
+    tx_cm.__aexit__ = AsyncMock(return_value=None)
+    conn.transaction = MagicMock(return_value=tx_cm)
+
+    pool_cm = MagicMock()
+    pool_cm.__aenter__ = AsyncMock(return_value=conn)
+    pool_cm.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=pool_cm)
+    return pool
+
+
 def _make_paper_exchange(
     *,
     slippage_model: str = "fixed_pct",
@@ -83,6 +111,7 @@ def _make_paper_exchange(
         bus=bus,
         slippage_params=slippage_params or {"fixed_slippage_pct": Decimal("0.0005")},
         now_fn=lambda: fixed_now,
+        pool=_make_pool(),
     )
 
 
@@ -160,7 +189,11 @@ async def test_on_candle_in_progress_candle_ignored() -> None:
 
 
 async def test_place_market_order_buy_uses_last_close_plus_slippage() -> None:
-    """Hand verification §C.1 buy: 65000 + 32.5 = 65032.5."""
+    """Hand verification §C.1 buy: 65000 + 32.5 = 65032.5.
+
+    T-213b: real body persists + emits; verify ExecutionEvent on queue carries
+    expected post-slippage fill_price.
+    """
     pe = _make_paper_exchange()
     envelope = _make_envelope(
         symbol="BTCUSDT",
@@ -170,11 +203,14 @@ async def test_place_market_order_buy_uses_last_close_plus_slippage() -> None:
         close=Decimal("65000"),
     )
     await pe._on_candle(envelope)
-    with pytest.raises(NotImplementedError) as info:
-        await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
-    msg = str(info.value)
-    assert "T-213b" in msg
-    assert "65032.5" in msg or "32.5" in msg  # fill_price or slippage in message
+    result = await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    assert result.exchange_order_id.startswith("paper-")
+    # ExecutionEvent emitted post-persist (Decision #2).
+    event = await pe._execution_queue.get()
+    assert event.price == Decimal("65032.5")
+    assert event.qty == Decimal("0.5")
+    assert event.side == "buy"
+    # T-213a Hand verification §C.1 fill_price preserved through T-213b body.
 
 
 async def test_place_market_order_sell_uses_last_close_minus_slippage() -> None:
@@ -188,11 +224,11 @@ async def test_place_market_order_sell_uses_last_close_minus_slippage() -> None:
         close=Decimal("65000"),
     )
     await pe._on_candle(envelope)
-    with pytest.raises(NotImplementedError) as info:
-        await pe.place_market_order("BTCUSDT", "sell", Decimal("0.5"))
-    msg = str(info.value)
-    assert "T-213b" in msg
-    assert "64967.5" in msg or "32.5" in msg
+    result = await pe.place_market_order("BTCUSDT", "sell", Decimal("0.5"))
+    assert result.exchange_order_id.startswith("paper-")
+    event = await pe._execution_queue.get()
+    assert event.price == Decimal("64967.5")
+    assert event.side == "sell"
 
 
 async def test_place_market_order_no_observed_price_raises() -> None:
@@ -206,17 +242,19 @@ async def test_place_market_order_no_observed_price_raises() -> None:
 
 
 async def test_set_trading_stop_stores_tpsl_mode_in_active_positions() -> None:
-    """Decision #14 / H-013: tpsl_mode propagated to active-positions dict."""
+    """Decision #14 / H-013: tpsl_mode propagated to active-positions dict.
+
+    T-213b: also persists sl_price + tp_price to paper_positions
+    (BLOCKER 1 schema parity — tpsl_mode + tp_size in dict only).
+    """
     pe = _make_paper_exchange()
-    with pytest.raises(NotImplementedError) as info:
-        await pe.set_trading_stop(
-            "BTCUSDT",
-            "Partial",
-            sl_price=Decimal("64500"),
-            tp_price=Decimal("65500"),
-            tp_size=Decimal("0.1"),
-        )
-    assert "T-213b" in str(info.value)
+    await pe.set_trading_stop(
+        "BTCUSDT",
+        "Partial",
+        sl_price=Decimal("64500"),
+        tp_price=Decimal("65500"),
+        tp_size=Decimal("0.1"),
+    )
     state = pe._active_positions["BTCUSDT"]
     assert state["tpsl_mode"] == "Partial"
     assert state["sl_price"] == Decimal("64500")
@@ -236,10 +274,14 @@ async def _seed_buy_position(
     tp_price: Decimal = Decimal("65500"),
     tpsl_mode: str = "Full",
 ) -> None:
-    """Inject an active buy position (T-213a state; T-213b will hydrate from DB)."""
+    """Inject an active buy position. T-213b drain reads trade_id, entry_price, fees_paid."""
     pe._active_positions[symbol] = {
+        "trade_id": 42,
         "side": "buy",
         "qty": qty,
+        "entry_price": Decimal("65000"),
+        "entry_fee": Decimal("19.500000"),
+        "fees_paid": Decimal("19.500000"),
         "sl_price": sl_price,
         "tp_price": tp_price,
         "tp_size": qty,
@@ -247,10 +289,28 @@ async def _seed_buy_position(
     }
 
 
+def _install_capture(pe: PaperExchange) -> list[PendingSLTPFill]:
+    """Patch ``_drain_sl_tp_fill`` so test can read enqueued fills.
+
+    T-213b drain consumes the queue inside ``_on_candle``; at test-assert
+    time the queue is already empty. Capture the fill at drain entry.
+    """
+    captured: list[PendingSLTPFill] = []
+    original = pe._drain_sl_tp_fill
+
+    async def _capture_then_drain(fill: PendingSLTPFill) -> None:
+        captured.append(fill)
+        await original(fill)
+
+    pe._drain_sl_tp_fill = _capture_then_drain  # type: ignore[method-assign]
+    return captured
+
+
 async def test_sl_cross_detection_buy_position() -> None:
     """Hand verification §D.1: low=64400 ≤ sl=64500 ≤ high=65050 → SL fill."""
     pe = _make_paper_exchange()
     await _seed_buy_position(pe)
+    captured = _install_capture(pe)
     candle_env = _make_envelope(
         symbol="BTCUSDT",
         open_=Decimal("65000"),
@@ -259,8 +319,8 @@ async def test_sl_cross_detection_buy_position() -> None:
         close=Decimal("64600"),
     )
     await pe._on_candle(candle_env)
-    assert len(pe._pending_sl_tp_fills) == 1
-    fill = pe._pending_sl_tp_fills[0]
+    assert len(captured) == 1
+    fill = captured[0]
     assert fill.kind == "sl"
     assert fill.trigger_price == Decimal("64500")
     assert fill.tpsl_mode == "Full"
@@ -271,6 +331,7 @@ async def test_tp_cross_detection_buy_position() -> None:
     """Hand verification §D.2: tp=65500 in [64900, 65600] → TP fill."""
     pe = _make_paper_exchange()
     await _seed_buy_position(pe)
+    captured = _install_capture(pe)
     candle_env = _make_envelope(
         symbol="BTCUSDT",
         open_=Decimal("65000"),
@@ -279,8 +340,8 @@ async def test_tp_cross_detection_buy_position() -> None:
         close=Decimal("65500"),
     )
     await pe._on_candle(candle_env)
-    assert len(pe._pending_sl_tp_fills) == 1
-    fill = pe._pending_sl_tp_fills[0]
+    assert len(captured) == 1
+    fill = captured[0]
     assert fill.kind == "tp"
     assert fill.trigger_price == Decimal("65500")
 
@@ -289,6 +350,7 @@ async def test_sl_and_tp_both_cross_pessimistic_sl_first() -> None:
     """Hand verification §D.3: both SL+TP cross same candle → SL-first only."""
     pe = _make_paper_exchange()
     await _seed_buy_position(pe)
+    captured = _install_capture(pe)
     candle_env = _make_envelope(
         symbol="BTCUSDT",
         open_=Decimal("65000"),
@@ -298,22 +360,27 @@ async def test_sl_and_tp_both_cross_pessimistic_sl_first() -> None:
     )
     await pe._on_candle(candle_env)
     # Only ONE fill enqueued (SL-first per Q4-A pessimistic).
-    assert len(pe._pending_sl_tp_fills) == 1
-    assert pe._pending_sl_tp_fills[0].kind == "sl"
-    assert pe._pending_sl_tp_fills[0].trigger_price == Decimal("64500")
+    assert len(captured) == 1
+    assert captured[0].kind == "sl"
+    assert captured[0].trigger_price == Decimal("64500")
 
 
 async def test_sell_position_sl_cross_inverted() -> None:
     """Hand verification §D.4: sell position SL ABOVE entry; TP BELOW."""
     pe = _make_paper_exchange()
     pe._active_positions["BTCUSDT"] = {
+        "trade_id": 43,
         "side": "sell",
         "qty": Decimal("0.3"),
+        "entry_price": Decimal("65000"),
+        "entry_fee": Decimal("11.700000"),
+        "fees_paid": Decimal("11.700000"),
         "sl_price": Decimal("65500"),
         "tp_price": Decimal("64500"),
         "tp_size": Decimal("0.1"),
         "tpsl_mode": "Partial",
     }
+    captured = _install_capture(pe)
     candle_env = _make_envelope(
         symbol="BTCUSDT",
         open_=Decimal("65000"),
@@ -322,8 +389,8 @@ async def test_sell_position_sl_cross_inverted() -> None:
         close=Decimal("65500"),
     )
     await pe._on_candle(candle_env)
-    assert len(pe._pending_sl_tp_fills) == 1
-    fill = pe._pending_sl_tp_fills[0]
+    assert len(captured) == 1
+    fill = captured[0]
     assert fill.kind == "sl"
     assert fill.side == "sell"
     assert fill.trigger_price == Decimal("65500")
@@ -333,21 +400,39 @@ async def test_sell_position_sl_cross_inverted() -> None:
 
 async def test_check_sl_tp_crosses_propagates_tpsl_mode_from_set_trading_stop() -> None:
     """H-013 invariant: tpsl_mode flows from set_trading_stop → active_positions
-    → PendingSLTPFill without 'Full' default baking."""
+    → PendingSLTPFill without 'Full' default baking.
+
+    T-213b: assert via captured PendingSLTPFill BEFORE drain consumes it
+    (drain runs in `_on_candle` post-enqueue). Test patches `_drain_sl_tp_fill`
+    to record the queue contents at enqueue moment.
+    """
     pe = _make_paper_exchange()
-    # Register Partial via set_trading_stop (raises but stores state).
-    with pytest.raises(NotImplementedError):
-        await pe.set_trading_stop(
-            "BTCUSDT",
-            "Partial",
-            sl_price=Decimal("64500"),
-            tp_price=Decimal("65500"),
-            tp_size=Decimal("0.1"),
-        )
-    # Inject side+qty (T-213b sets these via place_market_order persistence;
-    # at T-213a we patch directly).
+    # Register Partial via set_trading_stop (T-213b: full body persists + dict).
+    await pe.set_trading_stop(
+        "BTCUSDT",
+        "Partial",
+        sl_price=Decimal("64500"),
+        tp_price=Decimal("65500"),
+        tp_size=Decimal("0.1"),
+    )
+    # Inject side+qty + trade_id + entry_price + fees_paid (T-213b drain
+    # reads these from dict; in production place_market_order populates).
+    pe._active_positions["BTCUSDT"]["trade_id"] = 42
     pe._active_positions["BTCUSDT"]["side"] = "buy"
     pe._active_positions["BTCUSDT"]["qty"] = Decimal("0.5")
+    pe._active_positions["BTCUSDT"]["entry_price"] = Decimal("65000")
+    pe._active_positions["BTCUSDT"]["entry_fee"] = Decimal("19.500000")
+    pe._active_positions["BTCUSDT"]["fees_paid"] = Decimal("19.500000")
+    # Capture PendingSLTPFill at enqueue moment (T-213b drain consumes
+    # post-enqueue → assert via patched drain that records the fill).
+    captured: list[PendingSLTPFill] = []
+    original_drain = pe._drain_sl_tp_fill
+
+    async def _capture_then_drain(fill: PendingSLTPFill) -> None:
+        captured.append(fill)
+        await original_drain(fill)
+
+    pe._drain_sl_tp_fill = _capture_then_drain  # type: ignore[method-assign]
     # Trigger SL.
     candle_env = _make_envelope(
         symbol="BTCUSDT",
@@ -357,7 +442,8 @@ async def test_check_sl_tp_crosses_propagates_tpsl_mode_from_set_trading_stop() 
         close=Decimal("64600"),
     )
     await pe._on_candle(candle_env)
-    fill = pe._pending_sl_tp_fills[0]
+    assert len(captured) == 1
+    fill = captured[0]
     assert fill.tpsl_mode == "Partial", (
         f"Expected Partial propagated from set_trading_stop; got {fill.tpsl_mode}"
     )
@@ -368,6 +454,7 @@ async def test_pending_fill_carries_triggered_at_from_now_fn() -> None:
     fixed_now = datetime(2026, 4, 27, 13, 0, 0, tzinfo=UTC)
     pe = _make_paper_exchange(now=fixed_now)
     await _seed_buy_position(pe)
+    captured = _install_capture(pe)
     candle_env = _make_envelope(
         symbol="BTCUSDT",
         open_=Decimal("65000"),
@@ -376,7 +463,7 @@ async def test_pending_fill_carries_triggered_at_from_now_fn() -> None:
         close=Decimal("64600"),
     )
     await pe._on_candle(candle_env)
-    assert pe._pending_sl_tp_fills[0].triggered_at == fixed_now
+    assert captured[0].triggered_at == fixed_now
 
 
 # --- PendingSLTPFill dataclass shape -----------------------------------------

@@ -24,12 +24,26 @@ from packages.exchange.protocols import _UNLABELED_METHODS
 # --- Constructor helper ---------------------------------------------------
 
 
+def _make_pool() -> MagicMock:
+    """asyncpg.Pool stand-in (T-213b extension).
+
+    Mirror services/execution/tests/conftest.py::_PoolStub pattern.
+    """
+    pool = MagicMock()
+    pool.close = AsyncMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=MagicMock())
+    cm.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=cm)
+    return pool
+
+
 def _make_pe(
     *,
     slippage_model: SlippageModel = "fixed_pct",
     slippage_params: dict[str, Decimal] | None = None,
 ) -> PaperExchange:
-    """T-213a-extended PaperExchange constructor for stub/lifecycle tests.
+    """T-213a/b-extended PaperExchange constructor for stub/lifecycle tests.
 
     Tests asserting on constructor-level behaviour (attribute storage,
     validation, allow-list) construct PaperExchange directly to keep the
@@ -44,6 +58,7 @@ def _make_pe(
         bot_id=BotId("test-bot"),
         bus=bus,
         slippage_params=slippage_params or {"fixed_slippage_pct": Decimal("0.0005")},
+        pool=_make_pool(),
     )
 
 
@@ -59,6 +74,7 @@ def test_constructs_with_required_kwargs() -> None:
         bot_id=BotId("test-bot"),
         bus=bus,
         slippage_params={"fixed_slippage_pct": Decimal("0.0005")},
+        pool=_make_pool(),
     )
     assert pe._seed_balance == Decimal("10000.00")
     assert pe._slippage_model == "fixed_pct"
@@ -75,6 +91,7 @@ def test_rejects_unknown_slippage_model() -> None:
             bot_id=BotId("test-bot"),
             bus=bus,
             slippage_params={},
+            pool=_make_pool(),
         )
 
 
@@ -89,6 +106,7 @@ def test_rejects_typo_in_slippage_model() -> None:
             bot_id=BotId("test-bot"),
             bus=bus,
             slippage_params={},
+            pool=_make_pool(),
         )
 
 
@@ -113,6 +131,7 @@ def test_each_slippage_model_accepted(
         bot_id=BotId("test-bot"),
         bus=bus,
         slippage_params=params,
+        pool=_make_pool(),
     )
     assert pe._slippage_model == model
 
@@ -175,14 +194,16 @@ def test_paper_exchange_implements_full_exchange_client_surface() -> None:
     assert not missing, f"PaperExchange missing ExchangeClient methods: {missing}"
 
 
-# --- Method stubs raise NotImplementedError pointing at T-213(b) ----------
-# OQ-2: ``place_market_order`` and ``set_trading_stop`` are now T-213a
-# partial-body methods; their tests live in test_adapter_fill_semantics.py.
+# --- Method stubs raise NotImplementedError pointing at T-213c ------------
+# T-213b narrowing: set_leverage is now no-op (Decision #13);
+# place_market_order, set_trading_stop, cancel_order, stream_executions,
+# stream_positions land full bodies (covered in test_adapter_fill_semantics.py
+# + test_paper_emission.py + test_paper_persistence.py). Remaining read-method
+# stubs (get_positions, get_fill_price, get_closed_pnl_cumulative) forward
+# to T-213c.
 
 
 _STUBBED_ASYNC_METHODS = (
-    ("set_leverage", lambda pe: pe.set_leverage("BTCUSDT", 10)),
-    ("cancel_order", lambda pe: pe.cancel_order("BTCUSDT", "ord-1")),
     ("get_positions", lambda pe: pe.get_positions("BTCUSDT")),
     ("get_fill_price", lambda pe: pe.get_fill_price("BTCUSDT", "ord-1")),
     ("get_closed_pnl_cumulative", lambda pe: pe.get_closed_pnl_cumulative("sub-1")),
@@ -194,42 +215,18 @@ async def test_async_method_stub_raises_with_t213_message(
     method_name: str,
     invoke: object,
 ) -> None:
-    """Each async stub raises NotImplementedError with T-213 forward-pointer.
+    """Each remaining read-method stub raises NotImplementedError with T-213 forward-pointer.
 
-    The message-contains-"T-213" assertion is the fail-loud forward-pointer
-    contract: if a future task replaces a stub without updating this
-    test, the assertion breaks loudly. After T-213a, the partial-body
-    methods (place_market_order, set_trading_stop) live in
-    test_adapter_fill_semantics.py with stricter "T-213b" substring;
-    the full-stubs here keep the original "T-213" cluster substring.
+    Post-T-213b: only the 3 read methods (get_positions / get_fill_price /
+    get_closed_pnl_cumulative) remain stubbed; T-213c picks them up. The
+    message-contains-"T-213" assertion is the fail-loud forward-pointer
+    contract.
     """
     pe = _make_pe()
     assert callable(invoke)
     with pytest.raises(NotImplementedError) as info:
         await invoke(pe)
     assert method_name in str(info.value)
-    assert "T-213" in str(info.value)
-
-
-def test_stream_executions_stub_raises_synchronously() -> None:
-    """``stream_executions`` is ``def``-not-``async-def`` per T-201 OQ-1.
-
-    Calling the method raises NotImplementedError immediately — does not
-    return an empty async iterator that swallows the error on first
-    ``__anext__``. Tested via direct call, NOT via ``async for``.
-    """
-    pe = _make_pe()
-    with pytest.raises(NotImplementedError) as info:
-        pe.stream_executions()
-    assert "stream_executions" in str(info.value)
-    assert "T-213" in str(info.value)
-
-
-def test_stream_positions_stub_raises_synchronously() -> None:
-    pe = _make_pe()
-    with pytest.raises(NotImplementedError) as info:
-        pe.stream_positions()
-    assert "stream_positions" in str(info.value)
     assert "T-213" in str(info.value)
 
 
