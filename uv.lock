@@ -1362,12 +1362,14 @@ version = "0.1.0"
 source = { virtual = "packages/exchange" }
 dependencies = [
     { name = "asyncpg" },
+    { name = "httpx" },
     { name = "scalper-v2-core" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "asyncpg", specifier = "==0.30.0" },
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "scalper-v2-core", editable = "packages/core" },
 ]
 

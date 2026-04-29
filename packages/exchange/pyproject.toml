@@ -5,6 +5,7 @@ description = "ExchangeClient protocol plus BybitV5Adapter and PaperExchange imp
 requires-python = ">=3.12"
 dependencies = [
     "asyncpg==0.30.0",
+    "httpx==0.28.1",
     "scalper-v2-core",
 ]
 
