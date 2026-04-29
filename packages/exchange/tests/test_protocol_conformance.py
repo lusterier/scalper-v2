@@ -37,12 +37,13 @@ import pytest
 
 from packages.core import is_idempotent, is_non_idempotent
 from packages.exchange import ExchangeClient, PaperExchange
+from packages.exchange.bybit_v5 import BybitV5Adapter
 from packages.exchange.protocols import _UNLABELED_METHODS
 
 # Adapter registry. Future ExchangeClient implementations append here.
-# T-207 (BybitV5Adapter) — 1-line edit at ship time. Underscore-prefixed
-# = test-internal, not re-exported.
-_ADAPTERS_UNDER_TEST: list[type] = [PaperExchange]
+# T-208a appended BybitV5Adapter per T-206 forward-extensibility note.
+# Underscore-prefixed = test-internal, not re-exported.
+_ADAPTERS_UNDER_TEST: list[type] = [PaperExchange, BybitV5Adapter]
 
 
 def _protocol_method_names() -> set[str]:
