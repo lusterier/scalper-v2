@@ -18,13 +18,13 @@ sites; UPDATE/DELETE helpers are not individually decorated.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import TYPE_CHECKING, Literal
 
 from packages.core import non_idempotent
 
 if TYPE_CHECKING:
     from datetime import datetime
-    from decimal import Decimal
 
     import asyncpg
     from asyncpg.pool import PoolConnectionProxy
@@ -39,6 +39,10 @@ __all__ = [
     "insert_paper_order",
     "insert_paper_position",
     "insert_paper_trade",
+    "select_paper_execution_price_by_order_id",
+    "select_paper_positions",
+    "select_paper_positions_for_hydrate",
+    "sum_paper_trades_realized_pnl",
     "update_paper_order_cancelled",
     "update_paper_position_partial",
     "update_paper_position_sl_tp",
@@ -355,3 +359,129 @@ async def update_paper_order_cancelled(
         order_id,
         bot_id,
     )
+
+
+# T-213c — read helpers (SELECT shape; no idempotency markers — read-only).
+
+
+async def select_paper_positions_for_hydrate(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+) -> list[asyncpg.Record]:
+    """SELECT all open paper_positions for ``bot_id`` joined with paper_trades
+    + the OPEN execution's fee from paper_executions.
+
+    T-213c restart-recovery hydrate query. Returns one row per active
+    position with all fields needed to reconstruct ``_active_positions``
+    dict modulo OQ-2 default B (tpsl_mode + tp_size NOT in schema;
+    defaulted to 'Full' / None at adapter level).
+
+    Uses inner JOIN on ``paper_executions.exec_type = 'open'`` per
+    Decision #5 — the open execution's fee is the canonical entry_fee
+    needed for full-close realized_pnl computation post-restart (OQ-1
+    default A regression guard).
+    """
+    return await conn.fetch(
+        """
+        SELECT
+            pp.symbol, pp.trade_id, pp.side, pp.entry_price, pp.qty,
+            pp.remaining_qty, pp.sl_price, pp.tp_price, pp.tp_hit,
+            pt.fees_paid, pt.open_order_id,
+            pe.fee AS entry_fee
+        FROM paper_positions pp
+        JOIN paper_trades pt ON pt.id = pp.trade_id
+        JOIN paper_executions pe ON pe.order_id = pt.open_order_id
+                                 AND pe.exec_type = 'open'
+        WHERE pp.bot_id = $1
+        ORDER BY pp.symbol
+        """,
+        bot_id,
+    )
+
+
+async def select_paper_positions(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    symbol: str | None = None,
+) -> list[asyncpg.Record]:
+    """SELECT paper_positions for ``bot_id`` (optionally filtered by symbol).
+
+    Used by ``PaperExchange.get_positions``. Returns rows shaped for
+    ``Position`` dataclass mapping. ``Position.size`` consumes
+    ``remaining_qty`` per OQ-4 default A.
+    """
+    if symbol is None:
+        return await conn.fetch(
+            """
+            SELECT symbol, side, remaining_qty, entry_price
+            FROM paper_positions
+            WHERE bot_id = $1
+            ORDER BY symbol
+            """,
+            bot_id,
+        )
+    return await conn.fetch(
+        """
+        SELECT symbol, side, remaining_qty, entry_price
+        FROM paper_positions
+        WHERE bot_id = $1 AND symbol = $2
+        """,
+        bot_id,
+        symbol,
+    )
+
+
+async def select_paper_execution_price_by_order_id(
+    conn: _DbExecutor,
+    *,
+    exchange_order_id: str,
+) -> Decimal | None:
+    """SELECT the chronologically-first paper_executions.price for a given
+    paper_orders.exchange_order_id. Returns None if no match.
+
+    Used by ``PaperExchange.get_fill_price``. Decision #7 — LIMIT 1
+    ORDER BY executed_at ASC defends against schema drift if a future
+    task synthesises additional executions per order.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT pe.price FROM paper_executions pe
+        JOIN paper_orders po ON po.id = pe.order_id
+        WHERE po.exchange_order_id = $1
+        ORDER BY pe.executed_at ASC
+        LIMIT 1
+        """,
+        exchange_order_id,
+    )
+    if row is None:
+        return None
+    price: Decimal = row["price"]
+    return price
+
+
+async def sum_paper_trades_realized_pnl(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+) -> Decimal:
+    """SUM(realized_pnl) over closed paper_trades for ``bot_id``.
+
+    Used by ``PaperExchange.get_closed_pnl_cumulative``. Decision #8 —
+    COALESCE NULL → Decimal("0") so consumers see numeric, not None.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT COALESCE(SUM(realized_pnl), 0) AS total
+        FROM paper_trades
+        WHERE bot_id = $1 AND status = 'closed'
+        """,
+        bot_id,
+    )
+    if row is None:
+        return Decimal("0")
+    total = row["total"]
+    if isinstance(total, Decimal):
+        return total
+    return Decimal(total)

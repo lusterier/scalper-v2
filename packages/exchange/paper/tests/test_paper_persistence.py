@@ -747,3 +747,454 @@ async def test_active_positions_dict_matches_paper_positions_after_each_mutation
         row = await conn.fetchrow("SELECT * FROM paper_positions WHERE bot_id = $1", bot_id)
     assert row is None
     assert "BTCUSDT" not in pe._active_positions
+
+
+# --- T-213c: SELECT helpers + restart hydrate ------------------------------
+
+
+async def test_select_paper_positions_for_hydrate_returns_open_position_with_entry_fee(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """OQ-1 default A: hydrate JOIN returns entry_fee from paper_executions open exec."""
+    from packages.exchange.paper import persistence
+
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    await pe._on_candle(_make_envelope(close=Decimal("65000")))
+    await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    async with pool.acquire() as conn:
+        rows = await persistence.select_paper_positions_for_hydrate(conn, bot_id=bot_id)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["symbol"] == "BTCUSDT"
+    assert row["side"] == "buy"
+    assert row["qty"] == Decimal("0.5")
+    assert row["remaining_qty"] == Decimal("0.5")
+    assert row["entry_price"] == Decimal("65000")
+    assert row["entry_fee"] == Decimal("19.50000000")  # 0.5 * 65000 * 0.0006
+    assert row["fees_paid"] == Decimal("19.5000")  # paper_trades.fees_paid
+    assert row["sl_price"] is None
+    assert row["tp_price"] is None
+    assert row["tp_hit"] is False
+
+
+async def test_select_paper_positions_for_hydrate_returns_empty_when_bot_has_no_positions(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """No paper_positions rows → empty list."""
+    from packages.exchange.paper import persistence
+
+    _pe, pool, bot_id = paper_exchange
+    async with pool.acquire() as conn:
+        rows = await persistence.select_paper_positions_for_hydrate(conn, bot_id=bot_id)
+    assert rows == []
+
+
+async def test_select_paper_positions_for_hydrate_after_partial_tp_returns_entry_fee_not_fees_paid(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """OQ-1 default A regression guard: after partial TP, entry_fee < fees_paid."""
+    from packages.exchange.paper import persistence
+
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    await pe._on_candle(_make_envelope(close=Decimal("65000")))
+    await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    await pe.set_trading_stop(
+        "BTCUSDT",
+        "Partial",
+        sl_price=Decimal("64500"),
+        tp_price=Decimal("65500"),
+        tp_size=Decimal("0.1"),
+    )
+    # Drain queues so subsequent state advances cleanly.
+    _ = await pe._execution_queue.get()
+    _ = await pe._position_queue.get()
+    # Trigger partial TP cross.
+    tp_candle = _make_envelope(
+        symbol="BTCUSDT",
+        open_=Decimal("65000"),
+        high=Decimal("65600"),
+        low=Decimal("64900"),
+        close=Decimal("65500"),
+    )
+    await pe._on_candle(tp_candle)
+    # Now query hydrate JOIN.
+    async with pool.acquire() as conn:
+        rows = await persistence.select_paper_positions_for_hydrate(conn, bot_id=bot_id)
+    assert len(rows) == 1
+    row = rows[0]
+    # entry_fee = open exec's fee = 0.5 * 65000 * 0.0006 = 19.50000000
+    assert row["entry_fee"] == Decimal("19.50000000")
+    # fees_paid = entry_fee + tp_fee = 19.5 + 0.1*65500*0.0006 = 19.5 + 3.93 = 23.43
+    assert row["fees_paid"] == Decimal("23.4300")
+    # Math regression guard.
+    assert Decimal(row["entry_fee"]) < Decimal(row["fees_paid"])
+    # remaining_qty = 0.5 - 0.1 = 0.4 (Decision #5 / OQ-4 default A consumer)
+    assert row["remaining_qty"] == Decimal("0.4")
+    assert row["tp_hit"] is True
+
+
+async def test_select_paper_positions_returns_empty_list_when_no_rows(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """OQ-3 default A: no paper_positions → empty list."""
+    from packages.exchange.paper import persistence
+
+    _pe, pool, bot_id = paper_exchange
+    async with pool.acquire() as conn:
+        rows = await persistence.select_paper_positions(conn, bot_id=bot_id)
+    assert rows == []
+
+
+async def test_select_paper_positions_filtered_by_symbol_returns_only_that_symbol(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """Symbol filter narrows query to single row."""
+    from packages.exchange.paper import persistence
+
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    await pe._on_candle(_make_envelope(symbol="BTCUSDT", close=Decimal("65000")))
+    await pe._on_candle(_make_envelope(symbol="ETHUSDT", close=Decimal("3500")))
+    await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    await pe.place_market_order("ETHUSDT", "buy", Decimal("1"))
+    async with pool.acquire() as conn:
+        rows = await persistence.select_paper_positions(conn, bot_id=bot_id, symbol="BTCUSDT")
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "BTCUSDT"
+    # No symbol filter → both rows.
+    async with pool.acquire() as conn:
+        all_rows = await persistence.select_paper_positions(conn, bot_id=bot_id)
+    assert len(all_rows) == 2
+
+
+async def test_select_paper_execution_price_by_order_id_returns_first_fill_chronologically(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """Decision #7: LIMIT 1 ORDER BY executed_at ASC."""
+    from packages.exchange.paper import persistence
+
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    await pe._on_candle(_make_envelope(close=Decimal("65000")))
+    result = await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    open_order_id = result.exchange_order_id
+    async with pool.acquire() as conn:
+        price = await persistence.select_paper_execution_price_by_order_id(
+            conn, exchange_order_id=open_order_id
+        )
+    assert price == Decimal("65000")
+    # Sanity: bot_id is irrelevant for this query (exchange_order_id global).
+    _ = bot_id
+
+
+async def test_select_paper_execution_price_by_order_id_returns_none_when_no_match(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """Non-existent order_id → None."""
+    from packages.exchange.paper import persistence
+
+    _pe, pool, _bot_id = paper_exchange
+    async with pool.acquire() as conn:
+        price = await persistence.select_paper_execution_price_by_order_id(
+            conn, exchange_order_id="paper-does-not-exist"
+        )
+    assert price is None
+
+
+async def test_sum_paper_trades_realized_pnl_returns_decimal_zero_for_no_closed_trades(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """Decision #8: SUM(NULL) → Decimal('0')."""
+    from packages.exchange.paper import persistence
+
+    _pe, pool, bot_id = paper_exchange
+    async with pool.acquire() as conn:
+        total = await persistence.sum_paper_trades_realized_pnl(conn, bot_id=bot_id)
+    assert total == Decimal("0")
+    assert isinstance(total, Decimal)
+
+
+async def test_sum_paper_trades_realized_pnl_aggregates_multiple_closed(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """SUM over closed trades."""
+    from packages.exchange.paper import persistence
+
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    # Open + close BTCUSDT trade — realized_pnl = 460.7000 per §E.1.
+    await pe._on_candle(_make_envelope(close=Decimal("65000")))
+    await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    _ = await pe._execution_queue.get()
+    _ = await pe._position_queue.get()
+    await pe._on_candle(
+        _make_envelope(close=Decimal("66000"), high=Decimal("66100"), low=Decimal("65900"))
+    )
+    await pe.place_market_order("BTCUSDT", "sell", Decimal("0.5"), reduce_only=True)
+    _ = await pe._execution_queue.get()
+    _ = await pe._position_queue.get()
+    # Open + close ETHUSDT trade.
+    await pe._on_candle(_make_envelope(symbol="ETHUSDT", close=Decimal("3500")))
+    await pe.place_market_order("ETHUSDT", "buy", Decimal("1"))
+    _ = await pe._execution_queue.get()
+    _ = await pe._position_queue.get()
+    await pe._on_candle(
+        _make_envelope(
+            symbol="ETHUSDT",
+            close=Decimal("3600"),
+            high=Decimal("3610"),
+            low=Decimal("3490"),
+        )
+    )
+    await pe.place_market_order("ETHUSDT", "sell", Decimal("1"), reduce_only=True)
+
+    async with pool.acquire() as conn:
+        total = await persistence.sum_paper_trades_realized_pnl(conn, bot_id=bot_id)
+        # Cross-check: assemble sum by hand from rows.
+        rows = await conn.fetch(
+            "SELECT realized_pnl FROM paper_trades WHERE bot_id = $1 AND status = 'closed'",
+            bot_id,
+        )
+    expected = sum((row["realized_pnl"] for row in rows), start=Decimal("0"))
+    assert total == expected
+    assert total > Decimal("0")  # Both trades profited (long up move).
+
+
+async def test_sum_paper_trades_realized_pnl_excludes_open_trades(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """Open trade not counted (status='open' filtered)."""
+    from packages.exchange.paper import persistence
+
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    await pe._on_candle(_make_envelope(close=Decimal("65000")))
+    await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    async with pool.acquire() as conn:
+        total = await persistence.sum_paper_trades_realized_pnl(conn, bot_id=bot_id)
+    assert total == Decimal("0")
+
+
+# --- T-213c: restart hydrate integration -----------------------------------
+
+
+def _build_second_paper_exchange(
+    *,
+    bot_id: str,
+    pool: asyncpg.Pool,
+) -> PaperExchange:
+    """Construct a SECOND PaperExchange against the same DB to simulate restart."""
+    bus = MagicMock()
+    bus.subscribe = AsyncMock()
+    fixed_now = datetime(2026, 4, 28, 13, 0, 0, tzinfo=UTC)
+    return PaperExchange(
+        seed_balance=Decimal("10000"),
+        slippage_model="fixed_pct",
+        fee_rate=Decimal("0.0006"),
+        bot_id=BotId(bot_id),
+        bus=bus,
+        slippage_params={"fixed_slippage_pct": Decimal("0")},
+        now_fn=lambda: fixed_now,
+        pool=pool,
+    )
+
+
+async def test_hydrate_populates_active_positions_dict_from_paper_positions(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """OQ-6 default A: start_consuming hydrates dict before NATS subscribe."""
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    await pe._on_candle(_make_envelope(close=Decimal("65000")))
+    await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    await pe.set_trading_stop(
+        "BTCUSDT",
+        "Full",
+        sl_price=Decimal("64500"),
+        tp_price=Decimal("65500"),
+    )
+    # "Restart" — fresh PaperExchange against same DB.
+    pe2 = _build_second_paper_exchange(bot_id=bot_id, pool=pool)
+    assert pe2._active_positions == {}
+    await pe2.start_consuming()
+    state = pe2._active_positions["BTCUSDT"]
+    assert state["side"] == "buy"
+    assert state["qty"] == Decimal("0.5")
+    assert state["entry_price"] == Decimal("65000")
+    assert state["entry_fee"] == Decimal("19.50000000")
+    assert state["sl_price"] == Decimal("64500")
+    assert state["tp_price"] == Decimal("65500")
+    assert state["tpsl_mode"] == "Full"  # OQ-2 default B
+    assert state["tp_size"] is None  # OQ-2 default B
+    assert state["tp_hit"] is False
+
+
+async def test_hydrate_skips_when_no_paper_positions_for_bot(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """Empty DB → empty dict; no-op + INFO log only (no WARN)."""
+    _pe, pool, bot_id = paper_exchange
+    pe2 = _build_second_paper_exchange(bot_id=bot_id, pool=pool)
+    await pe2.start_consuming()
+    assert pe2._active_positions == {}
+
+
+async def test_hydrate_partial_tp_position_with_tp_hit_true_and_qty_field_pins_known_compromise(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """OQ-2 default B documented gap: partial-TP'd position hydrates as Full mode.
+
+    Operator must re-issue set_trading_stop after restart to restore Partial.
+    """
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    await pe._on_candle(_make_envelope(close=Decimal("65000")))
+    await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    await pe.set_trading_stop(
+        "BTCUSDT",
+        "Partial",
+        sl_price=Decimal("64500"),
+        tp_price=Decimal("65500"),
+        tp_size=Decimal("0.1"),
+    )
+    _ = await pe._execution_queue.get()
+    _ = await pe._position_queue.get()
+    # Trigger partial TP.
+    await pe._on_candle(
+        _make_envelope(
+            symbol="BTCUSDT",
+            open_=Decimal("65000"),
+            high=Decimal("65600"),
+            low=Decimal("64900"),
+            close=Decimal("65500"),
+        )
+    )
+    pe2 = _build_second_paper_exchange(bot_id=bot_id, pool=pool)
+    await pe2.start_consuming()
+    state = pe2._active_positions["BTCUSDT"]
+    assert state["tp_hit"] is True
+    assert state["tpsl_mode"] == "Full"  # NOT 'Partial' — OQ-2 default B
+    assert state["tp_size"] is None  # NOT 0.1 — OQ-2 default B
+
+
+async def test_hydrate_after_partial_tp_uses_remaining_qty_for_dict_qty_field(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """Decision #5 / edge case #5: dict's qty = paper_positions.remaining_qty."""
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    await pe._on_candle(_make_envelope(close=Decimal("65000")))
+    await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    await pe.set_trading_stop(
+        "BTCUSDT",
+        "Partial",
+        sl_price=Decimal("64500"),
+        tp_price=Decimal("65500"),
+        tp_size=Decimal("0.1"),
+    )
+    _ = await pe._execution_queue.get()
+    _ = await pe._position_queue.get()
+    # Partial TP fires.
+    await pe._on_candle(
+        _make_envelope(
+            symbol="BTCUSDT",
+            open_=Decimal("65000"),
+            high=Decimal("65600"),
+            low=Decimal("64900"),
+            close=Decimal("65500"),
+        )
+    )
+    # Verify pre-restart: remaining_qty in DB = 0.4.
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT qty, remaining_qty FROM paper_positions WHERE bot_id = $1",
+            bot_id,
+        )
+    assert row is not None
+    assert row["qty"] == Decimal("0.5")  # original entry qty (immutable)
+    assert row["remaining_qty"] == Decimal("0.4")  # post-partial-TP open qty
+    # "Restart" — fresh PaperExchange.
+    pe2 = _build_second_paper_exchange(bot_id=bot_id, pool=pool)
+    await pe2.start_consuming()
+    state = pe2._active_positions["BTCUSDT"]
+    assert state["qty"] == Decimal("0.4")  # Decision #5 — uses remaining_qty NOT qty
+
+
+async def test_hydrate_warns_when_partial_tp_positions_present(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """CONCERN 2 fail-loud: WARN-level log emitted when partial_tp_positions > 0."""
+    import logging
+
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    await pe._on_candle(_make_envelope(close=Decimal("65000")))
+    await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    await pe.set_trading_stop(
+        "BTCUSDT",
+        "Partial",
+        sl_price=Decimal("64500"),
+        tp_price=Decimal("65500"),
+        tp_size=Decimal("0.1"),
+    )
+    _ = await pe._execution_queue.get()
+    _ = await pe._position_queue.get()
+    await pe._on_candle(
+        _make_envelope(
+            symbol="BTCUSDT",
+            open_=Decimal("65000"),
+            high=Decimal("65600"),
+            low=Decimal("64900"),
+            close=Decimal("65500"),
+        )
+    )
+    pe2 = _build_second_paper_exchange(bot_id=bot_id, pool=pool)
+    with caplog.at_level(logging.WARNING, logger="packages.exchange.paper.adapter"):
+        await pe2.start_consuming()
+    warn_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and r.message == "paper_exchange.hydrate_partial_tp_positions_require_set_trading_stop"
+    ]
+    assert len(warn_records) == 1
+    rec = warn_records[0]
+    assert rec.partial_tp_positions == 1  # type: ignore[attr-defined]
+    assert "set_trading_stop" in rec.required_action  # type: ignore[attr-defined]
+
+
+async def test_hydrate_does_not_warn_when_no_partial_tp_positions(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """W#3 negative-case pin: WARN does NOT fire on clean restart."""
+    import logging
+
+    pe, pool, bot_id = paper_exchange
+    pe._slippage_params = {"fixed_slippage_pct": Decimal("0")}
+    await pe._on_candle(_make_envelope(close=Decimal("65000")))
+    await pe.place_market_order("BTCUSDT", "buy", Decimal("0.5"))
+    pe2 = _build_second_paper_exchange(bot_id=bot_id, pool=pool)
+    with caplog.at_level(logging.WARNING, logger="packages.exchange.paper.adapter"):
+        await pe2.start_consuming()
+    warn_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and r.message == "paper_exchange.hydrate_partial_tp_positions_require_set_trading_stop"
+    ]
+    assert warn_records == []
+
+
+async def test_hydrate_failure_propagates_when_pool_unhealthy(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """OQ-7 default A: pool failure → start_consuming raises (no degraded mode)."""
+    _pe, pool, bot_id = paper_exchange
+    pe2 = _build_second_paper_exchange(bot_id=bot_id, pool=pool)
+    await pool.close()  # break the pool deliberately
+    with pytest.raises((asyncpg.InterfaceError, asyncpg.PostgresError, OSError, RuntimeError)):
+        await pe2.start_consuming()

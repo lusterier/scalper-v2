@@ -316,3 +316,132 @@ async def test_two_consumers_split_events_does_not_broadcast() -> None:
     intersect = set(a_events) & set(b_events)
     assert len(union) == 4, "all 4 events delivered between two consumers"
     assert intersect == set(), "no event delivered to both consumers (NOT broadcast)"
+
+
+# --- T-213c: read methods (mock pool) --------------------------------------
+
+
+def _record_like(data: dict[str, object]) -> object:
+    """Lightweight asyncpg.Record stand-in for unit tests.
+
+    Supports both ``row["key"]`` mapping access and dict-like iteration
+    used in the read-method bodies.
+    """
+
+    class _Rec:
+        def __init__(self, d: dict[str, object]) -> None:
+            self._d = d
+
+        def __getitem__(self, key: str) -> object:
+            return self._d[key]
+
+    return _Rec(data)
+
+
+def _patch_persistence(monkeypatch: pytest.MonkeyPatch, **fns: object) -> None:
+    """Replace persistence-module helpers with AsyncMock returns."""
+    from packages.exchange.paper import persistence
+
+    for name, value in fns.items():
+        monkeypatch.setattr(persistence, name, value)
+
+
+async def test_get_positions_returns_empty_list_for_no_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OQ-3 default A: no rows → empty list."""
+    pe = _make_paper_exchange()
+    _patch_persistence(monkeypatch, select_paper_positions=AsyncMock(return_value=[]))
+    result = await pe.get_positions()
+    assert result == []
+
+
+async def test_get_positions_maps_remaining_qty_to_position_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OQ-4 default A: Position.size = paper_positions.remaining_qty."""
+    pe = _make_paper_exchange()
+    rows = [
+        _record_like(
+            {
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "remaining_qty": Decimal("0.4"),
+                "entry_price": Decimal("65000"),
+            }
+        )
+    ]
+    _patch_persistence(monkeypatch, select_paper_positions=AsyncMock(return_value=rows))
+    result = await pe.get_positions()
+    assert len(result) == 1
+    assert result[0].symbol == "BTCUSDT"
+    assert result[0].size == Decimal("0.4")  # NOT entry qty
+    assert result[0].entry_price == Decimal("65000")
+
+
+async def test_get_positions_returns_leverage_and_unrealized_pnl_as_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Paper-fixed-fields invariant: no leverage column, no live mark price."""
+    pe = _make_paper_exchange()
+    rows = [
+        _record_like(
+            {
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "remaining_qty": Decimal("0.5"),
+                "entry_price": Decimal("65000"),
+            }
+        )
+    ]
+    _patch_persistence(monkeypatch, select_paper_positions=AsyncMock(return_value=rows))
+    result = await pe.get_positions()
+    assert result[0].leverage is None
+    assert result[0].unrealized_pnl is None
+
+
+async def test_get_fill_price_returns_decimal_when_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: pass-through Decimal."""
+    pe = _make_paper_exchange()
+    _patch_persistence(
+        monkeypatch,
+        select_paper_execution_price_by_order_id=AsyncMock(return_value=Decimal("65032.5")),
+    )
+    price = await pe.get_fill_price("BTCUSDT", "paper-abc")
+    assert price == Decimal("65032.5")
+
+
+async def test_get_fill_price_returns_none_when_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """None pass-through."""
+    pe = _make_paper_exchange()
+    _patch_persistence(
+        monkeypatch,
+        select_paper_execution_price_by_order_id=AsyncMock(return_value=None),
+    )
+    price = await pe.get_fill_price("BTCUSDT", "paper-missing")
+    assert price is None
+
+
+async def test_get_closed_pnl_cumulative_raises_on_sub_account_mismatch() -> None:
+    """OQ-5 default A: exact str equality; mismatch → ValueError."""
+    pe = _make_paper_exchange()
+    with pytest.raises(ValueError, match="sub_account mismatch"):
+        await pe.get_closed_pnl_cumulative("other-bot")
+
+
+async def test_get_closed_pnl_cumulative_returns_decimal_zero_when_no_closed_trades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decision #8: NULL → Decimal('0')."""
+    pe = _make_paper_exchange()
+    _patch_persistence(
+        monkeypatch,
+        sum_paper_trades_realized_pnl=AsyncMock(return_value=Decimal("0")),
+    )
+    total = await pe.get_closed_pnl_cumulative("test-bot")
+    assert total == Decimal("0")
+    assert isinstance(total, Decimal)

@@ -194,40 +194,14 @@ def test_paper_exchange_implements_full_exchange_client_surface() -> None:
     assert not missing, f"PaperExchange missing ExchangeClient methods: {missing}"
 
 
-# --- Method stubs raise NotImplementedError pointing at T-213c ------------
-# T-213b narrowing: set_leverage is now no-op (Decision #13);
-# place_market_order, set_trading_stop, cancel_order, stream_executions,
-# stream_positions land full bodies (covered in test_adapter_fill_semantics.py
-# + test_paper_emission.py + test_paper_persistence.py). Remaining read-method
-# stubs (get_positions, get_fill_price, get_closed_pnl_cumulative) forward
-# to T-213c.
-
-
-_STUBBED_ASYNC_METHODS = (
-    ("get_positions", lambda pe: pe.get_positions("BTCUSDT")),
-    ("get_fill_price", lambda pe: pe.get_fill_price("BTCUSDT", "ord-1")),
-    ("get_closed_pnl_cumulative", lambda pe: pe.get_closed_pnl_cumulative("sub-1")),
-)
-
-
-@pytest.mark.parametrize(("method_name", "invoke"), _STUBBED_ASYNC_METHODS)
-async def test_async_method_stub_raises_with_t213_message(
-    method_name: str,
-    invoke: object,
-) -> None:
-    """Each remaining read-method stub raises NotImplementedError with T-213 forward-pointer.
-
-    Post-T-213b: only the 3 read methods (get_positions / get_fill_price /
-    get_closed_pnl_cumulative) remain stubbed; T-213c picks them up. The
-    message-contains-"T-213" assertion is the fail-loud forward-pointer
-    contract.
-    """
-    pe = _make_pe()
-    assert callable(invoke)
-    with pytest.raises(NotImplementedError) as info:
-        await invoke(pe)
-    assert method_name in str(info.value)
-    assert "T-213" in str(info.value)
+# T-213c removed the last 3 stubbed read methods (get_positions /
+# get_fill_price / get_closed_pnl_cumulative); their bodies now ship in
+# adapter.py + persistence.py. No stubbed async methods remain on
+# PaperExchange — the T-211/T-213a/T-213b stub-pin parametrize tuple
+# is intentionally absent here per fail-loud forward-pointer contract:
+# the test failure when the stub is replaced is the contract working
+# as intended (T-211 W#3). Read-method bodies are covered by
+# test_paper_persistence.py (integration) + test_paper_emission.py (unit).
 
 
 # --- Lifecycle ------------------------------------------------------------

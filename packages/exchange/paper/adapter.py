@@ -32,6 +32,7 @@ T-213a full-stub methods (T-211 unchanged):
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003 — runtime annotation on frozen dataclass
@@ -41,7 +42,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from packages.bus.schemas import OhlcCandlePayload
 from packages.core import idempotent, non_idempotent, now_utc
 from packages.exchange.errors import OrderRejected
-from packages.exchange.types import ExecutionEvent, OrderPlaceResult, PositionEvent
+from packages.exchange.types import ExecutionEvent, OrderPlaceResult, Position, PositionEvent
 
 from . import fees, persistence, slippage
 
@@ -52,7 +53,9 @@ if TYPE_CHECKING:
 
     from packages.bus import MessageEnvelope, NatsClient
     from packages.core import BotId
-    from packages.exchange import Position
+
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["PaperExchange", "PendingSLTPFill", "SlippageModel"]
 
@@ -177,8 +180,69 @@ class PaperExchange:
         )
 
     async def start_consuming(self) -> None:
-        """Decision #16: subscribe to ``market.ohlc.1m.>`` for SL/TP monitor."""
+        """T-213c: hydrate ``_active_positions`` from paper_positions BEFORE NATS subscribe.
+
+        OQ-6 default A — hydrate at the lifecycle entry point so dict
+        state reflects DB before the first candle arrives. OQ-7 default
+        A — query failure propagates; composition root crashes.
+        Decision #16: subscribe to ``market.ohlc.1m.>`` for SL/TP monitor.
+        """
+        await self._hydrate_active_positions()
         await self._bus.subscribe("market.ohlc.1m.>", self._on_candle)
+
+    async def _hydrate_active_positions(self) -> None:
+        """Hydrate ``_active_positions`` dict from paper_positions JOIN.
+
+        Decision #5 — dict's ``qty`` field reads ``paper_positions.remaining_qty``
+        so SL/TP fill-trigger qty after restart matches actual open size
+        (consistency with mid-life mutation at adapter.py drain paths).
+        OQ-2 default B — ``tpsl_mode='Full'`` and ``tp_size=None``;
+        operator must re-issue ``set_trading_stop`` after restart on any
+        partial-TP'd position to restore Partial mode (WARN-level log
+        below surfaces the requirement at fail-loud observability).
+        """
+        async with self._pool.acquire() as conn:
+            rows = await persistence.select_paper_positions_for_hydrate(
+                conn,
+                bot_id=str(self._bot_id),
+            )
+        partial_tp_count = 0
+        for row in rows:
+            if row["tp_hit"]:
+                partial_tp_count += 1
+            self._active_positions[row["symbol"]] = {
+                "trade_id": int(row["trade_id"]),
+                "side": row["side"],
+                "qty": Decimal(row["remaining_qty"]),  # Decision #5 — current open qty.
+                "entry_price": Decimal(row["entry_price"]),
+                "entry_fee": Decimal(row["entry_fee"]),  # OQ-1 default A.
+                "fees_paid": Decimal(row["fees_paid"]),
+                "sl_price": (Decimal(row["sl_price"]) if row["sl_price"] is not None else None),
+                "tp_price": (Decimal(row["tp_price"]) if row["tp_price"] is not None else None),
+                "tp_size": None,  # OQ-2 default B.
+                "tpsl_mode": "Full",  # OQ-2 default B.
+                "tp_hit": bool(row["tp_hit"]),
+            }
+        logger.info(
+            "paper_exchange.hydrate_complete",
+            extra={
+                "bot_id": str(self._bot_id),
+                "symbols_hydrated": len(rows),
+                "partial_tp_positions": partial_tp_count,
+            },
+        )
+        if partial_tp_count > 0:
+            logger.warning(
+                "paper_exchange.hydrate_partial_tp_positions_require_set_trading_stop",
+                extra={
+                    "bot_id": str(self._bot_id),
+                    "partial_tp_positions": partial_tp_count,
+                    "required_action": (
+                        "re-issue set_trading_stop with tpsl_mode='Partial' on each "
+                        "partial-TP'd symbol to restore Partial mode after restart"
+                    ),
+                },
+            )
 
     async def _on_candle(self, envelope: MessageEnvelope) -> None:
         """Update last-price cache + check SL/TP crosses for this symbol.
@@ -817,7 +881,24 @@ class PaperExchange:
         self,
         symbol: str | None = None,
     ) -> list[Position]:
-        raise NotImplementedError(_stub_message("get_positions"))
+        """OQ-3 default A: empty list for no rows. OQ-4 default A: size = remaining_qty."""
+        async with self._pool.acquire() as conn:
+            rows = await persistence.select_paper_positions(
+                conn,
+                bot_id=str(self._bot_id),
+                symbol=symbol,
+            )
+        return [
+            Position(
+                symbol=row["symbol"],
+                side=row["side"],
+                size=Decimal(row["remaining_qty"]),
+                entry_price=Decimal(row["entry_price"]),
+                leverage=None,
+                unrealized_pnl=None,
+            )
+            for row in rows
+        ]
 
     @idempotent
     async def get_fill_price(
@@ -825,11 +906,25 @@ class PaperExchange:
         symbol: str,
         order_id: str,
     ) -> Decimal | None:
-        raise NotImplementedError(_stub_message("get_fill_price"))
+        """Decision #7: LIMIT 1 ORDER BY executed_at ASC. None if no match."""
+        async with self._pool.acquire() as conn:
+            return await persistence.select_paper_execution_price_by_order_id(
+                conn,
+                exchange_order_id=order_id,
+            )
 
     @idempotent
     async def get_closed_pnl_cumulative(self, sub_account: str) -> Decimal:
-        raise NotImplementedError(_stub_message("get_closed_pnl_cumulative"))
+        """OQ-5 default A: exact str equality validation. Decision #8: NULL → Decimal('0')."""
+        if sub_account != str(self._bot_id):
+            raise ValueError(
+                f"sub_account mismatch: got {sub_account!r}, expected {str(self._bot_id)!r}"
+            )
+        async with self._pool.acquire() as conn:
+            return await persistence.sum_paper_trades_realized_pnl(
+                conn,
+                bot_id=str(self._bot_id),
+            )
 
     def stream_executions(self) -> AsyncIterator[ExecutionEvent]:
         """Decision #12: ``def`` (NOT ``async def``) per T-201 OQ-1.

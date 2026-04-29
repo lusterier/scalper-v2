@@ -80,6 +80,10 @@ def _make_pool() -> MagicMock:
     fake_row = {"id": 1}
     conn.fetchrow = AsyncMock(return_value=fake_row)
     conn.execute = AsyncMock(return_value="INSERT 0 1")
+    # T-213c hydrate: select_paper_positions_for_hydrate returns [] by default
+    # (empty DB → no positions to rehydrate; tests that exercise hydrate
+    # behavior monkeypatch the persistence helper directly).
+    conn.fetch = AsyncMock(return_value=[])
     tx_cm = MagicMock()
     tx_cm.__aenter__ = AsyncMock(return_value=conn)
     tx_cm.__aexit__ = AsyncMock(return_value=None)
