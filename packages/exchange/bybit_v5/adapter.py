@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from packages.core import idempotent, non_idempotent, now_utc
@@ -39,7 +40,6 @@ from packages.exchange.types import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
-    from decimal import Decimal
 
     from prometheus_client import Counter
 
@@ -56,6 +56,11 @@ _CATEGORY = "linear"
 _DEFAULT_LEVERAGE_CACHE_TTL_S = 3600.0
 _BUY: Literal["Buy"] = "Buy"
 _SELL: Literal["Sell"] = "Sell"
+# T-208b: F2 single-bot scale ceiling (Bybit limit=200 x 10 = 2000 closed
+# trades cumulative). Per L-001 active control: protocol-binding-ish per
+# Bybit's own limit cap, NOT operationally tunable (mirror T-205
+# _MAX_CAS_RETRIES=3 precedent; F5+ refactors to streaming aggregator).
+_MAX_CLOSED_PNL_PAGES = 10
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +71,44 @@ def _to_bybit_side(side: Literal["buy", "sell"]) -> Literal["Buy", "Sell"]:
 
 def _stub_message(method: str, owner: str) -> str:
     return f"BybitV5Adapter.{method} body lands at {owner}"
+
+
+def _map_position_row(item: dict[str, Any]) -> Position:
+    """Map Bybit V5 ``/v5/position/list`` ``result.list[]`` row -> Position.
+
+    Per OQ-3 default A: Bybit empty-string convention for flat positions:
+
+    * ``side == ""`` -> ``side=None``.
+    * ``avgPrice == ""`` -> ``entry_price=None`` (string ``"0"`` preserved
+      as ``Decimal("0")`` per W#3 — recently-closed flat may legitimately
+      report avgPrice=``"0"``).
+    * ``unrealisedPnl == ""`` -> ``unrealized_pnl=None`` (W#3: ``"0"`` is
+      a valid zero-PnL state; preserve as ``Decimal("0")``).
+
+    H-015 round-trip: ``Decimal(item["size"])`` preserves wire string
+    exactness (no float coercion).
+    """
+    side_raw = item["side"]
+    if side_raw == _BUY:
+        side: Literal["buy", "sell"] | None = "buy"
+    elif side_raw == _SELL:
+        side = "sell"
+    else:
+        side = None
+    avg_price = item.get("avgPrice")
+    entry_price = Decimal(str(avg_price)) if avg_price not in ("", None) else None
+    leverage_raw = item.get("leverage")
+    leverage = int(str(leverage_raw)) if leverage_raw not in ("", None) else None
+    unrealized_raw = item.get("unrealisedPnl")
+    unrealized_pnl = Decimal(str(unrealized_raw)) if unrealized_raw not in ("", None) else None
+    return Position(
+        symbol=item["symbol"],
+        side=side,
+        size=Decimal(item["size"]),
+        entry_price=entry_price,
+        leverage=leverage,
+        unrealized_pnl=unrealized_pnl,
+    )
 
 
 class BybitV5Adapter:
@@ -204,14 +247,28 @@ class BybitV5Adapter:
             await self._on_rate_limit_hit("orders")
             raise
 
-    # T-208b stubs ----------------------------------------------------------
+    # T-208b read methods ---------------------------------------------------
 
     @idempotent
     async def get_positions(
         self,
         symbol: str | None = None,
     ) -> list[Position]:
-        raise NotImplementedError(_stub_message("get_positions", "T-208b"))
+        params: dict[str, Any] = {"category": _CATEGORY}
+        if symbol is not None:
+            params["symbol"] = symbol
+        await self._limiter.acquire(self._sub_account, "positions")
+        try:
+            result = await self._client.request(
+                "GET",
+                "/v5/position/list",
+                params=params,
+                retries=3,
+            )
+        except RateLimitError:
+            await self._on_rate_limit_hit("positions")
+            raise
+        return [_map_position_row(item) for item in result.get("list", [])]
 
     @idempotent
     async def get_fill_price(
@@ -219,11 +276,64 @@ class BybitV5Adapter:
         symbol: str,
         order_id: str,
     ) -> Decimal | None:
-        raise NotImplementedError(_stub_message("get_fill_price", "T-208b"))
+        await self._limiter.acquire(self._sub_account, "orders")
+        try:
+            result = await self._client.request(
+                "GET",
+                "/v5/execution/list",
+                params={
+                    "category": _CATEGORY,
+                    "symbol": symbol,
+                    "orderId": order_id,
+                },
+                retries=3,
+            )
+        except RateLimitError:
+            await self._on_rate_limit_hit("orders")
+            raise
+        items = result.get("list", [])
+        if not items:
+            return None
+        return Decimal(items[0]["execPrice"])
 
     @idempotent
     async def get_closed_pnl_cumulative(self, sub_account: str) -> Decimal:
-        raise NotImplementedError(_stub_message("get_closed_pnl_cumulative", "T-208b"))
+        """OQ-5 default A: sum closedPnl over all pages (cap _MAX_CLOSED_PNL_PAGES).
+
+        Sub_account validation BEFORE limiter.acquire per OQ-10 default A —
+        ValueError on caller mistake costs no rate-limit token.
+        """
+        if sub_account != self._sub_account:
+            raise ValueError(
+                f"sub_account mismatch: got {sub_account!r}, expected {self._sub_account!r}",
+            )
+        total = Decimal("0")
+        cursor: str | None = None
+        for _page in range(_MAX_CLOSED_PNL_PAGES):
+            params: dict[str, Any] = {"category": _CATEGORY, "limit": 200}
+            if cursor is not None:
+                params["cursor"] = cursor
+            await self._limiter.acquire(self._sub_account, "positions")
+            try:
+                result = await self._client.request(
+                    "GET",
+                    "/v5/position/closed-pnl",
+                    params=params,
+                    retries=3,
+                )
+            except RateLimitError:
+                await self._on_rate_limit_hit("positions")
+                raise
+            for item in result.get("list", []):
+                total += Decimal(item["closedPnl"])
+            cursor = result.get("nextPageCursor") or None
+            if not cursor:
+                return total
+        logger.warning(
+            "bybit_v5.closed_pnl_pagination_capped_at_max_pages",
+            extra={"max_pages": _MAX_CLOSED_PNL_PAGES, "sub_account": sub_account},
+        )
+        return total
 
     # T-209 stubs -----------------------------------------------------------
 

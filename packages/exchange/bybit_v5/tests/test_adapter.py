@@ -404,31 +404,13 @@ async def test_RateLimitError_does_not_increment_counter_when_metrics_counter_is
 # --- Stub forward-pointers (1 parametrized test, 6 stubs) ------------------
 
 
-@pytest.mark.parametrize(
-    ("method_name", "owner", "invoke"),
-    [
-        ("get_positions", "T-208b", lambda a: a.get_positions("BTCUSDT")),
-        ("get_fill_price", "T-208b", lambda a: a.get_fill_price("BTCUSDT", "ord-1")),
-        (
-            "get_closed_pnl_cumulative",
-            "T-208b",
-            lambda a: a.get_closed_pnl_cumulative("sub-a"),
-        ),
-        ("close", "T-209", lambda a: a.close()),
-    ],
-)
-async def test_stubbed_async_methods_raise_NotImplementedError_with_owner_substring(
-    method_name: str,
-    owner: str,
-    invoke: object,
-) -> None:
-    """T-211 stub-pin precedent: owner substring is the fail-loud forward-pointer."""
+async def test_close_stub_raises_NotImplementedError_with_T_209_substring() -> None:
+    """T-208b implemented the 3 read stubs; only `close` remains forward-pointed at T-209."""
     adapter = _make_adapter()
-    assert callable(invoke)
     with pytest.raises(NotImplementedError) as info:
-        await invoke(adapter)
-    assert method_name in str(info.value)
-    assert owner in str(info.value)
+        await adapter.close()
+    assert "close" in str(info.value)
+    assert "T-209" in str(info.value)
 
 
 @pytest.mark.parametrize("method_name", ["stream_executions", "stream_positions"])
@@ -450,3 +432,360 @@ def test_stubbed_stream_methods_raise_NotImplementedError_with_T_209_substring(
 def test_to_bybit_side_returns_capitalized_literal() -> None:
     assert _to_bybit_side("buy") == "Buy"
     assert _to_bybit_side("sell") == "Sell"
+
+
+# --- T-208b: get_positions (5 tests) ---------------------------------------
+
+
+def _position_row(
+    *,
+    symbol: str = "BTCUSDT",
+    side: str = "Buy",
+    size: str = "0.5",
+    avg_price: str = "65000",
+    leverage: str = "10",
+    unrealised_pnl: str = "12.34",
+) -> dict[str, str]:
+    return {
+        "symbol": symbol,
+        "side": side,
+        "size": size,
+        "avgPrice": avg_price,
+        "leverage": leverage,
+        "unrealisedPnl": unrealised_pnl,
+    }
+
+
+async def test_get_positions_returns_empty_list_for_empty_response() -> None:
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [], "nextPageCursor": ""})
+    adapter = _make_adapter(client=client)
+    assert await adapter.get_positions() == []
+
+
+async def test_get_positions_maps_active_position_row_to_position_dataclass() -> None:
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [_position_row()]})
+    adapter = _make_adapter(client=client)
+    positions = await adapter.get_positions()
+    assert len(positions) == 1
+    p = positions[0]
+    assert p.symbol == "BTCUSDT"
+    assert p.side == "buy"
+    assert p.size == _D("0.5")
+    assert p.entry_price == _D("65000")
+    assert p.leverage == 10
+    assert p.unrealized_pnl == _D("12.34")
+
+
+async def test_get_positions_with_symbol_filter_passes_query_param() -> None:
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": []})
+    adapter = _make_adapter(client=client)
+    await adapter.get_positions("BTCUSDT")
+    call = client.request.await_args
+    assert call.args == ("GET", "/v5/position/list")
+    assert call.kwargs["params"] == {"category": "linear", "symbol": "BTCUSDT"}
+    assert call.kwargs["retries"] == 3
+
+
+async def test_get_positions_preserves_qty_string_through_decimal_round_trip() -> None:
+    """W#2 H-015 round-trip pin: isinstance + value + str triad."""
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={"list": [_position_row(size="0.500000000001")]},
+    )
+    adapter = _make_adapter(client=client)
+    positions = await adapter.get_positions()
+    p = positions[0]
+    assert isinstance(p.size, _D)
+    assert p.size == _D("0.500000000001")
+    assert str(p.size) == "0.500000000001"
+
+
+async def test_get_positions_maps_flat_row_with_empty_side_to_none_side() -> None:
+    """OQ-3 default A: side=='' → None; size==0 + None per T-201 flat-state semantic."""
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                _position_row(
+                    side="",
+                    size="0",
+                    avg_price="",
+                    leverage="",
+                    unrealised_pnl="",
+                ),
+            ],
+        },
+    )
+    adapter = _make_adapter(client=client)
+    p = (await adapter.get_positions())[0]
+    assert p.side is None
+    assert p.size == _D("0")
+    assert p.entry_price is None
+    assert p.leverage is None
+    assert p.unrealized_pnl is None
+
+
+async def test_get_positions_preserves_zero_string_in_avg_price_and_unrealised_pnl() -> None:
+    """W#3: avgPrice='0' → Decimal('0') (NOT None). Same for unrealisedPnl='0'."""
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                _position_row(side="Buy", avg_price="0", unrealised_pnl="0"),
+            ],
+        },
+    )
+    adapter = _make_adapter(client=client)
+    p = (await adapter.get_positions())[0]
+    assert p.entry_price == _D("0")
+    assert p.unrealized_pnl == _D("0")
+
+
+# --- T-208b: get_fill_price (3 tests) --------------------------------------
+
+
+async def test_get_fill_price_returns_decimal_from_first_execution_row() -> None:
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={"list": [{"execPrice": "65032.5", "execId": "ex-1"}]},
+    )
+    adapter = _make_adapter(client=client)
+    price = await adapter.get_fill_price("BTCUSDT", "ord-abc")
+    assert price == _D("65032.5")
+    assert isinstance(price, _D)
+
+
+async def test_get_fill_price_returns_none_when_no_executions() -> None:
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": []})
+    adapter = _make_adapter(client=client)
+    assert await adapter.get_fill_price("BTCUSDT", "ord-missing") is None
+
+
+async def test_get_fill_price_preserves_price_string_through_decimal_round_trip() -> None:
+    """W#2 H-015 round-trip pin: isinstance + value + str triad."""
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={"list": [{"execPrice": "65000.123456789012"}]},
+    )
+    adapter = _make_adapter(client=client)
+    price = await adapter.get_fill_price("BTCUSDT", "ord-abc")
+    assert isinstance(price, _D)
+    assert price == _D("65000.123456789012")
+    assert str(price) == "65000.123456789012"
+
+
+async def test_get_fill_price_calls_upstream_with_bybit_v5_query_shape() -> None:
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": []})
+    adapter = _make_adapter(client=client)
+    await adapter.get_fill_price("BTCUSDT", "ord-abc")
+    call = client.request.await_args
+    assert call.args == ("GET", "/v5/execution/list")
+    assert call.kwargs["params"] == {
+        "category": "linear",
+        "symbol": "BTCUSDT",
+        "orderId": "ord-abc",
+    }
+
+
+# --- T-208b: get_closed_pnl_cumulative (5 tests) ---------------------------
+
+
+async def test_get_closed_pnl_cumulative_validates_sub_account_match() -> None:
+    """OQ-10/W#5: ValueError BEFORE limiter.acquire — no token consumed on caller mistake."""
+    client = _make_client_mock()
+    limiter = _make_limiter_mock()
+    adapter = _make_adapter(client=client, limiter=limiter)
+    with pytest.raises(ValueError, match="sub_account mismatch"):
+        await adapter.get_closed_pnl_cumulative("other-sub")
+    assert limiter.acquire.await_count == 0
+    assert client.request.await_count == 0
+
+
+async def test_get_closed_pnl_cumulative_sums_single_page_response() -> None:
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {"closedPnl": "10.50"},
+                {"closedPnl": "-2.25"},
+                {"closedPnl": "5.00"},
+            ],
+            "nextPageCursor": "",
+        },
+    )
+    adapter = _make_adapter(client=client)
+    total = await adapter.get_closed_pnl_cumulative("sub-a")
+    assert total == _D("13.25")  # 10.50 - 2.25 + 5.00
+
+
+async def test_get_closed_pnl_cumulative_returns_zero_for_empty_response() -> None:
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [], "nextPageCursor": ""})
+    adapter = _make_adapter(client=client)
+    total = await adapter.get_closed_pnl_cumulative("sub-a")
+    assert total == _D("0")
+
+
+async def test_get_closed_pnl_cumulative_paginates_via_next_page_cursor() -> None:
+    """2-page response → cursor chain → sum across pages."""
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        side_effect=[
+            {"list": [{"closedPnl": "10.00"}], "nextPageCursor": "page-2"},
+            {"list": [{"closedPnl": "20.00"}], "nextPageCursor": ""},
+        ],
+    )
+    adapter = _make_adapter(client=client)
+    total = await adapter.get_closed_pnl_cumulative("sub-a")
+    assert total == _D("30.00")
+    assert client.request.await_count == 2
+    # Page 2 query has cursor.
+    page_2_call = client.request.await_args_list[1]
+    assert page_2_call.kwargs["params"]["cursor"] == "page-2"
+
+
+async def test_get_closed_pnl_cumulative_caps_at_max_pages_with_warn_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """W#1: 10-page hypothetical, all non-empty cursors → cap at 10 + WARN log."""
+    import logging
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    limiter = _make_limiter_mock()
+    # 10 pages each with closedPnl=1 + non-empty cursor → loop exits via range exhaustion.
+    client.request = AsyncMock(
+        side_effect=[
+            {"list": [{"closedPnl": "1.0"}], "nextPageCursor": f"page-{i + 1}"} for i in range(10)
+        ],
+    )
+    adapter = _make_adapter(client=client, limiter=limiter)
+    with caplog.at_level(logging.WARNING, logger="packages.exchange.bybit_v5.adapter"):
+        total = await adapter.get_closed_pnl_cumulative("sub-a")
+    assert total == _D("10.0")
+    assert client.request.await_count == 10
+    assert limiter.acquire.await_count == 10
+    warn_records = [
+        r
+        for r in caplog.records
+        if r.message == "bybit_v5.closed_pnl_pagination_capped_at_max_pages"
+    ]
+    assert len(warn_records) == 1
+
+
+async def test_get_closed_pnl_cumulative_raises_on_empty_closed_pnl_field() -> None:
+    """W#4: strict-mode raise on closedPnl='' — no silent default to '0'."""
+    from decimal import InvalidOperation
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={"list": [{"closedPnl": ""}], "nextPageCursor": ""},
+    )
+    adapter = _make_adapter(client=client)
+    with pytest.raises(InvalidOperation):
+        await adapter.get_closed_pnl_cumulative("sub-a")
+
+
+async def test_get_closed_pnl_cumulative_calls_upstream_with_bybit_v5_query_shape() -> None:
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [], "nextPageCursor": ""})
+    adapter = _make_adapter(client=client)
+    await adapter.get_closed_pnl_cumulative("sub-a")
+    call = client.request.await_args
+    assert call.args == ("GET", "/v5/position/closed-pnl")
+    assert call.kwargs["params"] == {"category": "linear", "limit": 200}
+
+
+# --- T-208b: endpoint-group routing + RateLimitError handler --------------
+
+
+async def test_get_positions_acquires_limiter_with_positions_group() -> None:
+    limiter = _make_limiter_mock()
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": []})
+    adapter = _make_adapter(client=client, limiter=limiter)
+    await adapter.get_positions()
+    limiter.acquire.assert_awaited_once_with("sub-a", "positions")
+
+
+async def test_get_fill_price_acquires_limiter_with_orders_group() -> None:
+    limiter = _make_limiter_mock()
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": []})
+    adapter = _make_adapter(client=client, limiter=limiter)
+    await adapter.get_fill_price("BTCUSDT", "ord-abc")
+    limiter.acquire.assert_awaited_once_with("sub-a", "orders")
+
+
+async def test_get_closed_pnl_cumulative_acquires_limiter_with_positions_group() -> None:
+    limiter = _make_limiter_mock()
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [], "nextPageCursor": ""})
+    adapter = _make_adapter(client=client, limiter=limiter)
+    await adapter.get_closed_pnl_cumulative("sub-a")
+    limiter.acquire.assert_awaited_once_with("sub-a", "positions")
+
+
+@pytest.mark.parametrize(
+    ("method_name", "invoke", "expected_group"),
+    [
+        ("get_positions", lambda a: a.get_positions(), "positions"),
+        ("get_fill_price", lambda a: a.get_fill_price("BTCUSDT", "ord-1"), "orders"),
+        (
+            "get_closed_pnl_cumulative",
+            lambda a: a.get_closed_pnl_cumulative("sub-a"),
+            "positions",
+        ),
+    ],
+)
+async def test_read_methods_on_rate_limit_error_signal_upstream_and_re_raise(
+    method_name: str,
+    invoke: object,
+    expected_group: str,
+) -> None:
+    client = _make_client_mock()
+    client.request = AsyncMock(side_effect=RateLimitError("retCode=10006"))
+    limiter = _make_limiter_mock()
+    counter = _make_counter_mock()
+    adapter = _make_adapter(client=client, limiter=limiter, counter=counter)
+    assert callable(invoke)
+    with pytest.raises(RateLimitError):
+        await invoke(adapter)
+    limiter.signal_upstream_rate_limit.assert_awaited_once()
+    counter.labels.assert_called_once_with(exchange="bybit", endpoint_group=expected_group)
+    counter.labels.return_value.inc.assert_called_once()
+    assert method_name  # silence unused-arg
+
+
+async def test_get_positions_calls_upstream_with_bybit_v5_query_shape_no_filter() -> None:
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": []})
+    adapter = _make_adapter(client=client)
+    await adapter.get_positions()
+    call = client.request.await_args
+    assert call.args == ("GET", "/v5/position/list")
+    assert call.kwargs["params"] == {"category": "linear"}
+    assert call.kwargs["retries"] == 3
