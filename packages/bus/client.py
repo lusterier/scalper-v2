@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 
 import nats
 import nats.errors
+import nats.js.errors
 
 from packages.core import idempotent, non_idempotent
 
@@ -272,6 +273,104 @@ class NatsClient:
         self._subscriptions.append(sub)
         self._logger.info("bus_subscribed", subject=subject)
         return sub
+
+    @idempotent
+    async def kv_get(self, bucket: str, key: str) -> tuple[bytes, int] | None:
+        """Read ``value`` + revision from JetStream KV ``bucket`` under ``key``.
+
+        Returns ``(value, revision)`` if the key exists; returns ``None``
+        if the key was never set (``KeyNotFoundError``). Caller treats
+        ``None`` as fresh state — for the rate limiter (T-205) this means
+        a sub-account bucket starts at full capacity.
+
+        Idempotent (§N3): reads are by definition replay-safe.
+
+        Bucket must be pre-provisioned by infra (T-019 nats-bootstrap or
+        F2+ pre-flight check at execution-service startup) — symmetric
+        with :meth:`kv_put`. A missing bucket raises
+        :class:`PublishError` (config bug, fail loud per §0.4).
+
+        Raises :class:`NotConnectedError` outside ``CONNECTED``. Wraps
+        non-``KeyNotFoundError`` :class:`nats.errors.Error` as
+        :class:`PublishError` with the original as ``__cause__``.
+        """
+        if self._state is not ConnectionState.CONNECTED or self._js is None:
+            raise NotConnectedError(f"kv_get called in state {self._state.value!r}")
+        try:
+            kv = await self._js.key_value(bucket)
+            entry = await kv.get(key)
+        except nats.js.errors.KeyNotFoundError:
+            return None
+        except nats.errors.Error as exc:
+            self._logger.error(
+                "bus_kv_get_failed",
+                bucket=bucket,
+                key=key,
+                error=str(exc),
+            )
+            raise PublishError(f"kv_get from {bucket!r}/{key!r} failed") from exc
+        # nats-py Entry.value can be None for tombstone-deleted keys; treat
+        # the same as KeyNotFoundError per ADR-0003 fail-safe (caller sees a
+        # fresh-state cue).
+        if entry.value is None or entry.revision is None:
+            return None
+        self._logger.debug(
+            "bus_kv_get",
+            bucket=bucket,
+            key=key,
+            revision=entry.revision,
+        )
+        return (entry.value, entry.revision)
+
+    @non_idempotent
+    async def kv_update(
+        self,
+        bucket: str,
+        key: str,
+        value: bytes,
+        last_revision: int,
+    ) -> int:
+        """CAS update: write ``value`` only if the current revision matches.
+
+        Calls NATS KV ``update(key, value, last=last_revision)``; raises
+        :class:`PublishError` (with the original
+        :class:`nats.errors.Error` as ``__cause__``) on revision
+        mismatch. Caller (T-205 rate limiter) re-reads + retries on
+        conflict per ADR-0003 §3.
+
+        Non-idempotent (§N3) per CAS semantics: replaying with the same
+        ``last_revision`` after a successful first call will fail
+        because the revision has advanced — the second call is NOT a
+        no-op of the first.
+
+        Returns the new revision on success. Bucket must be
+        pre-provisioned.
+        """
+        if self._state is not ConnectionState.CONNECTED or self._js is None:
+            raise NotConnectedError(f"kv_update called in state {self._state.value!r}")
+        try:
+            kv = await self._js.key_value(bucket)
+            revision = await kv.update(key, value, last=last_revision)
+        except nats.errors.Error as exc:
+            self._logger.debug(
+                "bus_kv_update_failed",
+                bucket=bucket,
+                key=key,
+                last_revision=last_revision,
+                error=str(exc),
+            )
+            raise PublishError(
+                f"kv_update to {bucket!r}/{key!r} (last={last_revision}) failed"
+            ) from exc
+        self._logger.debug(
+            "bus_kv_update",
+            bucket=bucket,
+            key=key,
+            revision=revision,
+            last_revision=last_revision,
+            value_bytes=len(value),
+        )
+        return revision
 
     @idempotent
     async def kv_put(self, bucket: str, key: str, value: bytes) -> int:
