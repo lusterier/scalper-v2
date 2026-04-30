@@ -81,3 +81,7 @@ class Settings(BaseSettings):
     rate_limit_ip_global_rate: float = 120.0
     rate_limit_ip_global_capacity: float = 240.0
     rate_limit_pause_ms: int = 500
+
+    # T-216a — placement-handler fill_price retry knobs (CONCERN #7 fix per L-001).
+    execution_fill_price_retry_attempts: int = 3
+    execution_fill_price_retry_backoff_s: float = 0.1

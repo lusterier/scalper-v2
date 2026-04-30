@@ -4,12 +4,18 @@
 call returns a fresh :class:`fastapi.FastAPI` instance.
 
 T-214 shipped the skeleton: pool + bus + ``/health`` / ``/ready`` /
-``/metrics``. T-215 (this revision) wires the adapter pool composition
-root: SharedRateLimiter + active-bots load + per-bot adapter
-construction + background task spawning. Remaining F2 work:
+``/metrics``. T-215 wired the adapter pool composition root + rate
+limiter. T-216a (this revision) registers per-bot
+``orders.requests.<bot_id>`` subscriptions at lifespan step 6 (one per
+bot in ``app.state.adapters``); T-216a handler stops at NotImplementedError
+post-fill_price (T-216b owns SL+TP+persist+events). Subscribe failure
+at lifespan = service crash (mirror Settings startup-validation
+invariant per WG#7); silent partial-failure (1/N bots subscribed) is
+NOT acceptable.
 
-* T-216 — order placement pipeline subscribes to
-  ``orders.requests.<bot_id>`` and emits orders.events / trading_events.
+Remaining F2 work:
+
+* T-216b — extend placement.py with SL+TP+persist+events post-fill_price.
 * T-217 — :class:`PositionLifecycle` FSM monitor task per trade.
 * T-218 — :class:`DedupingConsumer` execution dispatcher.
 * T-219 — cumulative-delta P&L close flow.
@@ -26,27 +32,29 @@ Composition split (mirrors T-100 / T-109):
   :class:`packages.bus.NatsClient`) live in the lifespan and attach
   inside the ``async with`` block.
 
-Lifespan order (T-215 — 6 steps):
+Lifespan order (T-216a — 7 steps):
 
 1. ``pool = await create_pool(database_url, application_name="execution-service")``.
 2. ``bus = NatsClient(...); await bus.connect()``.
 3. ``rate_limiter = SharedRateLimiter(bus=bus, **rate_limit_kwargs)`` — per ADR-0003.
-4. ``result = await build_adapter_pool(pool, bus, rate_limiter, settings, logger)``
-   — reads active bots, per-bot constructs adapter (Bybit live/testnet
-   or PaperExchange), spawns ws_tasks / paper_consumer_tasks (H-022 per-bot
-   creds, ADR-0004 sub_account env source).
-5. State attach: pool / bus / rate_limiter / adapters / ws_tasks /
+4. ``adapter_pool = await build_adapter_pool(...)`` — reads active bots,
+   per-bot constructs adapter, spawns ws/paper tasks (T-215; H-022, ADR-0004).
+5. **NEW T-216a**: per-bot ``orders.requests.<bot_id>`` subscription loop —
+   ``for bot_id, adapter in adapter_pool.adapters.items(): await
+   bus.subscribe(subject_for_orders_request(bot_id), make_per_bot_handler(...))``.
+   Subscribe failure at lifespan = service crash (WG#7 fail-fast).
+6. State attach: pool / bus / rate_limiter / adapters / ws_tasks /
    paper_consumer_tasks → ``app.state``.
 
 Shutdown order (reverse, load-bearing):
 
-6. ``await bus.close()`` — drains tracked subscriptions, closes NATS
-   connection. **Must run BEFORE** ``adapter.close`` / ``pool.close`` so any
-   in-flight bus publish that touches downstream components finishes
-   against open infra.
-7. Cancel + gather ws_tasks + paper_consumer_tasks (drain backgrounds).
-8. ``await adapter.close()`` per bot (Bybit closes ws + httpx; Paper no-op).
-9. ``await pool.close()`` — releases asyncpg connections.
+7. ``await bus.close()`` — drains tracked subscriptions (incl. per-bot
+   ``orders.requests.<bot_id>``), closes NATS connection. **Must run BEFORE**
+   ``adapter.close`` / ``pool.close`` so any in-flight bus publish that
+   touches downstream components finishes against open infra.
+8. Cancel + gather ws_tasks + paper_consumer_tasks (drain backgrounds).
+9. ``await adapter.close()`` per bot (Bybit closes ws + httpx; Paper no-op).
+10. ``await pool.close()`` — releases asyncpg connections.
 
 T-216 publish-after-persist contract (T-200 Q2) inherits this order:
 the pool stays open until the bus has fully drained, so the publish
@@ -62,6 +70,7 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI
 
 from packages.bus import NatsClient
+from packages.bus.schemas.orders import subject_for_orders_request
 from packages.db import create_pool
 from packages.exchange.rate_limiter import SharedRateLimiter
 from packages.observability import (
@@ -73,6 +82,7 @@ from packages.observability import (
 
 from .config import Settings
 from .health import router as health_router
+from .placement import make_per_bot_handler
 from .pool import build_adapter_pool
 
 if TYPE_CHECKING:
@@ -127,7 +137,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bound_logger=logger,
         )
 
-        # 5. State attach.
+        # 5. Per-bot orders.requests.<bot_id> subscription (T-216a).
+        # Subscribe failure here crashes the lifespan (WG#7 fail-fast).
+        for bot_id, adapter in adapter_pool.adapters.items():
+            handler = make_per_bot_handler(
+                bot_id=bot_id,
+                adapter=adapter,
+                bus=bus,
+                logger=logger,
+                fill_price_retry_attempts=settings.execution_fill_price_retry_attempts,
+                fill_price_retry_backoff_s=settings.execution_fill_price_retry_backoff_s,
+            )
+            await bus.subscribe(subject_for_orders_request(bot_id), handler)
+
+        # 6. State attach.
         app.state.pool = pool
         app.state.bus = bus
         app.state.rate_limiter = rate_limiter

@@ -97,3 +97,54 @@ def test_lifespan_attaches_adapters_rate_limiter_and_task_lists(
             app_with_mocks.state.paper_consumer_tasks
             is mock_adapter_pool_result.paper_consumer_tasks
         )
+
+
+def test_lifespan_subscribes_to_orders_requests_per_bot(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-216a: per-bot subscription loop — `bus.subscribe(orders.requests.<bot_id>, ...)`
+    invoked once per bot in adapter pool. NO wildcard `.>`.
+    """
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    def _adapter() -> _MagicMock:
+        a = _MagicMock()
+        a.close = _AsyncMock()
+        return a
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _adapter(), "beta": _adapter()}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+    subscribe_subjects = [call.args[0] for call in mock_bus.subscribe.await_args_list]
+    assert "orders.requests.alpha" in subscribe_subjects
+    assert "orders.requests.beta" in subscribe_subjects
+    assert "orders.requests.>" not in subscribe_subjects
+    assert mock_bus.subscribe.await_count == 2
