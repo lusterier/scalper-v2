@@ -44,9 +44,18 @@ def _make_counter_mock() -> MagicMock:
     return counter
 
 
+def _make_ws_mock() -> MagicMock:
+    ws = MagicMock()
+    ws.close = AsyncMock()
+    ws.executions = MagicMock()
+    ws.positions = MagicMock()
+    return ws
+
+
 def _make_adapter(
     *,
     client: MagicMock | None = None,
+    ws: MagicMock | None = None,
     limiter: MagicMock | None = None,
     counter: MagicMock | None = None,
     sub_account: str = "sub-a",
@@ -56,6 +65,7 @@ def _make_adapter(
     fixed_now = now or _FIXED_NOW
     return BybitV5Adapter(
         client=client or _make_client_mock(),
+        ws=ws or _make_ws_mock(),
         limiter=limiter or _make_limiter_mock(),
         bus=MagicMock(),
         sub_account=sub_account,
@@ -69,12 +79,14 @@ def _make_adapter(
 
 
 def test_constructor_accepts_required_kwargs() -> None:
-    """7-kwarg ctor (5 baseline + leverage_cache_ttl_s + now_fn)."""
+    """8-kwarg ctor (6 baseline + leverage_cache_ttl_s + now_fn)."""
     client = _make_client_mock()
+    ws = _make_ws_mock()
     limiter = _make_limiter_mock()
     counter = _make_counter_mock()
     adapter = BybitV5Adapter(
         client=client,
+        ws=ws,
         limiter=limiter,
         bus=MagicMock(),
         sub_account="sub-a",
@@ -83,6 +95,7 @@ def test_constructor_accepts_required_kwargs() -> None:
         now_fn=lambda: _FIXED_NOW,
     )
     assert adapter._client is client
+    assert adapter._ws is ws
     assert adapter._limiter is limiter
     assert adapter._sub_account == "sub-a"
     assert adapter._metrics_counter is counter
@@ -98,6 +111,7 @@ def test_constructor_uses_default_ttl_when_not_provided() -> None:
     """Default = _DEFAULT_LEVERAGE_CACHE_TTL_S (3600.0s per Q9)."""
     adapter = BybitV5Adapter(
         client=_make_client_mock(),
+        ws=_make_ws_mock(),
         limiter=_make_limiter_mock(),
         bus=MagicMock(),
         sub_account="sub-a",
@@ -146,6 +160,7 @@ async def test_set_leverage_re_calls_upstream_after_ttl_expires() -> None:
 
     adapter = BybitV5Adapter(
         client=client,
+        ws=_make_ws_mock(),
         limiter=_make_limiter_mock(),
         bus=MagicMock(),
         sub_account="sub-a",
@@ -184,6 +199,7 @@ async def test_set_leverage_uses_custom_ttl_when_provided() -> None:
     ]
     adapter = BybitV5Adapter(
         client=client,
+        ws=_make_ws_mock(),
         limiter=_make_limiter_mock(),
         bus=MagicMock(),
         sub_account="sub-a",
@@ -401,29 +417,40 @@ async def test_RateLimitError_does_not_increment_counter_when_metrics_counter_is
     # No exception about counter; just RateLimitError propagated.
 
 
-# --- Stub forward-pointers (1 parametrized test, 6 stubs) ------------------
+# --- T-209 stream + close delegation (3 tests) -----------------------------
 
 
-async def test_close_stub_raises_NotImplementedError_with_T_209_substring() -> None:
-    """T-208b implemented the 3 read stubs; only `close` remains forward-pointed at T-209."""
-    adapter = _make_adapter()
-    with pytest.raises(NotImplementedError) as info:
-        await adapter.close()
-    assert "close" in str(info.value)
-    assert "T-209" in str(info.value)
+def test_stream_executions_delegates_to_ws_executions_iterator() -> None:
+    ws = _make_ws_mock()
+    sentinel = object()
+    ws.executions = MagicMock(return_value=sentinel)
+    adapter = _make_adapter(ws=ws)
+    result = adapter.stream_executions()
+    ws.executions.assert_called_once_with()
+    assert result is sentinel
 
 
-@pytest.mark.parametrize("method_name", ["stream_executions", "stream_positions"])
-def test_stubbed_stream_methods_raise_NotImplementedError_with_T_209_substring(
-    method_name: str,
-) -> None:
-    """Stream methods are def-not-async-def per T-201 OQ-1; raise synchronously."""
-    adapter = _make_adapter()
-    method = getattr(adapter, method_name)
-    with pytest.raises(NotImplementedError) as info:
-        method()
-    assert method_name in str(info.value)
-    assert "T-209" in str(info.value)
+def test_stream_positions_delegates_to_ws_positions_iterator() -> None:
+    ws = _make_ws_mock()
+    sentinel = object()
+    ws.positions = MagicMock(return_value=sentinel)
+    adapter = _make_adapter(ws=ws)
+    result = adapter.stream_positions()
+    ws.positions.assert_called_once_with()
+    assert result is sentinel
+
+
+async def test_adapter_close_calls_ws_close_then_client_close() -> None:
+    """ws.close() invoked BEFORE client.close() to drain WS state cleanly."""
+    ws = _make_ws_mock()
+    client = _make_client_mock()
+    client.close = AsyncMock()
+    call_order: list[str] = []
+    ws.close = AsyncMock(side_effect=lambda: call_order.append("ws"))
+    client.close = AsyncMock(side_effect=lambda: call_order.append("client"))
+    adapter = _make_adapter(client=client, ws=ws)
+    await adapter.close()
+    assert call_order == ["ws", "client"]
 
 
 # --- Side mapping helper ---------------------------------------------------

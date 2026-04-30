@@ -6,6 +6,12 @@ requires-python = ">=3.12"
 dependencies = [
     "asyncpg==0.30.0",
     "httpx==0.28.1",
+    # T-209 BybitV5PrivateWs — Bybit V5 private WS for execution + position
+    # streams. Same `websockets` library + version as packages/market
+    # (Binance public WS); workspace re-use, not a new ecosystem dep.
+    # Alternatives (`aiohttp.ws`, `httpx-ws`) rejected per §0.9: would add
+    # a parallel WS stack to the one already vetted for H-007 in F1.
+    "websockets==15.0.1",
     "scalper-v2-core",
 ]
 

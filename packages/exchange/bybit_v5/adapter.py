@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 
     from packages.bus import NatsClient
     from packages.exchange.bybit_v5.client import BybitV5Client
+    from packages.exchange.bybit_v5.ws import BybitV5PrivateWs
     from packages.exchange.rate_limiter import SharedRateLimiter
 
 
@@ -67,10 +68,6 @@ logger = logging.getLogger(__name__)
 
 def _to_bybit_side(side: Literal["buy", "sell"]) -> Literal["Buy", "Sell"]:
     return _BUY if side == "buy" else _SELL
-
-
-def _stub_message(method: str, owner: str) -> str:
-    return f"BybitV5Adapter.{method} body lands at {owner}"
 
 
 def _map_position_row(item: dict[str, Any]) -> Position:
@@ -118,6 +115,7 @@ class BybitV5Adapter:
         self,
         *,
         client: BybitV5Client,
+        ws: BybitV5PrivateWs,
         limiter: SharedRateLimiter,
         bus: NatsClient,
         sub_account: str,
@@ -126,6 +124,7 @@ class BybitV5Adapter:
         now_fn: Callable[[], datetime] = now_utc,
     ) -> None:
         self._client = client
+        self._ws = ws
         self._limiter = limiter
         self._bus = bus
         self._sub_account = sub_account
@@ -335,16 +334,17 @@ class BybitV5Adapter:
         )
         return total
 
-    # T-209 stubs -----------------------------------------------------------
+    # T-209 stream + close (delegates to BybitV5PrivateWs) ------------------
 
     def stream_executions(self) -> AsyncIterator[ExecutionEvent]:
-        raise NotImplementedError(_stub_message("stream_executions", "T-209"))
+        return self._ws.executions()
 
     def stream_positions(self) -> AsyncIterator[PositionEvent]:
-        raise NotImplementedError(_stub_message("stream_positions", "T-209"))
+        return self._ws.positions()
 
     async def close(self) -> None:
-        raise NotImplementedError(_stub_message("close", "T-209"))
+        await self._ws.close()
+        await self._client.close()
 
     # Internals -------------------------------------------------------------
 
