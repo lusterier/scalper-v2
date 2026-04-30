@@ -75,13 +75,31 @@ def mock_bus() -> MagicMock:
 
 
 @pytest.fixture
+def mock_rate_limiter() -> MagicMock:
+    """SharedRateLimiter stand-in for T-215 lifespan composition."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_adapter_pool_result() -> MagicMock:
+    """Empty AdapterPoolResult — T-215 lifespan attach with no live bots."""
+    result = MagicMock()
+    result.adapters = {}
+    result.ws_tasks = []
+    result.paper_consumer_tasks = []
+    return result
+
+
+@pytest.fixture
 def app_with_mocks(
     settings: Settings,
     mock_pool: MagicMock,
     mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    mock_adapter_pool_result: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> FastAPI:
-    """Build the real app with create_pool / NatsClient patched."""
+    """Build the real app with create_pool / NatsClient / rate_limiter / adapter pool patched."""
     monkeypatch.setattr(
         "services.execution.app.main.create_pool",
         AsyncMock(return_value=mock_pool),
@@ -89,6 +107,14 @@ def app_with_mocks(
     monkeypatch.setattr(
         "services.execution.app.main.NatsClient",
         MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(
+        "services.execution.app.main.SharedRateLimiter",
+        MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(
+        "services.execution.app.main.build_adapter_pool",
+        AsyncMock(return_value=mock_adapter_pool_result),
     )
     return create_app(settings=settings)
 

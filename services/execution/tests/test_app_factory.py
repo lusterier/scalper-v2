@@ -81,3 +81,19 @@ def test_lifespan_attaches_pool_and_bus_and_closes_in_reverse_order(
     mock_bus.close.assert_awaited_once()
     mock_pool.close.assert_awaited_once()
     assert call_order == ["bus", "pool"]
+
+
+def test_lifespan_attaches_adapters_rate_limiter_and_task_lists(
+    app_with_mocks: FastAPI,
+    mock_rate_limiter: MagicMock,
+    mock_adapter_pool_result: MagicMock,
+) -> None:
+    """T-215: app.state carries adapters / rate_limiter / ws_tasks / paper_consumer_tasks."""
+    with TestClient(app_with_mocks):
+        assert app_with_mocks.state.rate_limiter is mock_rate_limiter
+        assert app_with_mocks.state.adapters is mock_adapter_pool_result.adapters
+        assert app_with_mocks.state.ws_tasks is mock_adapter_pool_result.ws_tasks
+        assert (
+            app_with_mocks.state.paper_consumer_tasks
+            is mock_adapter_pool_result.paper_consumer_tasks
+        )

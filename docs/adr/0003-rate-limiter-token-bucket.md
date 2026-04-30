@@ -1,6 +1,6 @@
 # ADR-0003: NATS KV token-bucket shared rate limiter for Bybit V5 adapters
 
-Status: accepted
+Status: accepted (§Decision 6 sub_account source superseded by ADR-0004 — see ADR-0004 for the F2 active source-of-truth on per-bot sub_account)
 Date: 2026-04-29
 Deciders: operator, Claude Code
 

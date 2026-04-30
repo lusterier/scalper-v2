@@ -31,10 +31,13 @@ if TYPE_CHECKING:
     from structlog.stdlib import BoundLogger
 
     from packages.bus import NatsClient
+    from packages.core import BotId
+    from packages.exchange.protocols import ExchangeClient
 
     from .config import Settings
 
 __all__ = [
+    "get_adapter_pool",
     "get_bus",
     "get_logger_dep",
     "get_pool",
@@ -60,3 +63,8 @@ def get_settings(request: Request) -> Settings:
 def get_logger_dep(request: Request) -> BoundLogger:
     """Return the system-stream :class:`BoundLogger` attached in lifespan."""
     return cast("BoundLogger", request.app.state.logger)
+
+
+def get_adapter_pool(request: Request) -> dict[BotId, ExchangeClient]:
+    """Return ``app.state.adapters`` — per-bot ExchangeClient pool (T-215)."""
+    return cast("dict[BotId, ExchangeClient]", request.app.state.adapters)
