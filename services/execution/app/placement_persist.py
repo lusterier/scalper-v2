@@ -1,8 +1,8 @@
-"""§9.5 step 6 + emergency-close + persistence helpers (T-216b1).
+"""§9.5 steps 6-9 placement persistence + emergency-close helpers (T-216b1+T-216b2).
 
 Owns the persistence-tx + dedup ring + emergency-close machinery for
-the order placement pipeline. Imported by ``placement.py`` (T-216b2)
-which extends the per-bot handler post-fill_price using these helpers.
+the order placement pipeline. Imported by ``placement.py`` which extends
+the per-bot handler post-fill_price using these helpers.
 
 T-216b1 surface (split from monolithic T-216b per `chore(tasks)` commit
 splitting WG#3 LOC checkpoint trigger):
@@ -20,9 +20,15 @@ splitting WG#3 LOC checkpoint trigger):
   placeholder per H-012 closed-pnl source-of-truth invariant; T-220
   reconciles) + 2 trading_events + post-commit emit.
 
-T-216b2 will own: persistence tx for happy path (`persist_placement_tx`),
-post-commit emit helper (`emit_post_commit_events`), paper-mode branch,
-handler integration in `placement.py`, lifespan wire-up in `main.py`.
+T-216b2 surface (this revision):
+
+* :func:`persist_placement_tx` — happy-path single-tx 5-INSERT helper
+  (orders open + trades open + position_state initial + 2 trading_events
+  ``order_placed`` + ``sl_moved``); returns ``(OrderPlaced, SLMoved)``
+  payloads with patched real ``order_id`` for caller to emit post-commit.
+* :func:`emit_post_commit_events` — post-commit publisher for
+  ``OrderPlaced`` + ``SLMoved`` to ``orders.events.<bot_id>`` per Q2
+  publish-after-persist contract; WG#6 per-publish try/except no-short-circuit.
 """
 
 from __future__ import annotations
@@ -34,10 +40,12 @@ from packages.bus.dedup import DedupingConsumer
 from packages.bus.schemas.orders import (
     OrderClosed,
     OrderPlaced,
+    SLMoved,
     subject_for_orders_event,
 )
 from packages.db.queries.execution import (
     insert_order,
+    insert_position_state,
     insert_trade,
     insert_trading_event,
     update_trade_close,
@@ -54,7 +62,7 @@ if TYPE_CHECKING:
 
     from packages.bus import MessageEnvelope, NatsClient
     from packages.bus.schemas.orders import OrderRequest
-    from packages.core import BotId
+    from packages.core import BotId, CorrelationId
     from packages.exchange.protocols import ExchangeClient
     from packages.exchange.types import OrderPlaceResult
 
@@ -66,7 +74,9 @@ __all__ = [
     "compute_tp_price",
     "compute_tp_size",
     "emergency_close",
+    "emit_post_commit_events",
     "opposite_side",
+    "persist_placement_tx",
 ]
 
 
@@ -325,6 +335,150 @@ async def emergency_close(
         try:
             publish_envelope = _Env(
                 correlation_id=envelope.correlation_id,
+                publisher="execution-service",
+                payload=payload.model_dump(mode="json"),
+            )
+            await bus.publish(subject_for_orders_event(bot_id), publish_envelope)
+        except Exception as exc:
+            bound_logger.error(
+                "execution.event_publish_failed",
+                bot_id=bot_id,
+                event_type=event_type,
+                error=str(exc),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Happy-path persistence + post-commit emit (T-216b2; §9.5 steps 8-9)
+# ---------------------------------------------------------------------------
+
+
+async def persist_placement_tx(
+    *,
+    conn: asyncpg.Connection[asyncpg.Record] | asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+    bot_id: BotId,
+    request: OrderRequest,
+    envelope: MessageEnvelope,
+    place_result: OrderPlaceResult,
+    fill_price: Decimal,
+    sl_price: Decimal,
+    tp_price: Decimal,
+    tp_size: Decimal,
+    notional_usd: Decimal,
+    sl_set_at: datetime,
+) -> tuple[OrderPlaced, SLMoved]:
+    """Single-tx 5-INSERT for happy-path placement (§9.5 step 8).
+
+    Caller wraps in ``async with pool.acquire() as conn, conn.transaction():``.
+    Inserts open ``orders`` row (status='filled'), open ``trades`` row,
+    initial ``position_state`` (sl_type='protective'), and 2 ``trading_events``
+    rows (``order_placed`` + ``sl_moved``). Returns ``(OrderPlaced, SLMoved)``
+    payloads with real ``order_id`` patched post-INSERT — caller emits
+    post-commit via :func:`emit_post_commit_events`.
+    """
+    open_order_id = await insert_order(
+        conn,
+        bot_id=str(bot_id),
+        signal_id=request.signal_id,
+        correlation_id=str(envelope.correlation_id),
+        exchange_order_id=place_result.exchange_order_id,
+        exchange="bybit",
+        symbol=request.symbol,
+        side=request.side,
+        order_type="market",
+        qty=request.qty,
+        price=fill_price,
+        status="filled",
+        requested_at=envelope.published_at,
+        filled_at=place_result.placed_at,
+        closed_at=None,
+        idempotent_flag=False,
+    )
+    trade_id = await insert_trade(
+        conn,
+        bot_id=str(bot_id),
+        signal_id=request.signal_id,
+        open_order_id=open_order_id,
+        symbol=request.symbol,
+        side=request.side,
+        entry_price=fill_price,
+        qty=request.qty,
+        notional_usd=notional_usd,
+        opened_at=place_result.placed_at,
+    )
+    await insert_position_state(
+        conn,
+        bot_id=str(bot_id),
+        symbol=request.symbol,
+        trade_id=trade_id,
+        side=request.side,
+        entry_price=fill_price,
+        qty=request.qty,
+        remaining_qty=request.qty,
+        sl_price=sl_price,
+        tp_price=tp_price,
+        sl_type="protective",
+        updated_at=sl_set_at,
+    )
+    order_placed_payload = OrderPlaced(
+        bot_id=str(bot_id),
+        order_id=open_order_id,
+        exchange_order_id=place_result.exchange_order_id,
+        symbol=request.symbol,
+        timestamp=place_result.placed_at,
+    )
+    sl_moved_payload = SLMoved(
+        bot_id=str(bot_id),
+        order_id=open_order_id,
+        exchange_order_id=place_result.exchange_order_id,
+        symbol=request.symbol,
+        timestamp=sl_set_at,
+        new_sl_price=sl_price,
+        sl_type="protective",
+    )
+    await insert_trading_event(
+        conn,
+        occurred_at=place_result.placed_at,
+        bot_id=str(bot_id),
+        correlation_id=str(envelope.correlation_id),
+        event_type="order_placed",
+        payload=order_placed_payload.model_dump(mode="json"),
+    )
+    await insert_trading_event(
+        conn,
+        occurred_at=sl_set_at,
+        bot_id=str(bot_id),
+        correlation_id=str(envelope.correlation_id),
+        event_type="sl_moved",
+        payload=sl_moved_payload.model_dump(mode="json"),
+    )
+    return order_placed_payload, sl_moved_payload
+
+
+async def emit_post_commit_events(
+    *,
+    bus: NatsClient,
+    bot_id: BotId,
+    correlation_id: CorrelationId,
+    order_placed_payload: OrderPlaced,
+    sl_moved_payload: SLMoved,
+    bound_logger: BoundLogger,
+) -> None:
+    """Post-commit publisher for ``OrderPlaced`` + ``SLMoved`` (§9.5 step 9).
+
+    WG#6: per-publish try/except so a first publish failure does NOT
+    short-circuit the second publish. Mirror :func:`emergency_close`
+    publish loop. Subject: ``orders.events.<bot_id>``.
+    """
+    from packages.bus import MessageEnvelope as _Env  # local import — avoid cycle
+
+    for event_type, payload in (
+        ("order_placed", order_placed_payload),
+        ("sl_moved", sl_moved_payload),
+    ):
+        try:
+            publish_envelope = _Env(
+                correlation_id=correlation_id,
                 publisher="execution-service",
                 payload=payload.model_dump(mode="json"),
             )

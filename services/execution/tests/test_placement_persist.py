@@ -468,3 +468,234 @@ async def test_emergency_close_logs_persist_failed_on_db_error() -> None:
     )
     log_keys = [call.args[0] for call in logger.error.call_args_list]
     assert "execution.emergency_close_persist_failed" in log_keys
+
+
+# ---------------------------------------------------------------------------
+# persist_placement_tx (T-216b2; §9.5 step 8)
+# ---------------------------------------------------------------------------
+
+
+def _patch_inserts(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    open_order_id: int = 101,
+    trade_id: int = 202,
+) -> dict[str, list[dict[str, Any]]]:
+    """Patch all 4 INSERT helpers; return per-helper kwargs capture lists."""
+    captured: dict[str, list[dict[str, Any]]] = {
+        "insert_order": [],
+        "insert_trade": [],
+        "insert_position_state": [],
+        "insert_trading_event": [],
+    }
+
+    async def _capture_insert_order(*args: Any, **kwargs: Any) -> int:
+        captured["insert_order"].append(kwargs)
+        return open_order_id
+
+    async def _capture_insert_trade(*args: Any, **kwargs: Any) -> int:
+        captured["insert_trade"].append(kwargs)
+        return trade_id
+
+    async def _capture_insert_position_state(*args: Any, **kwargs: Any) -> None:
+        captured["insert_position_state"].append(kwargs)
+
+    async def _capture_insert_trading_event(*args: Any, **kwargs: Any) -> None:
+        captured["insert_trading_event"].append(kwargs)
+
+    monkeypatch.setattr(
+        "services.execution.app.placement_persist.insert_order",
+        _capture_insert_order,
+    )
+    monkeypatch.setattr(
+        "services.execution.app.placement_persist.insert_trade",
+        _capture_insert_trade,
+    )
+    monkeypatch.setattr(
+        "services.execution.app.placement_persist.insert_position_state",
+        _capture_insert_position_state,
+    )
+    monkeypatch.setattr(
+        "services.execution.app.placement_persist.insert_trading_event",
+        _capture_insert_trading_event,
+    )
+    return captured
+
+
+_SL_SET_AT = datetime(2026, 5, 1, 10, 30, 0, tzinfo=UTC)
+
+
+async def _call_persist_tx(
+    *, side: str = "buy", sl_set_at: datetime = _SL_SET_AT
+) -> tuple[Any, Any]:
+    from services.execution.app.placement_persist import persist_placement_tx
+
+    return await persist_placement_tx(
+        conn=MagicMock(),
+        bot_id=BotId("alpha"),
+        request=_request(side=side),
+        envelope=_envelope(),
+        place_result=_place_result(),
+        fill_price=Decimal("45000.50"),
+        sl_price=Decimal("44775.4975"),
+        tp_price=Decimal("45675.5075"),
+        tp_size=Decimal("0.0005"),
+        notional_usd=Decimal("45.0005"),
+        sl_set_at=sl_set_at,
+    )
+
+
+async def test_persist_placement_tx_inserts_order_trade_position_state_and_two_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _patch_inserts(monkeypatch)
+    await _call_persist_tx()
+    assert len(captured["insert_order"]) == 1
+    assert len(captured["insert_trade"]) == 1
+    assert len(captured["insert_position_state"]) == 1
+    assert len(captured["insert_trading_event"]) == 2
+    event_types = [c["event_type"] for c in captured["insert_trading_event"]]
+    assert event_types == ["order_placed", "sl_moved"]
+
+
+async def test_persist_placement_tx_open_order_uses_status_filled_per_brief_enum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OQ-6 — happy-path open order status='filled' per §7.2 line 967 enum."""
+    captured = _patch_inserts(monkeypatch)
+    await _call_persist_tx()
+    assert captured["insert_order"][0]["status"] == "filled"
+    assert captured["insert_order"][0]["closed_at"] is None
+    assert captured["insert_order"][0]["idempotent_flag"] is False
+
+
+async def test_persist_placement_tx_position_state_uses_sl_type_protective(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OQ-7 — initial SL is 'protective' (BE/trail come later via T-217)."""
+    captured = _patch_inserts(monkeypatch)
+    await _call_persist_tx()
+    pos_state_kwargs = captured["insert_position_state"][0]
+    assert pos_state_kwargs["sl_type"] == "protective"
+    assert pos_state_kwargs["sl_price"] == Decimal("44775.4975")
+    assert pos_state_kwargs["tp_price"] == Decimal("45675.5075")
+    assert pos_state_kwargs["remaining_qty"] == pos_state_kwargs["qty"]
+
+
+async def test_persist_placement_tx_patches_order_placed_payload_with_returned_open_order_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WG#2 — OrderPlaced.order_id reflects real BIGSERIAL id from insert_order."""
+    captured = _patch_inserts(monkeypatch, open_order_id=12345)
+    order_placed, _sl_moved = await _call_persist_tx()
+    assert order_placed.order_id == 12345
+    # And the trading_event payload carries the real id too.
+    order_placed_event_payload = captured["insert_trading_event"][0]["payload"]
+    assert order_placed_event_payload["order_id"] == 12345
+
+
+async def test_persist_placement_tx_uses_place_result_placed_at_for_order_placed_occurred_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OQ-5 — OrderPlaced.occurred_at = place_result.placed_at."""
+    captured = _patch_inserts(monkeypatch)
+    await _call_persist_tx()
+    order_placed_kwargs = captured["insert_trading_event"][0]
+    assert order_placed_kwargs["occurred_at"] == _FIXED_NOW  # = place_result.placed_at
+
+
+async def test_persist_placement_tx_uses_now_fn_value_for_sl_moved_occurred_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OQ-5 — SLMoved.occurred_at = now_fn() value (sl_set_at parameter)."""
+    captured = _patch_inserts(monkeypatch)
+    custom_sl_set_at = datetime(2027, 1, 1, 0, 0, 0, tzinfo=UTC)
+    await _call_persist_tx(sl_set_at=custom_sl_set_at)
+    sl_moved_kwargs = captured["insert_trading_event"][1]
+    assert sl_moved_kwargs["occurred_at"] == custom_sl_set_at
+
+
+# ---------------------------------------------------------------------------
+# emit_post_commit_events (T-216b2; §9.5 step 9)
+# ---------------------------------------------------------------------------
+
+
+async def test_emit_publishes_OrderPlaced_and_SLMoved_to_orders_events_subject() -> None:
+    """§9.5 step 9 — OUTSIDE-tx publishes for both event types on orders.events.<bot>."""
+    from packages.bus.schemas.orders import OrderPlaced, SLMoved
+    from services.execution.app.placement_persist import emit_post_commit_events
+
+    bus = _ok_bus()
+    order_placed = OrderPlaced(
+        bot_id="alpha",
+        order_id=101,
+        exchange_order_id="ord-1",
+        symbol="BTCUSDT",
+        timestamp=_FIXED_NOW,
+    )
+    sl_moved = SLMoved(
+        bot_id="alpha",
+        order_id=101,
+        exchange_order_id="ord-1",
+        symbol="BTCUSDT",
+        timestamp=_SL_SET_AT,
+        new_sl_price=Decimal("44775.4975"),
+        sl_type="protective",
+    )
+    await emit_post_commit_events(
+        bus=bus,
+        bot_id=BotId("alpha"),
+        correlation_id="cid-1",  # type: ignore[arg-type]
+        order_placed_payload=order_placed,
+        sl_moved_payload=sl_moved,
+        bound_logger=MagicMock(),
+    )
+    assert bus.publish.await_count == 2
+    subjects = [call.args[0] for call in bus.publish.await_args_list]
+    assert subjects == ["orders.events.alpha", "orders.events.alpha"]
+
+
+async def test_emit_post_commit_events_first_publish_failure_does_not_short_circuit_second() -> (
+    None
+):
+    """WG#3 — per-publish try/except; first fail does NOT short-circuit second."""
+    from packages.bus.schemas.orders import OrderPlaced, SLMoved
+    from services.execution.app.placement_persist import emit_post_commit_events
+
+    bus = MagicMock()
+    publish_calls: list[str] = []
+
+    async def _flaky_publish(subject: str, envelope: MessageEnvelope) -> None:
+        publish_calls.append(subject)
+        if len(publish_calls) == 1:
+            raise RuntimeError("nats disconnect")
+
+    bus.publish = AsyncMock(side_effect=_flaky_publish)
+    logger = MagicMock()
+    order_placed = OrderPlaced(
+        bot_id="alpha",
+        order_id=101,
+        exchange_order_id="ord-1",
+        symbol="BTCUSDT",
+        timestamp=_FIXED_NOW,
+    )
+    sl_moved = SLMoved(
+        bot_id="alpha",
+        order_id=101,
+        exchange_order_id="ord-1",
+        symbol="BTCUSDT",
+        timestamp=_SL_SET_AT,
+        new_sl_price=Decimal("44775.4975"),
+        sl_type="protective",
+    )
+    await emit_post_commit_events(
+        bus=bus,
+        bot_id=BotId("alpha"),
+        correlation_id="cid-1",  # type: ignore[arg-type]
+        order_placed_payload=order_placed,
+        sl_moved_payload=sl_moved,
+        bound_logger=logger,
+    )
+    assert len(publish_calls) == 2
+    log_keys = [call.args[0] for call in logger.error.call_args_list]
+    assert "execution.event_publish_failed" in log_keys

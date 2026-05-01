@@ -1,11 +1,13 @@
-"""§9.5 steps 1-5 order placement pipeline (T-216a).
+"""§9.5 steps 1-9 order placement pipeline (T-216a + T-216b1 + T-216b2).
 
 Per-bot subscriptions registered at lifespan step 6 (after adapter pool
 composition): one ``bus.subscribe(orders.requests.<bot_id>, handler)``
 per bot in ``app.state.adapters``. Subject is bot-bound at registration;
 :func:`make_per_bot_handler` is a closure factory returning the per-bot
-async handler. No subject parser — each subscription is bot-bound at
-registration time (path (b) per plan-reviewer Risk #1 resolution).
+async handler wrapped in :class:`OrderRequestDedupConsumer` (T-216b2;
+H-009 ring per-bot capacity from Settings). No subject parser — each
+subscription is bot-bound at registration time (path (b) per plan-reviewer
+Risk #1 resolution).
 
 Per-message handler (single :func:`make_per_bot_handler` body):
 
@@ -28,8 +30,22 @@ Per-message handler (single :func:`make_per_bot_handler` body):
 6. Call ``adapter.get_fill_price(symbol, exchange_order_id)`` with inline
    retry per Settings ``execution_fill_price_retry_*`` (CONCERN #7 / L-001);
    if None after all attempts → DLQ + raise :class:`FillPriceUnresolvedError`.
-7. Raise ``NotImplementedError("T-216b: SL+TP+persist+events")`` —
-   forward-pointer for T-216b owner; mirror T-208a stub-pin precedent.
+7. **T-216b2 — paper branch fork**: if ``request.exchange_mode == "paper"``,
+   call ``set_trading_stop(Full, sl)`` + ``set_trading_stop(Partial, tp, tp_size)``
+   then return (PaperExchange persists paper_* internally; T-218 emits
+   ``OrderFilled`` from ``stream_executions``).
+8. **T-216b2 — live/testnet SL set** (§9.5 step 6, H-013 explicit ``Full``):
+   on exception (AuthError / OrderRejected / NetworkTimeout / RateLimitError /
+   UnknownState) → invoke :func:`emergency_close` (T-216b1 H-004 path) and return.
+9. **T-216b2 — live/testnet TP set** (§9.5 step 7, H-013 explicit ``Partial``):
+   on exception → log ERROR ``execution.tp_set_failed_continuing_with_sl_only``
+   and continue (OQ-2 default A; position remains with SL only; T-217 monitor takes over).
+10. **T-216b2 — persistence-tx** (§9.5 step 8): single tx via
+    :func:`persist_placement_tx` (5 INSERTs: orders + trades + position_state
+    + 2 trading_events). On failure → log ERROR + return (orphan; T-221 reconciles).
+11. **T-216b2 — post-commit emit** (§9.5 step 9): :func:`emit_post_commit_events`
+    publishes ``OrderPlaced`` + ``SLMoved`` to ``orders.events.<bot_id>`` per
+    Q2 publish-after-persist contract (OUTSIDE tx).
 """
 
 from __future__ import annotations
@@ -46,10 +62,23 @@ from packages.exchange.errors import (
     UnknownState,
 )
 
+from .placement_persist import (
+    OrderRequestDedupConsumer,
+    compute_notional_usd,
+    compute_sl_price,
+    compute_tp_price,
+    compute_tp_size,
+    emergency_close,
+    emit_post_commit_events,
+    persist_placement_tx,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from datetime import datetime
     from decimal import Decimal
 
+    import asyncpg
     from structlog.stdlib import BoundLogger
 
     from packages.bus import MessageEnvelope, NatsClient
@@ -78,14 +107,24 @@ def make_per_bot_handler(
     adapter: ExchangeClient,
     bus: NatsClient,
     logger: BoundLogger,
+    pool: asyncpg.Pool,
+    dedup_capacity: int,
+    now_fn: Callable[[], datetime],
     fill_price_retry_attempts: int,
     fill_price_retry_backoff_s: float,
 ) -> Callable[[MessageEnvelope], Awaitable[None]]:
     """Closure factory returning the per-bot ``orders.requests.<bot_id>`` handler.
 
-    Bot identity + adapter + Settings retry knobs are bound in the closure
-    at registration time. Returned coroutine matches
-    :data:`packages.bus.client.Handler` shape.
+    Bot identity + adapter + pool + Settings knobs are bound in the closure
+    at registration time. The inner ``_handle`` coroutine is wrapped in
+    :class:`OrderRequestDedupConsumer` (H-009 per-bot ring; capacity from
+    Settings); the returned callable is :meth:`OrderRequestDedupConsumer.consume`
+    so duplicate ``(bot_id, signal_id)`` envelopes are filtered before the
+    handler runs. Match :data:`packages.bus.client.Handler` shape.
+
+    ``now_fn`` injected per §N1 UTC; default at the lifespan call site is
+    ``lambda: datetime.now(UTC)``. Threaded through to :func:`emergency_close`
+    and :func:`persist_placement_tx` for ``sl_set_at`` / close timestamps.
     """
 
     async def _handle(envelope: MessageEnvelope) -> None:
@@ -186,9 +225,114 @@ def make_per_bot_handler(
             raise FillPriceUnresolvedError(
                 f"fill_price None after {fill_price_retry_attempts} attempts"
             )
-        # 7. T-216a stops here. T-216b owns SL+TP+persist+events.
-        raise NotImplementedError(
-            "T-216b: SL+TP+persist+events — placement pipeline post-fill_price"
+        # T-216b1+T-216b2 — post-fill_price pipeline (§9.5 steps 6-9).
+        sl_price = compute_sl_price(request.side, fill_price, request.sl_pct)
+        tp_price = compute_tp_price(request.side, fill_price, request.tp_pct)
+        tp_size = compute_tp_size(request.qty, request.tp_qty_pct)
+        notional_usd = compute_notional_usd(request.qty, fill_price)
+
+        # 7. Paper-bot fork — PaperExchange persists paper_* internally;
+        # T-218 emits OrderFilled from stream_executions. Skip persistence + emit.
+        if request.exchange_mode == "paper":
+            await adapter.set_trading_stop(
+                request.symbol,
+                tpsl_mode="Full",
+                sl_price=sl_price,
+            )
+            await adapter.set_trading_stop(
+                request.symbol,
+                tpsl_mode="Partial",
+                tp_price=tp_price,
+                tp_size=tp_size,
+            )
+            return
+
+        # 8. SL set (§9.5 step 6, H-013 explicit Full). On any failure:
+        # emergency_close (T-216b1 H-004 path).
+        try:
+            await adapter.set_trading_stop(
+                request.symbol,
+                tpsl_mode="Full",
+                sl_price=sl_price,
+            )
+        except (AuthError, OrderRejected, NetworkTimeout, RateLimitError, UnknownState) as exc:
+            logger.error(
+                "execution.set_trading_stop_sl_failed_invoking_emergency_close",
+                bot_id=bot_id,
+                symbol=request.symbol,
+                error=str(exc),
+            )
+            await emergency_close(
+                adapter=adapter,
+                bus=bus,
+                pool=pool,
+                bound_logger=logger,
+                bot_id=bot_id,
+                request=request,
+                envelope=envelope,
+                place_result=place_result,
+                fill_price=fill_price,
+                now_fn=now_fn,
+            )
+            return
+        sl_set_at = now_fn()
+
+        # 9. TP set (§9.5 step 7, H-013 explicit Partial). On failure:
+        # log + continue (OQ-2 default A — position open with SL only;
+        # T-217 monitor takes over).
+        try:
+            await adapter.set_trading_stop(
+                request.symbol,
+                tpsl_mode="Partial",
+                tp_price=tp_price,
+                tp_size=tp_size,
+            )
+        except (AuthError, OrderRejected, NetworkTimeout, RateLimitError, UnknownState) as exc:
+            logger.error(
+                "execution.tp_set_failed_continuing_with_sl_only",
+                bot_id=bot_id,
+                symbol=request.symbol,
+                error=str(exc),
+            )
+
+        # 10. Persistence-tx (§9.5 step 8). On failure: orphan; T-221 reconciles.
+        try:
+            async with pool.acquire() as conn, conn.transaction():
+                order_placed_payload, sl_moved_payload = await persist_placement_tx(
+                    conn=conn,
+                    bot_id=bot_id,
+                    request=request,
+                    envelope=envelope,
+                    place_result=place_result,
+                    fill_price=fill_price,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    tp_size=tp_size,
+                    notional_usd=notional_usd,
+                    sl_set_at=sl_set_at,
+                )
+        except Exception as exc:
+            logger.error(
+                "execution.placement_persist_tx_failed",
+                bot_id=bot_id,
+                symbol=request.symbol,
+                error=str(exc),
+            )
+            return
+
+        # 11. Post-commit emit (§9.5 step 9, OUTSIDE tx — Q2 publish-after-persist).
+        await emit_post_commit_events(
+            bus=bus,
+            bot_id=bot_id,
+            correlation_id=envelope.correlation_id,
+            order_placed_payload=order_placed_payload,
+            sl_moved_payload=sl_moved_payload,
+            bound_logger=logger,
         )
 
-    return _handle
+    consumer = OrderRequestDedupConsumer(
+        handler=_handle,
+        capacity=dedup_capacity,
+        bound_logger=logger,
+    )
+    return consumer.consume

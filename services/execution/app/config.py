@@ -85,3 +85,6 @@ class Settings(BaseSettings):
     # T-216a — placement-handler fill_price retry knobs (CONCERN #7 fix per L-001).
     execution_fill_price_retry_attempts: int = 3
     execution_fill_price_retry_backoff_s: float = 0.1
+
+    # T-216b2 — OrderRequestDedupConsumer per-bot ring capacity (H-009; OQ-7/OQ-8).
+    execution_orders_dedup_capacity: int = 10000

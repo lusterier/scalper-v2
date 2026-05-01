@@ -148,3 +148,117 @@ def test_lifespan_subscribes_to_orders_requests_per_bot(
     assert "orders.requests.beta" in subscribe_subjects
     assert "orders.requests.>" not in subscribe_subjects
     assert mock_bus.subscribe.await_count == 2
+
+
+def test_lifespan_subscribes_each_bot_with_handler_wrapped_in_OrderRequestDedupConsumer(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-216b2 — per-bot subscribe handler is :class:`OrderRequestDedupConsumer.consume`."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+    from services.execution.app.placement_persist import OrderRequestDedupConsumer
+
+    def _adapter() -> _MagicMock:
+        a = _MagicMock()
+        a.close = _AsyncMock()
+        return a
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _adapter(), "beta": _adapter()}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+    # Each subscribe call carries a handler whose __self__ is OrderRequestDedupConsumer.
+    handlers = [call.args[1] for call in mock_bus.subscribe.await_args_list]
+    assert len(handlers) == 2
+    for handler in handlers:
+        assert isinstance(handler.__self__, OrderRequestDedupConsumer)
+        assert handler.__name__ == "consume"
+
+
+def test_lifespan_threads_settings_execution_orders_dedup_capacity_to_make_per_bot_handler(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-216b2 — Settings.execution_orders_dedup_capacity propagates to per-bot consumer."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    def _adapter() -> _MagicMock:
+        a = _MagicMock()
+        a.close = _AsyncMock()
+        return a
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _adapter()}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    captured_kwargs: list[dict[str, object]] = []
+
+    def _capture_handler_factory(**kwargs: object) -> object:
+        captured_kwargs.append(kwargs)
+
+        async def _no_op(_: object) -> None:
+            return None
+
+        return _no_op
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.make_per_bot_handler",
+        _capture_handler_factory,
+    )
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+    assert len(captured_kwargs) == 1
+    kwargs = captured_kwargs[0]
+    assert kwargs["dedup_capacity"] == settings.execution_orders_dedup_capacity  # type: ignore[attr-defined]
+    assert kwargs["pool"] is mock_pool
+    assert callable(kwargs["now_fn"])

@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
@@ -137,14 +138,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bound_logger=logger,
         )
 
-        # 5. Per-bot orders.requests.<bot_id> subscription (T-216a).
-        # Subscribe failure here crashes the lifespan (WG#7 fail-fast).
+        # 5. Per-bot orders.requests.<bot_id> subscription (T-216a + T-216b2 wrap).
+        # The handler returned by make_per_bot_handler is the OrderRequestDedupConsumer.consume
+        # bound method (H-009 per-bot ring; capacity from Settings). Subscribe failure
+        # here crashes the lifespan (WG#7 fail-fast).
         for bot_id, adapter in adapter_pool.adapters.items():
             handler = make_per_bot_handler(
                 bot_id=bot_id,
                 adapter=adapter,
                 bus=bus,
                 logger=logger,
+                pool=pool,
+                dedup_capacity=settings.execution_orders_dedup_capacity,
+                now_fn=lambda: datetime.now(UTC),
                 fill_price_retry_attempts=settings.execution_fill_price_retry_attempts,
                 fill_price_retry_backoff_s=settings.execution_fill_price_retry_backoff_s,
             )
