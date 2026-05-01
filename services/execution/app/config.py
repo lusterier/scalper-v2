@@ -88,3 +88,6 @@ class Settings(BaseSettings):
 
     # T-216b2 — OrderRequestDedupConsumer per-bot ring capacity (H-009; OQ-7/OQ-8).
     execution_orders_dedup_capacity: int = 10000
+
+    # T-218a — ExecutionDispatcher per-bot ring capacity (H-009; §9.5:1591 size-10k default).
+    dispatch_dedup_capacity: int = 10000

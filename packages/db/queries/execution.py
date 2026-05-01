@@ -35,13 +35,23 @@ if TYPE_CHECKING:
 __all__ = [
     "BotRow",
     "ExchangeMode",
+    "OrderLookupRow",
+    "PositionStateRow",
+    "TradeLookupRow",
     "delete_position_state",
+    "insert_execution",
     "insert_order",
     "insert_position_state",
     "insert_trade",
     "insert_trading_event",
     "select_active_bots",
+    "select_order_id_by_exchange_id",
+    "select_position_state",
+    "select_trade_by_close_order_id",
+    "select_trade_by_open_order_id",
+    "update_position_state_after_fill",
     "update_trade_close",
+    "update_trade_fees_incremental",
 ]
 
 
@@ -300,4 +310,274 @@ async def delete_position_state(
         "DELETE FROM position_state WHERE bot_id = $1 AND symbol = $2",
         bot_id,
         symbol,
+    )
+
+
+# T-218a — execution dispatcher query helpers (§9.5 line 1591) ---------------
+
+
+@dataclass(frozen=True, slots=True)
+class OrderLookupRow:
+    """Read-only projection from :func:`select_order_id_by_exchange_id`."""
+
+    id: int
+
+
+@dataclass(frozen=True, slots=True)
+class TradeLookupRow:
+    """Read-only projection from open/close-order trade lookup helpers."""
+
+    id: int
+    open_order_id: int
+    close_order_id: int | None
+    side: Literal["buy", "sell"]
+
+
+@dataclass(frozen=True, slots=True)
+class PositionStateRow:
+    """Read-only projection from :func:`select_position_state`.
+
+    ``sl_type`` stays loose ``str | None`` (read robustness — DB could in
+    theory hold legacy/repair values; we don't want a Literal narrowing
+    to barf on read). Write-side helpers (``update_position_state_after_fill``)
+    tighten to ``Literal["protective", "be", "trail"] | None`` so a
+    typo at the write call-site fails compile-time.
+    """
+
+    bot_id: str
+    symbol: str
+    trade_id: int
+    side: Literal["buy", "sell"]
+    entry_price: Decimal
+    qty: Decimal
+    remaining_qty: Decimal
+    sl_price: Decimal | None
+    tp_price: Decimal | None
+    sl_type: str | None
+
+
+async def select_order_id_by_exchange_id(
+    conn: _DbExecutor,
+    exchange_order_id: str,
+) -> int | None:
+    """Return ``orders.id`` where ``exchange_order_id`` matches, else None.
+
+    T-218b dispatcher distinguishes (a) fills against open/close orders
+    we placed (orders row exists) from (b) synthetic SL/TP/trail fills
+    triggered by Bybit when ``set_trading_stop`` SL/TP fires (no orders
+    row — H-024 motivation).
+    """
+    row = await conn.fetchrow(
+        "SELECT id FROM orders WHERE exchange_order_id = $1",
+        exchange_order_id,
+    )
+    return None if row is None else int(row["id"])
+
+
+async def select_trade_by_open_order_id(
+    conn: _DbExecutor,
+    open_order_id: int,
+) -> TradeLookupRow | None:
+    """Return open-order trade row keyed by ``open_order_id``, else None."""
+    row = await conn.fetchrow(
+        """
+        SELECT id, open_order_id, close_order_id, side
+        FROM trades
+        WHERE open_order_id = $1
+        """,
+        open_order_id,
+    )
+    if row is None:
+        return None
+    return TradeLookupRow(
+        id=int(row["id"]),
+        open_order_id=int(row["open_order_id"]),
+        close_order_id=None if row["close_order_id"] is None else int(row["close_order_id"]),
+        side=row["side"],
+    )
+
+
+async def select_trade_by_close_order_id(
+    conn: _DbExecutor,
+    close_order_id: int,
+) -> TradeLookupRow | None:
+    """Return closed-trade row keyed by ``close_order_id``, else None."""
+    row = await conn.fetchrow(
+        """
+        SELECT id, open_order_id, close_order_id, side
+        FROM trades
+        WHERE close_order_id = $1
+        """,
+        close_order_id,
+    )
+    if row is None:
+        return None
+    return TradeLookupRow(
+        id=int(row["id"]),
+        open_order_id=int(row["open_order_id"]),
+        close_order_id=int(row["close_order_id"]),
+        side=row["side"],
+    )
+
+
+async def select_position_state(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    symbol: str,
+) -> PositionStateRow | None:
+    """Return current ``position_state`` row for ``(bot_id, symbol)`` PK or None."""
+    row = await conn.fetchrow(
+        """
+        SELECT bot_id, symbol, trade_id, side, entry_price, qty, remaining_qty,
+               sl_price, tp_price, sl_type
+        FROM position_state
+        WHERE bot_id = $1 AND symbol = $2
+        """,
+        bot_id,
+        symbol,
+    )
+    if row is None:
+        return None
+    return PositionStateRow(
+        bot_id=row["bot_id"],
+        symbol=row["symbol"],
+        trade_id=int(row["trade_id"]),
+        side=row["side"],
+        entry_price=row["entry_price"],
+        qty=row["qty"],
+        remaining_qty=row["remaining_qty"],
+        sl_price=row["sl_price"],
+        tp_price=row["tp_price"],
+        sl_type=row["sl_type"],
+    )
+
+
+async def update_position_state_after_fill(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    symbol: str,
+    qty_delta: Decimal,
+    new_sl_type: Literal["protective", "be", "trail"] | None,
+    updated_at: datetime,
+) -> None:
+    """Subtract ``qty_delta`` from remaining_qty; optionally set ``sl_type``.
+
+    Composite PK ``(bot_id, symbol)``. T-218b body invokes after each
+    execution event: ``new_sl_type=None`` keeps existing sl_type
+    (open / close / sl / trail fills); ``new_sl_type='trail'`` applies
+    on partial_tp per OQ-5 trailing-on-TP-hit.
+
+    Write-side ``new_sl_type`` is tightened to ``Literal[...] | None``
+    (mypy-narrowed) so typos at the call-site fail compile-time. Read
+    projection (:class:`PositionStateRow.sl_type`) stays loose ``str | None``.
+    """
+    if new_sl_type is None:
+        await conn.execute(
+            """
+            UPDATE position_state
+            SET remaining_qty = remaining_qty - $1, updated_at = $2
+            WHERE bot_id = $3 AND symbol = $4
+            """,
+            qty_delta,
+            updated_at,
+            bot_id,
+            symbol,
+        )
+    else:
+        await conn.execute(
+            """
+            UPDATE position_state
+            SET remaining_qty = remaining_qty - $1, sl_type = $2, updated_at = $3
+            WHERE bot_id = $4 AND symbol = $5
+            """,
+            qty_delta,
+            new_sl_type,
+            updated_at,
+            bot_id,
+            symbol,
+        )
+
+
+async def update_trade_fees_incremental(
+    conn: _DbExecutor,
+    *,
+    trade_id: int,
+    fee_delta: Decimal,
+) -> None:
+    """Incremental ``fees_paid`` update: ``COALESCE(fees_paid, 0) + fee_delta``.
+
+    PK-only ``WHERE`` clause per H-018. T-218b body invokes once per
+    execution event so multiple fills on the same trade accumulate
+    fees correctly.
+
+    SQL note (per L-008): ``COALESCE(fees_paid, 0)`` — bare ``0``
+    implicit-casts to NUMERIC at the column boundary (column is
+    ``NUMERIC(20,4)`` per migration 0005). Do NOT use ``Decimal '0'``
+    (Python type name, not a PostgreSQL type identifier — would raise
+    ``syntax error at or near "Decimal"`` at runtime).
+    """
+    await conn.execute(
+        """
+        UPDATE trades
+        SET fees_paid = COALESCE(fees_paid, 0) + $1
+        WHERE id = $2
+        """,
+        fee_delta,
+        trade_id,
+    )
+
+
+@non_idempotent
+async def insert_execution(
+    conn: _DbExecutor,
+    *,
+    exchange_exec_id: str,
+    order_id: int,
+    trade_id: int | None,
+    bot_id: str,
+    symbol: str,
+    side: Literal["buy", "sell"],
+    price: Decimal,
+    qty: Decimal,
+    fee: Decimal,
+    exec_type: str,
+    executed_at: datetime,
+) -> None:
+    """INSERT ``executions`` row (hypertable; PK ``(executed_at, id)`` with id BIGSERIAL).
+
+    ``trade_id`` nullable per migration 0005 line 194 (backfilled when
+    trade row materialises). T-218b dispatcher path always knows
+    ``trade_id`` via lookup; nullable signature kept for future T-221
+    reconciliation paths that may insert orphan executions.
+
+    ``exec_type`` is plain TEXT NOT NULL with NO CHECK constraint per
+    migration 0005:202 — the §7.2:1027 enum (``'open' | 'partial_tp' |
+    'sl' | 'trail' | 'close'``) is documentary, not enforced. T-218b
+    OQ-1 default branch additionally writes ``'unknown'`` + WARN log
+    when neither orders-lookup nor position_state-inference yields a
+    match (operator-actionable signal). T-218b plan-reviewer to
+    re-affirm the ``'unknown'`` admissibility OR escalate to ADR +
+    future migration adding ``CHECK (exec_type IN (...))``.
+    """
+    await conn.execute(
+        """
+        INSERT INTO executions (
+            exchange_exec_id, order_id, trade_id, bot_id, symbol, side,
+            price, qty, fee, exec_type, executed_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        """,
+        exchange_exec_id,
+        order_id,
+        trade_id,
+        bot_id,
+        symbol,
+        side,
+        price,
+        qty,
+        fee,
+        exec_type,
+        executed_at,
     )

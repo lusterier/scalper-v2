@@ -32,29 +32,37 @@ Composition split (mirrors T-100 / T-109):
   :class:`packages.bus.NatsClient`) live in the lifespan and attach
   inside the ``async with`` block.
 
-Lifespan order (T-216a — 7 steps):
+Lifespan order (T-216a + T-218a — 8 steps):
 
 1. ``pool = await create_pool(database_url, application_name="execution-service")``.
 2. ``bus = NatsClient(...); await bus.connect()``.
 3. ``rate_limiter = SharedRateLimiter(bus=bus, **rate_limit_kwargs)`` — per ADR-0003.
 4. ``adapter_pool = await build_adapter_pool(...)`` — reads active bots,
    per-bot constructs adapter, spawns ws/paper tasks (T-215; H-022, ADR-0004).
-5. **NEW T-216a**: per-bot ``orders.requests.<bot_id>`` subscription loop —
+5. **T-216a**: per-bot ``orders.requests.<bot_id>`` subscription loop —
    ``for bot_id, adapter in adapter_pool.adapters.items(): await
    bus.subscribe(subject_for_orders_request(bot_id), make_per_bot_handler(...))``.
    Subscribe failure at lifespan = service crash (WG#7 fail-fast).
-6. State attach: pool / bus / rate_limiter / adapters / ws_tasks /
-   paper_consumer_tasks → ``app.state``.
+6. **T-218a**: per-bot ``ExecutionDispatcher`` task — one
+   ``asyncio.create_task(run_dispatcher_for_bot(...))`` per
+   ``(bot_id, adapter)``. Each task pumps ``adapter.stream_executions()``
+   into a ``DedupingConsumer[ExecutionEvent]`` keyed on ``exchange_exec_id``
+   (H-009 ring; capacity from ``Settings.dispatch_dedup_capacity``).
+7. State attach: pool / bus / rate_limiter / adapters / ws_tasks /
+   paper_consumer_tasks / dispatcher_tasks → ``app.state``.
 
 Shutdown order (reverse, load-bearing):
 
-7. ``await bus.close()`` — drains tracked subscriptions (incl. per-bot
+8. ``await bus.close()`` — drains tracked subscriptions (incl. per-bot
    ``orders.requests.<bot_id>``), closes NATS connection. **Must run BEFORE**
    ``adapter.close`` / ``pool.close`` so any in-flight bus publish that
    touches downstream components finishes against open infra.
-8. Cancel + gather ws_tasks + paper_consumer_tasks (drain backgrounds).
-9. ``await adapter.close()`` per bot (Bybit closes ws + httpx; Paper no-op).
-10. ``await pool.close()`` — releases asyncpg connections.
+9. Cancel + gather ``dispatcher_tasks`` — they consume from
+   ``adapter.stream_executions()``; cancelling them BEFORE adapter
+   prevents mid-iter raises (graceful stop signal via CancelledError).
+10. Cancel + gather ws_tasks + paper_consumer_tasks (drain backgrounds).
+11. ``await adapter.close()`` per bot (Bybit closes ws + httpx; Paper no-op).
+12. ``await pool.close()`` — releases asyncpg connections.
 
 T-216 publish-after-persist contract (T-200 Q2) inherits this order:
 the pool stays open until the bus has fully drained, so the publish
@@ -82,6 +90,7 @@ from packages.observability import (
 )
 
 from .config import Settings
+from .dispatcher import ExecutionDispatcher, run_dispatcher_for_bot
 from .health import router as health_router
 from .placement import make_per_bot_handler
 from .pool import build_adapter_pool
@@ -156,13 +165,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             await bus.subscribe(subject_for_orders_request(bot_id), handler)
 
-        # 6. State attach.
+        # 6. Per-bot ExecutionDispatcher tasks (T-218a; H-009 per-bot dedup ring).
+        dispatcher_tasks: list[asyncio.Task[None]] = []
+        for bot_id, adapter in adapter_pool.adapters.items():
+            dispatcher = ExecutionDispatcher(
+                bot_id=bot_id,
+                pool=pool,
+                bus=bus,
+                bound_logger=logger,
+                capacity=settings.dispatch_dedup_capacity,
+                now_fn=lambda: datetime.now(UTC),
+            )
+            task = asyncio.create_task(
+                run_dispatcher_for_bot(
+                    adapter=adapter,
+                    dispatcher=dispatcher,
+                    bound_logger=logger,
+                ),
+                name=f"dispatcher_{bot_id}",
+            )
+            dispatcher_tasks.append(task)
+
+        # 7. State attach.
         app.state.pool = pool
         app.state.bus = bus
         app.state.rate_limiter = rate_limiter
         app.state.adapters = adapter_pool.adapters
         app.state.ws_tasks = adapter_pool.ws_tasks
         app.state.paper_consumer_tasks = adapter_pool.paper_consumer_tasks
+        app.state.dispatcher_tasks = dispatcher_tasks
 
         logger.info(
             "service_started",
@@ -172,8 +203,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
-            # Reverse shutdown: bus → cancel tasks → adapter.close → pool.close.
+            # Reverse shutdown:
+            #   bus.close → dispatcher_tasks cancel (consume from adapter.stream_*;
+            #   must drain before adapter.close pulls the WS) → ws_tasks cancel →
+            #   adapter.close → pool.close.
             await bus.close()
+            for task in dispatcher_tasks:
+                task.cancel()
+            if dispatcher_tasks:
+                await asyncio.gather(*dispatcher_tasks, return_exceptions=True)
             background_tasks = [
                 *adapter_pool.ws_tasks,
                 *adapter_pool.paper_consumer_tasks,

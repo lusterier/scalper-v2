@@ -262,3 +262,217 @@ def test_lifespan_threads_settings_execution_orders_dedup_capacity_to_make_per_b
     assert kwargs["dedup_capacity"] == settings.execution_orders_dedup_capacity  # type: ignore[attr-defined]
     assert kwargs["pool"] is mock_pool
     assert callable(kwargs["now_fn"])
+
+
+def test_lifespan_spawns_one_dispatcher_task_per_bot_named_dispatcher_botid(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-218a WG#4 — one asyncio.Task per bot named ``dispatcher_<bot_id>``."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    def _adapter() -> _MagicMock:
+        a = _MagicMock()
+        a.close = _AsyncMock()
+
+        async def _empty_stream() -> object:
+            for _ in ():  # empty iter — never yields but marks function as async generator
+                yield _
+
+        a.stream_executions = _MagicMock(return_value=_empty_stream())
+        return a
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _adapter(), "beta": _adapter()}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        # During lifespan: app.state.dispatcher_tasks holds 2 tasks named
+        # ``dispatcher_alpha`` + ``dispatcher_beta``.
+        task_names = sorted(t.get_name() for t in app.state.dispatcher_tasks)
+        assert task_names == ["dispatcher_alpha", "dispatcher_beta"]
+
+
+def test_lifespan_cancels_dispatcher_tasks_before_adapter_close(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-218a WG#5 — dispatcher_tasks cancel BEFORE adapter.close (graceful stop signal)."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    shutdown_sequence: list[str] = []
+
+    def _adapter(label: str) -> _MagicMock:
+        import asyncio as _asyncio
+
+        a = _MagicMock()
+
+        async def _close() -> None:
+            shutdown_sequence.append(f"adapter_close_{label}")
+
+        a.close = _close
+
+        async def _hanging_stream() -> object:
+            # Hang indefinitely so the dispatcher task is alive at shutdown
+            # and goes through the cancel path. The unreachable `yield`
+            # below is the async-generator marker for this function.
+            for _ in ():  # never iterates
+                yield _
+            await _asyncio.Event().wait()
+
+        a.stream_executions = _MagicMock(return_value=_hanging_stream())
+        return a
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _adapter("alpha")}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+
+    # Wrap run_dispatcher_for_bot so it logs cancellation timing.
+    real_run = __import__(
+        "services.execution.app.main", fromlist=["run_dispatcher_for_bot"]
+    ).run_dispatcher_for_bot
+
+    async def _spy_run_dispatcher_for_bot(*args: object, **kwargs: object) -> None:
+        try:
+            await real_run(*args, **kwargs)
+        except __import__("asyncio").CancelledError:
+            shutdown_sequence.append("dispatcher_cancel")
+            raise
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.run_dispatcher_for_bot",
+        _spy_run_dispatcher_for_bot,
+    )
+
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+
+    # Order pin: dispatcher_cancel BEFORE adapter_close_alpha.
+    assert "dispatcher_cancel" in shutdown_sequence
+    assert "adapter_close_alpha" in shutdown_sequence
+    assert shutdown_sequence.index("dispatcher_cancel") < shutdown_sequence.index(
+        "adapter_close_alpha"
+    )
+
+
+def test_lifespan_threads_settings_dispatch_dedup_capacity_to_dispatcher(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-218a — Settings.dispatch_dedup_capacity propagates to ExecutionDispatcher ctor."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    def _adapter() -> _MagicMock:
+        a = _MagicMock()
+        a.close = _AsyncMock()
+
+        async def _empty_stream() -> object:
+            for _ in ():  # empty iter — never yields but marks function as async generator
+                yield _
+
+        a.stream_executions = _MagicMock(return_value=_empty_stream())
+        return a
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _adapter()}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    captured_ctor_kwargs: list[dict[str, object]] = []
+
+    def _capture_dispatcher(**kwargs: object) -> object:
+        captured_ctor_kwargs.append(kwargs)
+        # Return a dummy with the methods main.py + run_dispatcher_for_bot need.
+        d = _MagicMock()
+        d.bot_id = kwargs["bot_id"]
+
+        async def _consume(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        d.consume = _consume
+        return d
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.ExecutionDispatcher",
+        _capture_dispatcher,
+    )
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+    assert len(captured_ctor_kwargs) == 1
+    kwargs = captured_ctor_kwargs[0]
+    assert kwargs["capacity"] == settings.dispatch_dedup_capacity  # type: ignore[attr-defined]
+    assert kwargs["pool"] is mock_pool
+    assert kwargs["bus"] is mock_bus
+    assert callable(kwargs["now_fn"])

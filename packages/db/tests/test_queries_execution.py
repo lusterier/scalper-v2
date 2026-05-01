@@ -17,14 +17,23 @@ import pytest
 
 from packages.db.queries.execution import (
     BotRow,
+    PositionStateRow,
+    TradeLookupRow,
     _validate_exchange_mode,
     delete_position_state,
+    insert_execution,
     insert_order,
     insert_position_state,
     insert_trade,
     insert_trading_event,
     select_active_bots,
+    select_order_id_by_exchange_id,
+    select_position_state,
+    select_trade_by_close_order_id,
+    select_trade_by_open_order_id,
+    update_position_state_after_fill,
     update_trade_close,
+    update_trade_fees_incremental,
 )
 
 _FIXED_NOW = datetime(2026, 4, 30, 12, 0, 0, tzinfo=UTC)
@@ -342,3 +351,178 @@ async def test_delete_position_state_uses_composite_pk_bot_id_and_symbol() -> No
     assert "symbol = $2" in sql
     assert sql_args[1] == "alpha"
     assert sql_args[2] == "BTCUSDT"
+
+
+# T-218a — execution dispatcher query helpers --------------------------------
+
+
+async def test_select_order_id_by_exchange_id_returns_id_when_found() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"id": 12345})
+    result = await select_order_id_by_exchange_id(conn, "ord-xyz")
+    assert result == 12345
+
+
+async def test_select_order_id_by_exchange_id_returns_none_when_not_found() -> None:
+    """Synthetic SL/TP/trail fill — no orders row exists for Bybit synthetic order."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    result = await select_order_id_by_exchange_id(conn, "synthetic-sl-1")
+    assert result is None
+
+
+async def test_select_trade_by_open_order_id_returns_row_with_side_and_close_order_id() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "id": 999,
+            "open_order_id": 100,
+            "close_order_id": None,
+            "side": "buy",
+        }
+    )
+    result = await select_trade_by_open_order_id(conn, 100)
+    assert result == TradeLookupRow(id=999, open_order_id=100, close_order_id=None, side="buy")
+
+
+async def test_select_trade_by_close_order_id_returns_row_when_close_set() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "id": 888,
+            "open_order_id": 100,
+            "close_order_id": 200,
+            "side": "sell",
+        }
+    )
+    result = await select_trade_by_close_order_id(conn, 200)
+    assert result == TradeLookupRow(id=888, open_order_id=100, close_order_id=200, side="sell")
+
+
+async def test_select_position_state_returns_row_with_sl_type_and_remaining_qty() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "bot_id": "alpha",
+            "symbol": "BTCUSDT",
+            "trade_id": 555,
+            "side": "buy",
+            "entry_price": Decimal("45000.50"),
+            "qty": Decimal("0.001"),
+            "remaining_qty": Decimal("0.0005"),
+            "sl_price": Decimal("44775.4975"),
+            "tp_price": Decimal("45675.5075"),
+            "sl_type": "trail",
+        }
+    )
+    result = await select_position_state(conn, bot_id="alpha", symbol="BTCUSDT")
+    assert result == PositionStateRow(
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        trade_id=555,
+        side="buy",
+        entry_price=Decimal("45000.50"),
+        qty=Decimal("0.001"),
+        remaining_qty=Decimal("0.0005"),
+        sl_price=Decimal("44775.4975"),
+        tp_price=Decimal("45675.5075"),
+        sl_type="trail",
+    )
+
+
+async def test_update_position_state_after_fill_subtracts_remaining_qty() -> None:
+    """new_sl_type=None branch — keeps existing sl_type unchanged."""
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await update_position_state_after_fill(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        qty_delta=Decimal("0.0005"),
+        new_sl_type=None,
+        updated_at=_FIXED_NOW,
+    )
+    sql_args = conn.execute.await_args.args
+    sql = sql_args[0]
+    assert "UPDATE position_state" in sql
+    assert "remaining_qty = remaining_qty - $1" in sql
+    assert "sl_type" not in sql  # branch sans sl_type write
+    assert sql_args[1] == Decimal("0.0005")
+
+
+async def test_update_position_state_after_fill_sets_sl_type_when_provided() -> None:
+    """OQ-5 partial_tp → sl_type='trail' surface — write-side Literal type-narrowing."""
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await update_position_state_after_fill(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        qty_delta=Decimal("0.0005"),
+        new_sl_type="trail",
+        updated_at=_FIXED_NOW,
+    )
+    sql_args = conn.execute.await_args.args
+    sql = sql_args[0]
+    assert "remaining_qty = remaining_qty - $1" in sql
+    assert "sl_type = $2" in sql
+    assert sql_args[1] == Decimal("0.0005")
+    assert sql_args[2] == "trail"
+
+
+async def test_update_trade_fees_incremental_uses_pk_only_where_id() -> None:
+    """H-018 PK-only invariant — WHERE clause has only id, no symbol/bot_id/status."""
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await update_trade_fees_incremental(
+        conn,
+        trade_id=12345,
+        fee_delta=Decimal("0.001"),
+    )
+    sql_args = conn.execute.await_args.args
+    sql = sql_args[0]
+    where_clause = sql.split("WHERE")[1]
+    assert "id = $2" in where_clause
+    assert "symbol" not in where_clause
+    assert "bot_id" not in where_clause
+    assert "status" not in where_clause
+
+
+async def test_update_trade_fees_incremental_coalesce_uses_bare_zero_not_decimal_literal() -> None:
+    """L-008 BLOCKER #1 fix pin — SQL has bare `0` in COALESCE, NOT `Decimal '0'` (Python type)."""
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await update_trade_fees_incremental(
+        conn,
+        trade_id=1,
+        fee_delta=Decimal("0.001"),
+    )
+    sql = conn.execute.await_args.args[0]
+    assert "COALESCE(fees_paid, 0)" in sql
+    assert "Decimal" not in sql  # Decimal is Python type, not PG type — would raise syntax error
+
+
+async def test_insert_execution_writes_exec_type_and_trade_id_nullable() -> None:
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await insert_execution(
+        conn,
+        exchange_exec_id="exec-1",
+        order_id=100,
+        trade_id=None,  # nullable per migration 0005
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        side="buy",
+        price=Decimal("45000.50"),
+        qty=Decimal("0.001"),
+        fee=Decimal("0.0001"),
+        exec_type="open",
+        executed_at=_FIXED_NOW,
+    )
+    sql_args = conn.execute.await_args.args
+    sql = sql_args[0]
+    assert "INSERT INTO executions" in sql
+    assert sql_args[1] == "exec-1"  # exchange_exec_id positional
+    assert sql_args[2] == 100  # order_id
+    assert sql_args[3] is None  # trade_id nullable
+    assert sql_args[10] == "open"  # exec_type
