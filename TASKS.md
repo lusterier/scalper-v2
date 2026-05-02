@@ -1,7 +1,7 @@
 # Tasks
 
-## Current Phase: F3 — Strategy Engine + Multi-bot
-Unlocked: 2026-05-02 (operator-unlocked after F2 deliverables shipped 2026-05-02; F2 E1 manual testnet smoke deferred — `chore(F2-close)` pending operator-driven run + lokálny dev compose F2 overlay).
+## Current Phase: F4 — Analytics API and Dashboard UI
+Unlocked: 2026-05-02 (operator-unlocked after F3 deliverables shipped + F3 dvoj-bot smoke verified 2026-05-02T20:15:30+00:00; `chore(F3-close)` `548c0cc`). Per BRIEF §19:2552-2571 — est. 2-3 weeks. F3 phase: 16/16 tasks done (T-300..T-313 + T-308b + T-311 + T-312). **Sibling v1 bot disabled** 2026-05-02 (signabot.service systemd disable + timescaledb container stopped); ports 8000/5432 voľné pre v2 dev stack.
 
 ## In progress
 (none)
@@ -107,9 +107,80 @@ Unlocked: 2026-05-02 (operator-unlocked after F2 deliverables shipped 2026-05-02
 
 ## Next (do not start without operator approval)
 
-F3 numbered (operator-approved 14-task plan 2026-05-02; total est ~30 days at F2 pace):
+F4 numbered (operator-approved 24-task plan 2026-05-02; total est ~2-3 týždne; LOC pre-emptively split per L-006/L-007 — each task ~200-400 LOC src; concrete plans + plan-reviewer Gate 1 cycle per task):
 
-F2 deliverables shipped 2026-05-02 (T-200..T-222 complete); F2 phase exit criteria pending only manual operator E1 testnet smoke per `docs/runbooks/F2_E1_testnet_smoke.md` + `chore(F2-close)`. Local dev compose F2 overlay (compose.dev.yaml extension for execution-service + market-data-svc + feature-engine) is a prerequisite blocker for E1 — operator decision to defer 2026-05-02; tracked as F2+ opportunistic.
+### F4 — Backend (analytics-api + alerting-svc)
+
+- [ ] T-400: `services/analytics_api/` skeleton — FastAPI factory + lifespan (asyncpg.Pool + NatsClient + structlog) + `/health`/`/ready`/`/metrics` + Dockerfile UID/GID 10006. Mirror T-309 strategy-engine + T-214 execution-service patterns. Per BRIEF §9.6 §3.1:234. Est: ~150 LOC src + ~100 LOC tests.
+
+- [ ] T-401: `/api/bots/*` + `/api/symbol-map/*` endpoint groups — bot registry list/detail (read) + symbol-map CRUD (admin write). Per BRIEF §9.6:1622+1632. Adds Pydantic response models (`BotResponse`, `SymbolMapEntry`); SQL via `packages/db/queries/`. Blocked by T-400. Est: ~180 LOC src + ~150 LOC tests.
+
+- [ ] T-402: `/api/positions/*` + `/api/trades/*` endpoint groups — open positions across bots (read-heavy from `position_state` table) + trade history paginated/filtered/drill-down (from `trades` + joined `executions` + `orders`). Per BRIEF §9.6:1623-1624 + §14.3:2061-2062. Blocked by T-400. Est: ~250 LOC src + ~200 LOC tests.
+
+- [ ] T-403: `/api/signals/*` + `/api/scoring/*` endpoint groups — signal feed paginated/filtered + per-signal scoring inspector (rule-by-rule audit JSONB read). Per BRIEF §9.6:1625-1626 + §14.3:2066. Blocked by T-400 + T-301 scoring_evaluations table. Est: ~180 LOC src + ~150 LOC tests.
+
+- [ ] T-404: `/api/features/*` endpoint group — feature inspector (latest values KV + historical chart from `features` hypertable). Per BRIEF §9.6:1627 + §14.3:2065. Blocked by T-400 + T-110 features pipeline. Est: ~150 LOC src + ~150 LOC tests.
+
+- [ ] T-405: `/api/configs/*` + `/api/audit/*` endpoint groups — bot config view/upload/validate/apply (consumes T-308 yaml_loader + creates new `bot_configs` row) + audit log viewer (chronological from `audit_events`). Per BRIEF §9.6:1630-1631 + §14.3:2064 + §14.3:2067. Blocked by T-400 + T-308. Est: ~220 LOC src + ~180 LOC tests.
+
+- [ ] T-406: `/api/analytics/*` endpoint group — aggregates (expectancy, WR, hourly heatmap) + Monte-Carlo / CPU-heavy via `asyncio.to_thread` with 5-min in-memory cache per BRIEF §9.6:1640-1642. Per BRIEF §9.6:1628. Blocked by T-402. Est: ~250 LOC src + ~200 LOC tests.
+
+- [ ] T-407: `/api/backtests/*` endpoint group — list runs / trigger new run / status / results. Backtest execution backend itself is F5 (T-509+); T-407 ships only the API surface + minimal `backtest_runs` table per BRIEF §9.6:1629. Blocked by T-400. Est: ~180 LOC src + ~150 LOC tests.
+
+- [ ] T-408: `/events/stream` SSE endpoint — multiplexed (one connection, query-param subscription `?types=positions,signals,trades`); subscribes to NATS streams (`signals.validated`, `signals.rejected.*`, `orders.events.*`, `scoring_evaluations.>` if added) + fan-out to clients with backpressure. Per BRIEF §9.6:1633-1638. Blocked by T-400. Est: ~250 LOC src + ~250 LOC tests.
+
+- [ ] T-409: `services/alerting/` skeleton + Telegram delivery — consumes `system.alerts` + critical `trading.events` from NATS; renders Jinja2 templates from `configs/alerts/templates/`; rate-limit dedup 5-min window; Telegram retry on critical. Per BRIEF §9.7:1649-1672. Est: ~280 LOC src + ~250 LOC tests + `configs/alerts.yaml` example.
+
+### F4 — Frontend (Dashboard UI)
+
+- [ ] T-410: `ui/` React 18 + Vite + TypeScript scaffold — strict mode, Tailwind CSS, shadcn/ui (committed to repo, not NPM deps), TanStack Router/Query, Zustand, Recharts (+ ECharts for candlestick), Vite dev server + production build, `pnpm` package manager. Per BRIEF §14.1:2043-2049. Est: ~200 LOC config + scaffold (no business logic).
+
+- [ ] T-411: Component library (`ui/src/components/`) — `DataTable` (pagination/sorting/filtering/column visibility), `TimeRangePicker` (presets 1h/24h/7d/30d/custom), `BotSelector` (single/multi-select), `StatusBadge` (bot/order/signal status colors), `PriceDelta` (sign-colored), `CorrelationIdChip` (clickable filter). Per BRIEF §14.4:2070-2079. Blocked by T-410. Est: ~400 LOC src + ~250 LOC component tests.
+
+- [ ] T-412: Section 1 **Overview** — cross-bot dashboard tiles (open positions count, aggregate virtual balance, 24h P&L, signals received/accepted/rejected, alert count). Per BRIEF §14.3:2060. Blocked by T-411 + T-401 + T-402 + T-406. Est: ~200 LOC src + ~150 LOC tests.
+
+- [ ] T-413: Section 2 **Per-bot live view** — open positions table (symbol/side/entry/current/unrealized P&L/SL/TP/MFE/MAE) + live signals feed last 50 + P&L chart. Live updates via T-408 SSE. Per BRIEF §14.3:2061. Blocked by T-411 + T-402 + T-403 + T-408. Est: ~300 LOC src + ~200 LOC tests.
+
+- [ ] T-414: Section 3 **Trade explorer** + drill-down — filterable/paginated trade list + click-trade → full timeline (signal → scoring breakdown → order events → fills → SL moves → close → shadow variants comparison → post-close price snapshots). Per BRIEF §14.3:2062. Blocked by T-411 + T-402 + T-403. Est: ~350 LOC src + ~250 LOC tests.
+
+- [ ] T-415: Section 4 **Backtest lab** — list runs + new-run form (pick bot config / date range / overrides) + status + results + comparison view. Per BRIEF §14.3:2063. Blocked by T-411 + T-407. Est: ~280 LOC src + ~200 LOC tests.
+
+- [ ] T-416: Section 5 **Strategy editor** — YAML editor with live Pydantic validation (debounced POST to `/api/configs/validate`) + diff-against-live + apply (creates new `bot_configs` version). Per BRIEF §14.3:2064. Blocked by T-411 + T-405. Est: ~300 LOC src + ~200 LOC tests.
+
+- [ ] T-417: Section 6 **Feature inspector** — feature browser (filter by name prefix) + select feature+symbol → chart historical values (Recharts) + current stale/fresh status indicator. Per BRIEF §14.3:2065. Blocked by T-411 + T-404. Est: ~250 LOC src + ~200 LOC tests.
+
+- [ ] T-418: Section 7 **Scoring inspector** — per-signal view: select signal → full rule-by-rule evaluation (weights/feature snapshot/decision/error_info JSONB drill-down). Per BRIEF §14.3:2066. Blocked by T-411 + T-403. Est: ~250 LOC src + ~180 LOC tests.
+
+- [ ] T-419: Section 8 **Audit log viewer** — chronological `audit_events` table with filters (actor/event_type/correlation_id/time-range). Per BRIEF §14.3:2067. Blocked by T-411 + T-405. Est: ~200 LOC src + ~150 LOC tests.
+
+- [ ] T-420: Section 9 **Settings** — bot registry list + symbol map CRUD + plugin registry read-only view + API key status (present/absent, never values per H-022). Per BRIEF §14.3:2068. Blocked by T-411 + T-401 + T-405. Est: ~250 LOC src + ~180 LOC tests.
+
+### F4 — Operations + Exit criteria
+
+- [ ] T-421: Grafana ops dashboards — service health (per-service /metrics scrapes) + NATS lag (consumer pending counts) + PG (connections, slow queries, replication lag) + host (CPU/memory/disk). JSON dashboards in `infra/grafana/dashboards/`. Per BRIEF §19:2563 + §15.4:2156. Est: ~150 LOC JSON + ~50 LOC docs.
+
+- [ ] T-422: Playwright E2E critical journeys — open app + select bot + view trade drill-down (per BRIEF §19:2571 + §14.6:2089). Run on main-branch merges (CI integration). Test infrastructure: Playwright setup + fixtures + 3-5 critical-path scenarios. Blocked by T-413 + T-414. Est: ~300 LOC test src + ~100 LOC CI workflow.
+
+- [ ] T-423: F4 exit-criteria integration bundle — verify all 9 sections navigable + scoring inspector shows per-rule breakdown for any signal + feature inspector charts historical values + backtest lab triggers small backtest + Playwright smoke green. Mirror T-313 / T-222 verification-and-runbook pattern. Includes `docs/runbooks/F4_E1_dashboard_smoke.md` operator-runnable checklist. Blocked by T-410..T-422. Est: ~250 LOC tests + ~150 LOC runbook.
+
+### F4 dependencies graph
+
+- T-400 unblocks: T-401, T-402, T-403, T-404, T-405, T-407, T-408
+- T-402 unblocks: T-406
+- T-410 unblocks: T-411
+- T-411 unblocks: T-412..T-420
+- T-401+T-402+T-406 unblock: T-412
+- T-402+T-403+T-408 unblock: T-413
+- T-413+T-414 unblock: T-422
+- T-410..T-422 unblock: T-423
+- T-409 (alerting) is independent of UI; can ship in parallel any time after T-400
+
+### F4 hazard-bound deferrals (carry-over from F3)
+
+- **T-F3+ live-mode safeguard runtime check** — §16.5 lifespan fail-fast on `exchange.mode==live AND BOT_CONFIRM_LIVE!="yes"` + `LIVE MODE ENGAGED` warning + Telegram alert. Compose env passthrough already shipped in T-311. T-409 (alerting-svc) ships Telegram surface; safeguard runtime check natural slot during T-409 or as separate T-F3+ task. ~15 LOC + tests.
+- **F4+ T-306 feature_history population** — T-303 series conditions + T-312 oi_squeeze plugin currently return data_missing (T-306 resolver doesn't populate `feature_history`). T-417 Feature inspector může surfaceť this gap operator-side; resolver upgrade ~30 LOC slot natural during T-404 or post-T-417.
+- **F4+ built-in `oi_change` feature** — `packages/features/builtins/` per BRIEF §9.3:1488. Natural slot when T-417 Feature inspector surfaces missing OI feature for live OI-strategy bots.
+- **F4+ risk-based position sizing** — replace `execution.qty: Decimal` with `sizing.tiers` block from §B.1:3006-3025. ~80 LOC src + tests; natural slot post-T-413 (per-bot live view will surface qty staleness if balance changes).
 
 ## Backlog
 
