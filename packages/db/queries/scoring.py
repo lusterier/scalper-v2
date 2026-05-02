@@ -116,6 +116,22 @@ _SELECT_SCORING_EVALUATIONS_BY_SIGNAL_SQL = """
 """
 
 
+def _decode_jsonb(value: Any) -> Any:
+    """Normalize JSONB column read across codec configurations.
+
+    Default ``asyncpg.connect()`` returns JSONB columns as ``str``
+    (raw JSON text); callers that register a JSONB codec via
+    ``conn.set_type_codec(...)`` get auto-decoded Python ``dict``/``list``
+    directly. The helper handles both — production pools may or may not
+    register the codec, and CI integration tests use bare ``asyncpg.connect``
+    without codec registration. CI-full T-301 integration test caught the
+    mock-vs-real divergence per L-008 active control.
+    """
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
 @idempotent
 async def select_scoring_evaluations_by_signal(
     conn: _DbExecutor,
@@ -126,8 +142,8 @@ async def select_scoring_evaluations_by_signal(
     Multi-bot fan-out per §9.4:1533 — one signal can have N evaluations
     across active bots that subscribed to ``signals.validated``. Sort
     ``ORDER BY evaluated_at ASC`` for chronological drill-down per
-    signal_id. asyncpg auto-decodes JSONB → Python list/dict; this helper
-    passes through.
+    signal_id. JSONB columns are decoded via :func:`_decode_jsonb`
+    defensive helper (see docstring for codec-vs-text handling).
     """
     rows = await conn.fetch(_SELECT_SCORING_EVALUATIONS_BY_SIGNAL_SQL, signal_id)
     return [
@@ -140,8 +156,8 @@ async def select_scoring_evaluations_by_signal(
             total_score=float(row["total_score"]),
             decision=row["decision"],
             config_version=int(row["config_version"]),
-            rule_results=row["rule_results"],
-            feature_snapshot=row["feature_snapshot"],
+            rule_results=_decode_jsonb(row["rule_results"]),
+            feature_snapshot=_decode_jsonb(row["feature_snapshot"]),
             correlation_id=row["correlation_id"],
         )
         for row in rows

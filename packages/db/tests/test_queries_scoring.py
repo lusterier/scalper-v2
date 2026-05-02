@@ -110,8 +110,37 @@ async def test_select_scoring_evaluations_by_signal_returns_empty_list_when_no_r
     assert result == []
 
 
-async def test_select_scoring_evaluations_by_signal_decodes_jsonb_rule_results() -> None:
-    """asyncpg auto-decodes JSONB → Python list/dict; helper passes through."""
+async def test_select_scoring_evaluations_by_signal_decodes_jsonb_str_via_json_loads() -> None:
+    """Defensive: when asyncpg returns JSONB as str (no codec registered),
+    helper json.loads it. CI-full L-008 hotfix pin (T-301).
+    """
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": 1,
+                "bot_id": "alpha",
+                "signal_id": 42,
+                "evaluated_at": _FIXED_NOW,
+                "trigger_threshold": 1.0,
+                "total_score": 2.5,
+                "decision": "execute",
+                "config_version": 1,
+                "rule_results": '[{"name": "r1", "result": "True"}]',  # str
+                "feature_snapshot": '{"sym1": {"v": 1}}',  # str
+                "correlation_id": "cid-1",
+            },
+        ]
+    )
+    result = await select_scoring_evaluations_by_signal(conn, 42)
+    assert len(result) == 1
+    row = result[0]
+    assert row.rule_results == [{"name": "r1", "result": "True"}]
+    assert row.feature_snapshot == {"sym1": {"v": 1}}
+
+
+async def test_select_passes_through_dict_when_codec_registered() -> None:
+    """asyncpg with JSONB codec registered → already decoded list/dict; helper passes through."""
     conn = MagicMock()
     conn.fetch = AsyncMock(
         return_value=[
