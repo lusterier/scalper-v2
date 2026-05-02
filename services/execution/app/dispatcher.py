@@ -41,7 +41,7 @@ from packages.db.queries.execution import (
     update_trade_fees_incremental,
 )
 
-from .reconcile import reconcile_close
+from .reconcile import emit_post_commit_close_event, reconcile_close
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -52,7 +52,8 @@ if TYPE_CHECKING:
     from structlog.stdlib import BoundLogger
 
     from packages.bus import NatsClient
-    from packages.core import BotId
+    from packages.bus.schemas.orders import OrderClosed
+    from packages.core import BotId, CorrelationId
     from packages.exchange.protocols import ExchangeClient
     from packages.exchange.types import ExecutionEvent
 
@@ -86,6 +87,10 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
         bound_logger: BoundLogger,
         capacity: int,
         now_fn: Callable[[], datetime],
+        adapter: ExchangeClient,
+        sub_account: str,
+        closed_pnl_lock: asyncio.Lock,
+        closed_pnl_post_close_sleep_s: float,
     ) -> None:
         super().__init__(
             key_fn=lambda event: event.exchange_exec_id,
@@ -97,6 +102,10 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
         self._bus = bus
         self._bound_logger = bound_logger
         self._now_fn = now_fn
+        self._adapter = adapter
+        self._sub_account = sub_account
+        self._closed_pnl_lock = closed_pnl_lock
+        self._closed_pnl_post_close_sleep_s = closed_pnl_post_close_sleep_s
 
     @property
     def bot_id(self) -> BotId:
@@ -109,7 +118,14 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
         Single tx wraps lookups + INSERT + UPDATEs + (optional) close forward-pointer.
         Defensive halts (RuntimeError + tx rollback): unattributable / orphan_order_match
         / orphan_synthetic_fill / over-fill (preserves §9.5:1613 invariant).
+
+        T-219 close-flow: when ``ps_after.remaining_qty == 0``, ``reconcile_close``
+        returns ``(OrderClosed_payload, correlation_id, _exch_id)`` captured INSIDE
+        the tx; AFTER tx commits, ``emit_post_commit_close_event`` publishes the
+        event wrapped in :class:`MessageEnvelope` per Q2 publish-after-persist.
         """
+        close_event_payload: OrderClosed | None = None
+        close_event_correlation_id: CorrelationId | None = None
         async with self._pool.acquire() as conn, conn.transaction():
             order_id_match = await select_order_id_by_exchange_id(
                 conn,
@@ -222,18 +238,35 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
                 if trade_id is None:
                     msg = "internal invariant: trade_id None at close-trigger block"
                     raise RuntimeError(msg)
-                await reconcile_close(
+                payload, corr_id, _exch_id = await reconcile_close(
                     conn=conn,
+                    adapter=self._adapter,
                     bound_logger=self._bound_logger,
                     bot_id=self._bot_id,
                     symbol=message.symbol,
+                    sub_account=self._sub_account,
+                    closed_pnl_lock=self._closed_pnl_lock,
+                    closed_pnl_post_close_sleep_s=self._closed_pnl_post_close_sleep_s,
                     trade_id=trade_id,
                     close_order_id=order_id_match,
+                    exec_type=exec_type,
+                    fees_paid_at_close=None,
                     final_fill_price=message.price,
-                    final_fill_qty=message.qty,
-                    final_fill_fee=message.fee,
                     closed_at=message.executed_at,
                 )
+                close_event_payload = payload
+                close_event_correlation_id = corr_id
+
+        # AFTER tx commits — emit OrderClosed wrapped in MessageEnvelope per Q2
+        # publish-after-persist (T-216b2 vzor; mirror placement.py:324-331).
+        if close_event_payload is not None and close_event_correlation_id is not None:
+            await emit_post_commit_close_event(
+                bus=self._bus,
+                bot_id=self._bot_id,
+                correlation_id=close_event_correlation_id,
+                order_closed_payload=close_event_payload,
+                bound_logger=self._bound_logger,
+            )
 
 
 async def run_dispatcher_for_bot(

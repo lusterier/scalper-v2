@@ -171,9 +171,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             await bus.subscribe(subject_for_orders_request(bot_id), handler)
 
+        # T-219 — per-sub-account asyncio.Lock registry per ADR-0006 D4.
+        # Multiple bots may share a sub_account (per ADR-0004 H-022 family);
+        # they share the same Lock instance to serialize closed-pnl snapshot pairs.
+        # Lock is keyed on sub_account string (NOT bot_id). Paper adapters use
+        # bot_id-as-sub_account synonym per Decision #8.
+        closed_pnl_locks: dict[str, asyncio.Lock] = {}
+
+        def _resolve_sub_account(adapter_obj: object) -> str:
+            sub_account = getattr(adapter_obj, "_sub_account", None)
+            if sub_account is None:
+                bot_id_attr = getattr(adapter_obj, "_bot_id", None)
+                if bot_id_attr is None:
+                    msg = "adapter has no _sub_account or _bot_id attribute"
+                    raise RuntimeError(msg)
+                return str(bot_id_attr)
+            return str(sub_account)
+
         # 6. Per-bot ExecutionDispatcher tasks (T-218a; H-009 per-bot dedup ring).
         dispatcher_tasks: list[asyncio.Task[None]] = []
         for bot_id, adapter in adapter_pool.adapters.items():
+            sub_account = _resolve_sub_account(adapter)
+            if sub_account not in closed_pnl_locks:
+                closed_pnl_locks[sub_account] = asyncio.Lock()
             dispatcher = ExecutionDispatcher(
                 bot_id=bot_id,
                 pool=pool,
@@ -181,6 +201,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 bound_logger=logger,
                 capacity=settings.dispatch_dedup_capacity,
                 now_fn=lambda: datetime.now(UTC),
+                adapter=adapter,
+                sub_account=sub_account,
+                closed_pnl_lock=closed_pnl_locks[sub_account],
+                closed_pnl_post_close_sleep_s=settings.execution_closed_pnl_post_close_sleep_s,
             )
             task = asyncio.create_task(
                 run_dispatcher_for_bot(
@@ -201,6 +225,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.paper_consumer_tasks = adapter_pool.paper_consumer_tasks
         app.state.dispatcher_tasks = dispatcher_tasks
         app.state.position_lifecycle_tasks = position_lifecycle_tasks
+        app.state.closed_pnl_locks = closed_pnl_locks
 
         logger.info(
             "service_started",

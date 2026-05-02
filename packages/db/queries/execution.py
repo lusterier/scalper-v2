@@ -47,6 +47,7 @@ __all__ = [
     "select_active_bots",
     "select_open_order_id_by_trade_id",
     "select_order_id_by_exchange_id",
+    "select_order_meta_by_id",
     "select_position_state",
     "select_trade_by_close_order_id",
     "select_trade_by_open_order_id",
@@ -290,28 +291,72 @@ async def update_trade_close(
     trade_id: int,
     exit_price: Decimal,
     realized_pnl: Decimal,
-    fees_paid: Decimal,
+    fees_paid: Decimal | None,
     closed_at: datetime,
     close_reason: str,
     close_order_id: int,
 ) -> None:
-    """UPDATE trades SET ... WHERE id = $1 — H-018 PK-only invariant."""
-    await conn.execute(
-        """
-        UPDATE trades
-        SET exit_price = $1, realized_pnl = $2, fees_paid = $3,
-            closed_at = $4, close_reason = $5, close_order_id = $6,
-            status = 'closed'
-        WHERE id = $7
-        """,
-        exit_price,
-        realized_pnl,
-        fees_paid,
-        closed_at,
-        close_reason,
-        close_order_id,
-        trade_id,
+    """UPDATE trades SET ... WHERE id PK — H-018 PK-only invariant.
+
+    T-219 partial-update: ``fees_paid=None`` omits the column from SET clause
+    (preserves existing value — typically the running incremental sum from
+    T-218b's ``update_trade_fees_incremental``). ``fees_paid=Decimal(...)``
+    writes the value explicitly (T-216b1 ``emergency_close`` callers pass
+    ``Decimal('0')`` placeholder per H-012 — preserved unchanged).
+    """
+    if fees_paid is None:
+        await conn.execute(
+            """
+            UPDATE trades
+            SET exit_price = $1, realized_pnl = $2,
+                closed_at = $3, close_reason = $4, close_order_id = $5,
+                status = 'closed'
+            WHERE id = $6
+            """,
+            exit_price,
+            realized_pnl,
+            closed_at,
+            close_reason,
+            close_order_id,
+            trade_id,
+        )
+    else:
+        await conn.execute(
+            """
+            UPDATE trades
+            SET exit_price = $1, realized_pnl = $2, fees_paid = $3,
+                closed_at = $4, close_reason = $5, close_order_id = $6,
+                status = 'closed'
+            WHERE id = $7
+            """,
+            exit_price,
+            realized_pnl,
+            fees_paid,
+            closed_at,
+            close_reason,
+            close_order_id,
+            trade_id,
+        )
+
+
+async def select_order_meta_by_id(
+    conn: _DbExecutor,
+    order_id: int,
+) -> tuple[str, str] | None:
+    """Return ``(correlation_id, exchange_order_id)`` from orders by id PK; None if missing.
+
+    T-219 reconcile_close uses this to thread correlation_id + exchange_order_id
+    into ``OrderClosed`` envelope (per ADR-0006 D5 + Gate-1 BLOCKER #2 / CONCERN #4
+    fixes). Pure parametrized SELECT-WHERE-PK; no CAST/COALESCE/CASE per L-008
+    active control.
+    """
+    row = await conn.fetchrow(
+        "SELECT correlation_id, exchange_order_id FROM orders WHERE id = $1",
+        order_id,
     )
+    if row is None:
+        return None
+    return str(row["correlation_id"]), str(row["exchange_order_id"])
 
 
 async def delete_position_state(

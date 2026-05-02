@@ -95,3 +95,6 @@ class Settings(BaseSettings):
     # T-217a — PositionLifecycle FSM monitor (§9.5:1585-1592 / §N9 configurability).
     position_poll_interval_s: float = 1.0
     position_poll_stale_ticks: int = 5
+
+    # T-219 — closed-pnl post-close sleep (H-011; ADR-0006 D2).
+    execution_closed_pnl_post_close_sleep_s: float = 2.0

@@ -136,6 +136,8 @@ def _build(*, capacity: int = 100) -> tuple[ExecutionDispatcher, MagicMock]:
     bus = MagicMock()
     bus.publish = AsyncMock()
     logger = MagicMock()
+    adapter = MagicMock()
+    adapter.get_closed_pnl_cumulative = AsyncMock(return_value=Decimal("0"))
     dispatcher = ExecutionDispatcher(
         bot_id=BotId("alpha"),
         pool=pool,
@@ -143,6 +145,10 @@ def _build(*, capacity: int = 100) -> tuple[ExecutionDispatcher, MagicMock]:
         bound_logger=logger,
         capacity=capacity,
         now_fn=lambda: _FIXED_NOW,
+        adapter=adapter,
+        sub_account="alpha-sub",
+        closed_pnl_lock=asyncio.Lock(),
+        closed_pnl_post_close_sleep_s=0.0,
     )
     return dispatcher, logger
 
@@ -160,8 +166,21 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     - insert_execution → no-op
     - update_position_state_after_fill → no-op
     - update_trade_fees_incremental → no-op
-    - reconcile_close → raises NotImplementedError (T-219 stub default)
+    - reconcile_close → returns (OrderClosed, correlation_id, exch_order_id) tuple per T-219
+    - emit_post_commit_close_event → no-op (caller-side; no actual NATS publish in tests)
     """
+    from packages.bus.schemas.orders import OrderClosed
+    from packages.core import CorrelationId
+
+    fake_payload = OrderClosed(
+        bot_id="alpha",
+        order_id=100,
+        exchange_order_id="ord-1",
+        symbol="BTCUSDT",
+        timestamp=_FIXED_NOW,
+        realized_pnl=Decimal("0"),
+        close_reason="manual",
+    )
     mocks: dict[str, Any] = {
         "select_order_id_by_exchange_id": AsyncMock(return_value=None),
         "select_trade_by_open_order_id": AsyncMock(return_value=None),
@@ -171,7 +190,10 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "insert_execution": AsyncMock(return_value=None),
         "update_position_state_after_fill": AsyncMock(return_value=None),
         "update_trade_fees_incremental": AsyncMock(return_value=None),
-        "reconcile_close": AsyncMock(side_effect=NotImplementedError("T-219: stub")),
+        "reconcile_close": AsyncMock(
+            return_value=(fake_payload, CorrelationId("cid-default"), "ord-1")
+        ),
+        "emit_post_commit_close_event": AsyncMock(return_value=None),
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(dispatcher_mod, name, mock)
@@ -422,13 +444,13 @@ async def test_process_trail_inferred_when_remaining_zeroes_with_sl_type_trail(
     ]
     dispatcher, _ = _build()
     event = _execution_event_v(side="sell", qty=Decimal("5"))
-    with pytest.raises(NotImplementedError, match="T-219"):
-        await dispatcher.consume(event)
+    await dispatcher.consume(event)
     insert_call = patched_queries["insert_execution"].call_args
     assert insert_call.kwargs["exec_type"] == "trail"
     update_call = patched_queries["update_position_state_after_fill"].call_args
     assert update_call.kwargs["new_sl_type"] is None
     patched_queries["reconcile_close"].assert_called_once()
+    patched_queries["emit_post_commit_close_event"].assert_called_once()
 
 
 async def test_process_sl_inferred_when_remaining_zeroes_with_sl_type_protective(
@@ -441,8 +463,7 @@ async def test_process_sl_inferred_when_remaining_zeroes_with_sl_type_protective
     ]
     dispatcher, _ = _build()
     event = _execution_event_v(side="sell", qty=Decimal("10"))
-    with pytest.raises(NotImplementedError, match="T-219"):
-        await dispatcher.consume(event)
+    await dispatcher.consume(event)
     insert_call = patched_queries["insert_execution"].call_args
     assert insert_call.kwargs["exec_type"] == "sl"
 
@@ -472,8 +493,7 @@ async def test_post_tp_close_fill_labeled_per_db_sl_type_not_exchange_orderlink(
     ]
     # Mock reconcile_close to no-op so Fill 2 commits cleanly for assertion-readability
     # (companion test `test_post_tp_close_full_tx_persists_atomically` covers same flow).
-    patched_queries["reconcile_close"].side_effect = None
-    patched_queries["reconcile_close"].return_value = None
+    # reconcile_close already returns tuple by default (T-219 contract); keep default.
 
     dispatcher, _ = _build()
     fill1 = _execution_event_v(
@@ -632,9 +652,9 @@ async def test_process_invokes_reconcile_close_when_remaining_zeroes(
         remaining_qty=Decimal("0"),
     )
     dispatcher, _ = _build()
-    with pytest.raises(NotImplementedError, match="T-219"):
-        await dispatcher.consume(_execution_event_v())
+    await dispatcher.consume(_execution_event_v())
     patched_queries["reconcile_close"].assert_called_once()
+    patched_queries["emit_post_commit_close_event"].assert_called_once()
 
 
 async def test_process_close_trigger_pure_state_based_independent_of_exec_type(
@@ -654,8 +674,7 @@ async def test_process_close_trigger_pure_state_based_independent_of_exec_type(
     ]
     dispatcher, _ = _build()
     event = _execution_event_v(side="sell", qty=Decimal("5"))
-    with pytest.raises(NotImplementedError, match="T-219"):
-        await dispatcher.consume(event)
+    await dispatcher.consume(event)
     insert_call = patched_queries["insert_execution"].call_args
     assert insert_call.kwargs["exec_type"] == "unknown"
     patched_queries["reconcile_close"].assert_called_once()
@@ -674,8 +693,7 @@ async def test_post_tp_close_full_tx_persists_atomically(
         _ps_row(remaining_qty=Decimal("5"), sl_type="trail"),
         _ps_row(remaining_qty=Decimal("0"), sl_type="trail"),
     ]
-    patched_queries["reconcile_close"].side_effect = None
-    patched_queries["reconcile_close"].return_value = None
+    # reconcile_close already returns tuple by default (T-219 contract); keep default.
 
     dispatcher, _ = _build()
     event = _execution_event_v(side="sell", qty=Decimal("5"))

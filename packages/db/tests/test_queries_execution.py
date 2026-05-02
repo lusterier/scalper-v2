@@ -29,6 +29,7 @@ from packages.db.queries.execution import (
     select_active_bots,
     select_open_order_id_by_trade_id,
     select_order_id_by_exchange_id,
+    select_order_meta_by_id,
     select_position_state,
     select_trade_by_close_order_id,
     select_trade_by_open_order_id,
@@ -708,3 +709,70 @@ async def test_update_position_state_sl_writes_sl_type_literal_only() -> None:
     # $1 = sl_price, $2 = sl_type, $3 = updated_at, $4 = bot_id, $5 = symbol.
     assert args[1] == Decimal("109.450")
     assert args[2] == "trail"
+
+
+# ---------------------------------------------------------------------------
+# T-219 — update_trade_close fees_paid=None partial update + select_order_meta_by_id
+# ---------------------------------------------------------------------------
+
+
+async def test_update_trade_close_omits_fees_paid_from_set_when_kwarg_none() -> None:
+    """T-219 partial-update — fees_paid=None omits column from SET clause."""
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await update_trade_close(
+        conn,
+        trade_id=1,
+        exit_price=Decimal("100"),
+        realized_pnl=Decimal("12.50"),
+        fees_paid=None,  # T-219 partial-update path
+        closed_at=_FIXED_NOW,
+        close_reason="manual",
+        close_order_id=42,
+    )
+    sql = conn.execute.await_args.args[0]
+    # SET clause MUST NOT mention fees_paid when kwarg is None.
+    assert "fees_paid" not in sql
+    # Other columns still present.
+    assert "exit_price = $1" in sql
+    assert "realized_pnl = $2" in sql
+
+
+async def test_update_trade_close_writes_fees_paid_when_kwarg_decimal() -> None:
+    """T-216b1 backward-compat — fees_paid=Decimal('0') still writes the column."""
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await update_trade_close(
+        conn,
+        trade_id=1,
+        exit_price=Decimal("100"),
+        realized_pnl=Decimal("0"),
+        fees_paid=Decimal("0"),  # emergency_close placeholder per H-012
+        closed_at=_FIXED_NOW,
+        close_reason="emergency",
+        close_order_id=42,
+    )
+    sql = conn.execute.await_args.args[0]
+    assert "fees_paid = $3" in sql
+
+
+async def test_select_order_meta_by_id_returns_tuple_when_found() -> None:
+    """T-219 — returns (correlation_id, exchange_order_id) for OrderClosed envelope."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value={"correlation_id": "cid-xyz", "exchange_order_id": "ord-exch-7"}
+    )
+    result = await select_order_meta_by_id(conn, 42)
+    assert result == ("cid-xyz", "ord-exch-7")
+    sql = conn.fetchrow.await_args.args[0]
+    # L-008 — pure parametrized SELECT-WHERE-PK; no CAST/COALESCE/CASE/Python type literals.
+    assert "SELECT correlation_id, exchange_order_id FROM orders WHERE id = $1" in sql
+    assert "Decimal" not in sql
+    assert "CAST" not in sql.upper()
+    assert "COALESCE" not in sql.upper()
+
+
+async def test_select_order_meta_by_id_returns_none_when_missing() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    assert await select_order_meta_by_id(conn, 999) is None
