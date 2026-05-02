@@ -159,16 +159,24 @@ class _FakePool:
 
 
 class _FakeBus:
-    """Captures ``publish()`` calls; can be wired to raise on demand."""
+    """Captures ``publish()`` + ``kv_put()`` calls; can be wired to raise on demand."""
 
     def __init__(self) -> None:
         self.publish_calls: list[tuple[str, MessageEnvelope]] = []
+        self.kv_put_calls: list[tuple[str, str, bytes]] = []
         self.error: Exception | None = None
+        self.kv_error: Exception | None = None
 
     async def publish(self, subject: str, envelope: MessageEnvelope) -> None:
         if self.error is not None:
             raise self.error
         self.publish_calls.append((subject, envelope))
+
+    async def kv_put(self, bucket: str, key: str, value: bytes) -> int:
+        if self.kv_error is not None:
+            raise self.kv_error
+        self.kv_put_calls.append((bucket, key, value))
+        return 1
 
 
 # ---------------------------------------------------------------------------
@@ -582,3 +590,53 @@ async def test_consume_loop_swallows_handler_exception_and_continues() -> None:
 # 200 ms test budget). The log path remains in production code as the
 # real safety-net for a wedged consumer; we do not fabricate a synthetic
 # wedge to inflate coverage per §0.8.
+
+
+# ---------------------------------------------------------------------------
+# T-F2+ — latest_price KV producer (consumer side: T-217a/T-217b lifecycle)
+# ---------------------------------------------------------------------------
+
+
+async def test_publish_writes_latest_price_kv_with_close_decimal_string() -> None:
+    """T-F2+ — successful publish refreshes latest_price KV bucket keyed by symbol.
+
+    Decimal-as-string encoding so consumer (lifecycle.py) round-trips via
+    ``Decimal(price_bytes.decode("utf-8"))`` exact.
+    """
+    pipeline, _, _, bus = _build_pipeline()
+    await pipeline._handle("BTCUSDT", _kline_frame(is_closed=True))
+    assert len(bus.kv_put_calls) == 1
+    bucket, key, value = bus.kv_put_calls[0]
+    assert bucket == "latest_price"
+    assert key == "BTCUSDT"
+    # _kline_frame default close="50050.0" — Decimal-as-string round-trips.
+    assert value == b"50050.0"
+
+
+async def test_publish_in_progress_also_writes_latest_price_kv() -> None:
+    """In-progress candles also refresh KV — T-217 monitor wants sub-1m updates."""
+    pipeline, _, _, bus = _build_pipeline()
+    await pipeline._handle("BTCUSDT", _kline_frame(is_closed=False))
+    assert len(bus.kv_put_calls) == 1
+
+
+async def test_publish_failure_skips_latest_price_kv_write() -> None:
+    """If bus.publish raised → KV write skipped (best-effort but ordered after publish)."""
+    bus = _FakeBus()
+    bus.error = RuntimeError("publish exploded")
+    pipeline, _, _, _ = _build_pipeline(bus=bus)
+    await pipeline._handle("BTCUSDT", _kline_frame(is_closed=True))
+    assert bus.publish_calls == []
+    assert bus.kv_put_calls == []
+
+
+async def test_kv_put_failure_does_not_unwind_publish() -> None:
+    """KV best-effort — if kv_put raises, publish stands and pipeline continues.
+
+    Mirrors feature_engine pipeline.py:240-251 KV-fail-still-publish pattern.
+    """
+    bus = _FakeBus()
+    bus.kv_error = RuntimeError("kv exploded")
+    pipeline, _, _, _ = _build_pipeline(bus=bus)
+    await pipeline._handle("BTCUSDT", _kline_frame(is_closed=True))
+    assert len(bus.publish_calls) == 1  # publish stands

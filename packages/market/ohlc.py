@@ -103,6 +103,11 @@ _SOURCE = "binance"
 _INTERVAL = "1m"
 _SUBJECT_PREFIX = f"market.ohlc.{_INTERVAL}"
 _DEFAULT_STOP_TIMEOUT_SECONDS = 5.0
+# T-F2+ producer side of latest_price KV bucket (T-217a/T-217b lifecycle monitor consumer).
+# Best-effort cache write: every successful publish refreshes the latest close price
+# keyed by symbol. Decimal-as-string encoding so consumer (lifecycle.py) round-trips
+# via Decimal(price_bytes.decode("utf-8")) exact.
+_LATEST_PRICE_BUCKET = "latest_price"
 
 
 class OhlcPipeline:
@@ -294,6 +299,26 @@ class OhlcPipeline:
                 symbol=candle.symbol,
                 bucket_start=candle.bucket_start.isoformat(),
                 is_closed=is_closed,
+                error=str(exc),
+            )
+            return
+        # T-F2+ — refresh latest_price KV cache with this candle's close price.
+        # Best-effort: KV write failure does NOT roll back publish (NATS+DB stay
+        # consistent; KV is consumer-side cache for T-217a/T-217b lifecycle monitor).
+        # KV-fail-still-X semantic mirrors feature_engine pipeline.py:240-251; ordering
+        # is INVERTED here (persist → publish → KV) to preserve this module's
+        # publish-after-persist doctrine — KV is outside the canonical DB+NATS pair.
+        try:
+            await self._bus.kv_put(
+                _LATEST_PRICE_BUCKET,
+                candle.symbol,
+                str(candle.close).encode("utf-8"),
+            )
+        except Exception as exc:
+            self._logger.error(
+                "ohlc_pipeline_kv_latest_price_error",
+                symbol=candle.symbol,
+                bucket_start=candle.bucket_start.isoformat(),
                 error=str(exc),
             )
 
