@@ -1382,7 +1382,7 @@ requires-dist = [
 [[package]]
 name = "scalper-v2-exchange"
 version = "0.1.0"
-source = { virtual = "packages/exchange" }
+source = { editable = "packages/exchange" }
 dependencies = [
     { name = "asyncpg" },
     { name = "httpx" },
@@ -1409,6 +1409,7 @@ dependencies = [
     { name = "scalper-v2-bus" },
     { name = "scalper-v2-core" },
     { name = "scalper-v2-db" },
+    { name = "scalper-v2-exchange" },
     { name = "scalper-v2-observability" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "uvloop" },
@@ -1422,6 +1423,7 @@ requires-dist = [
     { name = "scalper-v2-bus", editable = "packages/bus" },
     { name = "scalper-v2-core", editable = "packages/core" },
     { name = "scalper-v2-db", editable = "packages/db" },
+    { name = "scalper-v2-exchange", editable = "packages/exchange" },
     { name = "scalper-v2-observability", editable = "packages/observability" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.45.0" },
     { name = "uvloop", specifier = "==0.22.1" },
