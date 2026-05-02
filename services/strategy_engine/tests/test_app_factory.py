@@ -193,3 +193,124 @@ def test_lifespan_closes_bus_before_pool(
     mock_bus.close.assert_awaited_once()
     mock_pool.close.assert_awaited_once()
     assert call_order == ["bus", "pool"]
+
+
+# ---------------------------------------------------------------------------
+# T-310b — signals.validated subscription + handler factory wiring
+# ---------------------------------------------------------------------------
+
+
+def test_lifespan_subscribes_signals_validated_with_handler(
+    app_with_mocks: FastAPI,
+    mock_bus: MagicMock,
+) -> None:
+    """T-310b: bus.subscribe('signals.validated', <handler>) called once at lifespan."""
+    with TestClient(app_with_mocks):
+        pass
+    mock_bus.subscribe.assert_awaited_once()
+    subject = mock_bus.subscribe.await_args.args[0]
+    assert subject == "signals.validated"
+
+
+def test_lifespan_threads_settings_signal_max_age_to_handler(
+    settings: Settings,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_plugin_registry: dict[tuple[str, str], type],
+    mock_bot_config: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-310b: Settings.signal_max_age_seconds propagates to make_signal_handler."""
+    captured_kwargs: list[dict[str, object]] = []
+
+    def _capture_handler(**kwargs: object) -> object:
+        captured_kwargs.append(kwargs)
+
+        async def _no_op(_: object) -> None:
+            return None
+
+        return _no_op
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.main.create_pool",
+        AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(
+        "services.strategy_engine.app.main.NatsClient",
+        MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(
+        "services.strategy_engine.app.main.load_plugin_registry",
+        MagicMock(return_value=mock_plugin_registry),
+    )
+    monkeypatch.setattr(
+        "services.strategy_engine.app.main.load_bot_config",
+        MagicMock(return_value=mock_bot_config),
+    )
+    monkeypatch.setattr(
+        "services.strategy_engine.app.main.make_signal_handler",
+        _capture_handler,
+    )
+    app = create_app(settings=settings)
+    with TestClient(app):
+        pass
+
+    assert len(captured_kwargs) == 1
+    kwargs = captured_kwargs[0]
+    assert kwargs["max_signal_age_seconds"] == settings.signal_max_age_seconds
+
+
+def test_handler_factory_called_once_with_bot_state_kwargs(
+    settings: Settings,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_plugin_registry: dict[tuple[str, str], type],
+    mock_bot_config: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-310b: bot_id / bot_config / resolver / pool / bus / loggers all threaded."""
+    captured_kwargs: list[dict[str, object]] = []
+
+    def _capture_handler(**kwargs: object) -> object:
+        captured_kwargs.append(kwargs)
+
+        async def _no_op(_: object) -> None:
+            return None
+
+        return _no_op
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.main.create_pool",
+        AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(
+        "services.strategy_engine.app.main.NatsClient",
+        MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(
+        "services.strategy_engine.app.main.load_plugin_registry",
+        MagicMock(return_value=mock_plugin_registry),
+    )
+    monkeypatch.setattr(
+        "services.strategy_engine.app.main.load_bot_config",
+        MagicMock(return_value=mock_bot_config),
+    )
+    monkeypatch.setattr(
+        "services.strategy_engine.app.main.make_signal_handler",
+        _capture_handler,
+    )
+    app = create_app(settings=settings)
+    with TestClient(app):
+        pass
+
+    assert len(captured_kwargs) == 1
+    kwargs = captured_kwargs[0]
+    assert kwargs["bot_id"] == settings.bot_id
+    assert kwargs["bot_config"] is mock_bot_config
+    assert kwargs["pool"] is mock_pool
+    assert kwargs["bus"] is mock_bus
+    assert callable(kwargs["now_fn"])
+    assert kwargs["resolver"] is app.state.resolver
+    # Three distinct loggers per WG#4 (trading + system + audit).
+    assert kwargs["trading_logger"] is not kwargs["system_logger"]
+    assert kwargs["audit_logger"] is not kwargs["system_logger"]

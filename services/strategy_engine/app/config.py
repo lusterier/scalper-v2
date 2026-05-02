@@ -62,3 +62,8 @@ class Settings(BaseSettings):
     # Defaults match the Dockerfile WORKDIR /app + COPY configs/ layout.
     bot_config_dir: str = "/app/configs/bots"
     plugin_registry_path: str = "/app/configs/plugin_registry.yaml"
+
+    # T-310b — signal_id lookup window for select_signal_id_by_idempotency_key
+    # (Timescale chunk pruning per T-310a WG#3). 600s default = 10 min covers
+    # signals.ttl_seconds=120 (§B.1) + retry budget + clock skew.
+    signal_max_age_seconds: int = 600

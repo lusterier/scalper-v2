@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from structlog.stdlib import BoundLogger
 
     from packages.bus import NatsClient
-    from packages.scoring import BotConfig
+    from packages.scoring import BotConfig, FeatureResolver
 
     from .config import Settings
 
@@ -41,6 +41,7 @@ __all__ = [
     "get_bus",
     "get_logger_dep",
     "get_pool",
+    "get_resolver",
     "get_settings",
 ]
 
@@ -68,3 +69,8 @@ def get_logger_dep(request: Request) -> BoundLogger:
 def get_bot_config(request: Request) -> BotConfig:
     """Return the :class:`BotConfig` loaded at lifespan startup (§9.4:1546)."""
     return cast("BotConfig", request.app.state.bot_config)
+
+
+def get_resolver(request: Request) -> FeatureResolver:
+    """Return the :class:`FeatureResolver` constructed in lifespan (T-309 + T-310b)."""
+    return cast("FeatureResolver", request.app.state.resolver)

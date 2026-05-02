@@ -89,3 +89,15 @@ def test_env_overrides(
     monkeypatch.setenv(env_key, env_value)
     s = Settings()  # type: ignore[call-arg]
     assert getattr(s, attr) == expected
+
+
+def test_signal_max_age_seconds_default_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-310b: Settings.signal_max_age_seconds defaults to 600 + env-overridable."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
+    monkeypatch.setenv("BOT_ID", "alpha")
+    monkeypatch.delenv("SIGNAL_MAX_AGE_SECONDS", raising=False)
+    s = Settings()  # type: ignore[call-arg]
+    assert s.signal_max_age_seconds == 600
+    monkeypatch.setenv("SIGNAL_MAX_AGE_SECONDS", "300")
+    s2 = Settings()  # type: ignore[call-arg]
+    assert s2.signal_max_age_seconds == 300

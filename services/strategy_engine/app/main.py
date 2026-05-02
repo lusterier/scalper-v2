@@ -48,8 +48,9 @@ Shutdown order (reverse, load-bearing):
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastapi import FastAPI
 
@@ -65,10 +66,13 @@ from packages.scoring import FeatureResolver, load_bot_config
 from packages.scoring.registry import load_plugin_registry
 
 from .config import Settings
+from .consumer import make_signal_handler
 from .health import router as health_router
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    from packages.core import BotId
 
 __all__ = ["create_app"]
 
@@ -80,6 +84,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     configure(level=settings.log_level)
     logger = get_logger(settings.service_name, "system")
+    trading_logger = get_logger(settings.service_name, "trading")
+    audit_logger = get_logger(settings.service_name, "audit")
     registry_metrics = make_registry()
 
     @asynccontextmanager
@@ -108,12 +114,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 5. FeatureResolver — KV → DB → staleness check per §10.3.
         resolver = FeatureResolver(bus=bus, pool=pool, bound_logger=logger)
 
-        # 6. State attach.
+        # 6. State attach (BEFORE subscribe — handler closure captures bot_config + resolver).
         app.state.pool = pool
         app.state.bus = bus
         app.state.plugin_registry = plugin_registry
         app.state.bot_config = bot_config
         app.state.resolver = resolver
+
+        # 7. T-310b — subscribe to signals.validated with bot-bound handler.
+        # Single subscription per process (one container per bot per §9.4:1530).
+        # Subscribe failure crashes lifespan (mirror T-216a WG#7 fail-fast).
+        signal_handler = make_signal_handler(
+            bot_id=cast("BotId", settings.bot_id),
+            bot_config=bot_config,
+            resolver=resolver,
+            pool=pool,
+            bus=bus,
+            trading_logger=trading_logger,
+            system_logger=logger,
+            audit_logger=audit_logger,
+            now_fn=lambda: datetime.now(UTC),
+            max_signal_age_seconds=settings.signal_max_age_seconds,
+        )
+        await bus.subscribe("signals.validated", signal_handler)
 
         logger.info(
             "service_started",
