@@ -2,93 +2,111 @@
 
 ## 2026-05-02 (session-end)
 
-**F3 PHASE CLOSED.** Marathon session — 16/16 F3 tasks shipped + 2 F2 build regressions caught & fixed during T-313 smoke.
+**F3 PHASE CLOSED + F4 PHASE UNLOCKED.** Marathon session: 16/16 F3 tasks shipped + 2 F2 build regressions caught & fixed during T-313 smoke + F4 24-task plan drafted.
 
 ### F3 deliverables shipped this session
 
-- T-309 strategy-engine skeleton (composition root + lifespan + /health/ready/metrics)
-- T-310a BotConfig sections (Exchange/Signals/ExecutionSection) + SignalRejected schema + select_signal_id_by_idempotency_key helper
-- T-310b per-bot signal consumer body (closes §9.4 main loop steps 3a-3h)
-- T-308b ScoringRule field-level Pydantic validation hardening (deferred CONCERN from T-308)
-- T-311 per-bot strategy-engine compose service variants (alpha + beta) per §18.1 verbatim
-- T-312 oi_squeeze reference plugin per §10.6 verbatim
-- T-313 F3 exit-criteria integration bundle (E1+E2+E3+E4) + alpha.yaml/beta.yaml fixtures + F3_E1 dvoj-bot smoke runbook
+T-309 + T-310a + T-310b + T-308b + T-311 + T-312 + T-313. F3 §19:2546-2550 exit-criteria SATISFIED via dvoj-bot smoke run 2026-05-02T20:15:30+00:00 (correlation_id=`f3-e1-smoke-2`, signal_id=3, alpha=`reject` + beta=`passthrough` rozdielne rozhodnutia, 2 audit rows, oi_squeeze plugin loaded). Commits `3a0518f` … `548c0cc`.
 
-### Smoke run sign-off (T-313 E1)
+### F2 build regressions fixed during smoke
 
-Live `docker compose up` stack tested 2026-05-02T20:15:30+00:00:
-- HTTP 200 webhook, signal_id=3, correlation_id=`f3-e1-smoke-2`
-- alpha decision=`reject` (active mode, score=0.0 < threshold 1.0; H-019 fail-open WARN observed correctly because no live OI feature pipeline)
-- beta decision=`passthrough` (passthrough mode unconditional)
-- 2 audit rows in `scoring_evaluations` with full per-rule JSONB
-- oi_squeeze plugin loaded (rules_count=1 in beta service_started log) + ran through pipeline (RuleResult present in audit, applied_weight=0.0 due to T-306 limitation per §0.8)
+`d1d3d45` (services/execution missing scalper-v2-exchange dep) + `a1112c1` (packages/exchange missing hatchling build config). Production Docker `uv sync --package <svc> --frozen --no-dev` path was broken; lokálne testy to maskovali workspace-wide syncom. Future Docker builds funkčné.
 
-§19:2547 + §19:2548 + §19:2549 + §19:2550 verbatim **SATISFIED**.
+### F4 phase plan saved (commit `dec8c12`)
 
-### F2 build regressions caught + fixed during smoke
-
-Lokálne `pytest` running pomocou workspace-wide sync (`uv sync --all-packages`) **maskoval** dva production-image build bugs:
-
-- `d1d3d45` `fix(execution)`: `services/execution/pyproject.toml` chýbala `scalper-v2-exchange` workspace dep → execution-service container failed `ModuleNotFoundError: No module named 'httpx'`
-- `a1112c1` `fix(packages/exchange)`: `packages/exchange/pyproject.toml` chýbal `[build-system]` block → setuptools auto-discovery failed pri Docker `uv sync --package`
-
-Obidva fix-y aplikované pre-smoke; production Docker build path teraz funkčný pre všetky services.
-
-### Master state
-
-- Master HEAD `548c0cc` (`chore(F3-close)`)
-- Branch up-to-date with origin
-- 1440 tests passing locally (no regressions)
-- F3 deliverables complete; F4 unlock pending operator decision
+24 tasks T-400..T-423 per BRIEF §19:2552-2571 + §9.6 + §14, pre-emptively split per L-006/L-007. Master HEAD `dec8c12`, branch up-to-date with origin. 1440 tests passing locally.
 
 ### Operator-driven actions taken at session end
 
-- `signabot.service` (paralelný v1 paper bot na port 8000) — `sudo systemctl disable` (permanentne, "nebudeme zapinat")
-- `timescaledb` v1 Docker kontajner (port 5432) — stopped + nepôjde sa reštartovať
+- `signabot.service` (paralelný v1 paper bot port 8000) — `sudo systemctl disable` permanentne
+- `timescaledb` v1 Docker kontajner (port 5432) — stopped, nereštartovať
 - scalper-v2 dev compose stack — `docker compose down` po smoke
-- Memory updates: `sibling_bot_v1.md` + `deployment.md` reflektuje "v1 disabled" stav
+- Memory updates: `sibling_bot_v1.md` + `deployment.md` reflektujú "v1 disabled" stav
 
-## Next session pick-up
+## Next session pick-up — TOMORROW
 
-**Operator decision needed: F4 unlock alebo backlog cleanup?**
+**Phase: F4 Analytics API + Dashboard UI.** Start with T-400 (analytics-api skeleton).
 
-### Option A — F4 phase unlock (analytics-api + dashboard UI)
+### T-400: services/analytics_api/ skeleton
 
-Per BRIEF §19:2552-2563. Veľký scope (~2-3 týždne):
-- `analytics-api` service skeleton + endpoint categories
-- React UI scaffold (TanStack Router/Query, Zustand, Tailwind, shadcn/ui)
-- 9 dashboard sections
-- SSE streaming
-- Component library
-- Playwright E2E
-- Grafana ops dashboards
+**Prereq**: žiadne (T-400 je foundational task; mirror T-309 strategy-engine + T-214 execution-service patterns).
 
-Začať `chore(tasks): unlock F4 phase + add task plan` keď operátor schváli.
+**Scope per TASKS.md:108**:
+- `services/analytics_api/app/main.py` — FastAPI factory + lifespan (asyncpg.Pool + NatsClient + structlog)
+- `services/analytics_api/app/config.py` — Settings(BaseSettings); DATABASE_URL + NATS_URL + LOG_LEVEL + service_name
+- `services/analytics_api/app/health.py` — `/health` + `/ready` (mirror execution T-214 verbatim)
+- `services/analytics_api/app/deps.py` — FastAPI providers (get_pool, get_bus, get_settings, get_logger_dep)
+- `services/analytics_api/app/__init__.py` + tests/__init__.py + py.typed
+- `services/analytics_api/Dockerfile` — UID/GID **10006** (distinct from execution 10004 / feature-engine 10003 / market-data 10002 / signal-gateway 10001 / strategy-engine 10005)
+- `services/analytics_api/pyproject.toml` — replace 4-line stub with hatchling config + 4 external deps (fastapi==0.136.0, pydantic-settings==2.13.1, uvicorn[standard]==0.45.0, uvloop==0.22.1) + 4 workspace deps (scalper-v2-bus, scalper-v2-core, scalper-v2-db, scalper-v2-observability)
+- `services/analytics_api/tests/conftest.py` + test_app_factory.py + test_health.py + test_ready.py + test_config.py
+- `compose.yaml` + `compose.dev.yaml` — analytics-api service block (mirror execution-service envelope; NO host port publish, internal-only per §16.6)
 
-### Option B — Hazard-bound deferrals from F3 (smaller)
+**Estimate**: ~150 LOC src + ~100 LOC tests = ~250 LOC total. Within §0.3 cap.
 
-- **T-F3+ live-mode safeguard runtime check** — lifespan fail-fast when `bot_config.exchange.mode == "live"` AND `BOT_CONFIRM_LIVE != "yes"` + `LIVE MODE ENGAGED` warning + Telegram alert. Compose-level env passthrough already shipped in T-311; runtime check ~15 LOC + tests deferred per §0.8. Brief §16.5:2245.
-- **F4+ T-306 feature_history population** — T-303 series conditions + T-312 oi_squeeze plugin will start contributing to score once resolver populates history. Currently both return data_missing.
-- **F4+ built-in `oi_change` feature** in `packages/features/builtins/` — brief §9.3:1488 declares it as built-in alongside EMA/SMA/RSI/etc.
-- **F4+ risk-based position sizing** — replace per-bot fixed `execution.qty: Decimal` with `sizing.tiers` block from §B.1:3006-3025.
+**Tests target**: ~12 tests (mirror T-309 structure). Repo-wide pytest 1440 → expected ~1452.
 
-### Option C — F2 follow-ups (operator-deferred during F2/F3)
+**Workflow tomorrow**:
+1. **Session start guard** — read TASKS.md current state, 3 most recent ADRs, this status.md.
+2. **Gate 1 plan-reviewer** — write `docs/plans/T-400.md` per CLAUDE.md §6.2 template (Purpose / Public interface / Scope / Hazards / Test strategy / §N invariants / §0.3 LOC budget / Hand verification / Open questions / Acceptance criteria / Out of scope), invoke plan-reviewer subagent for APPROVE.
+3. **Implementation** — 6-step lifespan (pool create → bus connect → state attach → yield → bus.close → pool.close); reverse shutdown bus-before-pool per T-200 Q2 publish-after-persist precedent.
+4. **Drift checkpoint** — drift-checker subagent after main.py reaches ~80 LOC and after first test passes.
+5. **Gate 3 brief-reviewer** — pre-commit on staged diff.
+6. **Gate 4 math-validator** — out-of-scope (analytics-api skeleton has zero arithmetic; CLAUDE.md Gate 4 list line 121 doesn't include `services/analytics_api/`).
+7. **Commit + push** + chore(tasks) move T-400 from Next to Done newest-first.
 
-- **T-F2+ Bybit V5 instruments-info step-size cache** (TASKS.md backlog) — T-216a left raw qty pass-through with TODO marker
-- **T-F2+ Hazard catalog orchestrator test** — F2 E5 verification per §19:2531; ~80 LOC
-- **F2 E1 testnet smoke** — manual operator runbook `docs/runbooks/F2_E1_testnet_smoke.md`; needs Bybit testnet credentials
+**Watch-outs for T-400**:
+- Dockerfile UID/GID 10006 — distinct from prior services per repo convention (per service Dockerfile blocks)
+- Skipnutie `BOT_ID` env required (analytics-api is service-instance-singleton, not per-bot like strategy-engine T-309)
+- Mirror execution-service `compose.yaml` envelope verbatim — NO host port publish (internal-only); analytics-api becomes externally accessible only via nginx + cloudflared in F5+ (per BRIEF §2.1 + §16.6)
+- F4 backend ships incrementally — T-400 ship first, endpoints T-401..T-408 land per per-task plan-reviewer cycles
+- Prerequisite for next session: F2 build regressions already fixed (`d1d3d45` + `a1112c1`); production Docker builds hardened. Should not surface again.
 
-## Watch-outs for next session
+### F4 sub-phase tracking
 
-- **`signabot.service` permanently disabled** — port 8000 + 5432 voľné pre v2 dev stack; v1 sibling bot už nehedguje (operátorské rozhodnutie 2026-05-02)
-- **Live OI feature pipeline absent** — F3 paper-mode smoke ukázal H-019 fail-open na oboch bot-och kvôli `data_missing` resolver outcomes. CI tests mock resolver pre Decimal("100") OI value → alpha by emitoval `execute` so score 2.0; live setup emituje `reject`. Toto NIE je regresia, ale operator awareness gap.
-- **Dev stack environment setup gotchas** zaznamenané v `docs/runbooks/F3_E1_dvoj_bot_smoke.md` (HMAC ≥32 chars, alembic `POSTGRES_URL` not `DATABASE_URL`, SymbolMapCache 60s TTL, bots+symbol_map seed required).
-- **Memory sync** — 2 files updated reflecting v1 disable + F3 close: `sibling_bot_v1.md`, `deployment.md`.
+After T-400, expected order of tasks (each with plan-reviewer Gate 1 cycle):
+- T-401 → T-402 → T-403 → T-404 → T-405 → T-406 → T-407 (read endpoint groups; ~8-10 days)
+- T-408 (SSE multiplexed stream; ~2 days; complex backpressure semantics — likely 2-pass plan-reviewer)
+- T-409 (alerting-svc + Telegram) — can run parallel any time after T-400
+- T-410 → T-411 (UI scaffold + components; ~3 days)
+- T-412..T-420 (9 dashboard sections; can parallelize; ~7-10 days total)
+- T-421 → T-422 → T-423 (operations + exit criteria; ~3-4 days)
 
-## Useful refs
+Per BRIEF estimate F4 = 2-3 týždne. With per-task plan-reviewer Gate 1 cycles + L-006/L-007 LOC discipline + math-validator out-of-scope (UI/REST = no Decimal arithmetic), realistic 2-2.5 weeks at F2/F3 pace.
 
-- F3 plans: `docs/plans/T-309.md` ... `T-313.md` (cross-link from each chore(tasks) Done entry)
-- F3 runbook: `docs/runbooks/F3_E1_dvoj_bot_smoke.md` (sign-off + setup gotchas)
-- F4 spec: BRIEF §19:2552-2563 + §9.6 analytics-api
-- Hazard-bound deferrals: T-311 plan §"§16.5 Live-mode safeguard"; T-312/T-313 plans § "Out of scope" T-306 deferral
-- F2 build path lessons: commits `d1d3d45` + `a1112c1` describe the masking pattern (workspace-sync vs --package --no-dev)
+### Dependencies + risks for tomorrow
+
+**No external dependencies for T-400** — purely scaffold work + docker compose extension. No Bybit credentials needed, no live OI feature pipeline needed.
+
+**T-400 + T-401-T-407 read-endpoint LOC budget**: analytics-api accumulates ~1500 LOC across endpoint groups. CI test count grows from 1440 baseline → ~1700 expected after F4 backend complete. Watch for L-006 LOC drift on individual endpoint tasks; pre-emptive splits where any single task estimates >300 LOC src.
+
+**T-410 UI scaffold gotchas**:
+- shadcn/ui components copied to repo (not NPM deps) per BRIEF §14.1:2046
+- pnpm package manager (not npm) per repo convention
+- Vite dev server vs production build separate workflows
+- TypeScript strict mode + Tailwind config + TanStack Router + Query setup is fragile; budget half day for first-time stack assembly
+
+**T-422 Playwright E2E**: needs CI workflow update + browser cache; first-time setup adds ~100 LOC `.github/workflows/e2e.yml` + headless config. Slot post-T-413 + T-414 minimum; ideally after T-420.
+
+## Useful refs (for tomorrow)
+
+- TASKS.md F4 plan: `## Next` section lines 108-183 with full task list + dependencies graph
+- BRIEF §9.6 analytics-api spec: `docs/CLAUDE_CODE_BRIEF.md:1617-1647`
+- BRIEF §14 dashboard spec: `docs/CLAUDE_CODE_BRIEF.md:2041-2089`
+- T-309 strategy-engine skeleton (pattern mirror for T-400): `services/strategy_engine/app/main.py` + `docs/plans/T-309.md`
+- T-214 execution-service skeleton (deeper pattern reference): `services/execution/app/main.py` + `docs/plans/T-214.md`
+- F3-close runbook (smoke setup gotchas): `docs/runbooks/F3_E1_dvoj_bot_smoke.md`
+- Plan template: CLAUDE.md §6.2 module-design-doc structure
+- Hazard-bound deferrals: TASKS.md `## Next` § "F4 hazard-bound deferrals (carry-over from F3)" — natural slots during T-409 + T-417
+
+## Session-end action checklist (DONE)
+
+- [x] T-313 + chore(F3-close) commits shipped (`813e6f0` + `663e0df` + `548c0cc`)
+- [x] F2 build regressions fixed (`d1d3d45` + `a1112c1`)
+- [x] Memory updates (`sibling_bot_v1.md` + `deployment.md`)
+- [x] F4 phase unlock + 24-task plan in TASKS.md (`dec8c12`)
+- [x] status.md updated for tomorrow's pick-up
+- [x] Master pushed to origin
+- [x] No uncommitted changes
+
+Tomorrow: start fresh session with **"Session start"** preamble per CLAUDE.md, pick up T-400 plan-doc draft.
