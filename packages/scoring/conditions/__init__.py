@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from .base import Condition, RuleContext
 from .composite import AndCondition, NotCondition, OrCondition, WhenThenElseCondition
+from .plugin import PluginCondition
 from .series import EmaStackCondition, FallingCondition, RisingCondition
 from .simple import (
     BetweenCondition,
@@ -36,6 +37,7 @@ __all__ = [
     "NotCondition",
     "NotEqualsCondition",
     "OrCondition",
+    "PluginCondition",
     "RisingCondition",
     "RuleContext",
     "WhenThenElseCondition",

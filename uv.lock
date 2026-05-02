@@ -1544,10 +1544,14 @@ version = "0.1.0"
 source = { virtual = "packages/scoring" }
 dependencies = [
     { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = "==2.13.2" }]
+requires-dist = [
+    { name = "pydantic", specifier = "==2.13.2" },
+    { name = "pyyaml", specifier = "==6.0.3" },
+]
 
 [[package]]
 name = "scalper-v2-signal-gateway"
