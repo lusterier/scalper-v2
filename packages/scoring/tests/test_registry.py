@@ -173,3 +173,22 @@ rules:
     path = _write_yaml(tmp_path, yaml_text)
     with pytest.raises(ValueError, match="missing required field 'entry_point'"):
         load_plugin_registry(path)
+
+
+def test_load_plugin_registry_real_configs_resolves_oi_squeeze() -> None:
+    """T-312: real `configs/plugin_registry.yaml` post-T-312 update resolves to OISqueezeRule.
+
+    Regression pin against the verbatim §10.6:1817-1820 contract end-to-end.
+    Identity check (`is`) since `_resolve_entry_point` returns the literal class
+    object — equality on type objects is identity in Python.
+    """
+    from pathlib import Path as _Path
+
+    from plugins.rules.oi_squeeze import OISqueezeRule
+
+    # parents[3]: packages/scoring/tests/test_registry.py → repo root.
+    repo_root = _Path(__file__).resolve().parents[3]
+    registry_path = repo_root / "configs" / "plugin_registry.yaml"
+    registry = load_plugin_registry(registry_path)
+    assert ("oi_squeeze", "2") in registry
+    assert registry[("oi_squeeze", "2")] is OISqueezeRule
