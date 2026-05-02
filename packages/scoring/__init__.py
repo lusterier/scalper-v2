@@ -14,16 +14,21 @@ from .resolver import FeatureResolver, ResolverResult, ResolverStatus
 from .types import (
     BotConfig,
     Decision,
+    ExchangeSection,
+    ExecutionSection,
     RuleResult,
     ScoringConfig,
     ScoringResult,
     ScoringRule,
+    SignalsSection,
 )
 from .yaml_loader import load_bot_config, parse_condition
 
 __all__ = [
     "BotConfig",
     "Decision",
+    "ExchangeSection",
+    "ExecutionSection",
     "FeatureResolver",
     "ResolverResult",
     "ResolverStatus",
@@ -33,6 +38,7 @@ __all__ = [
     "ScoringConfig",
     "ScoringResult",
     "ScoringRule",
+    "SignalsSection",
     "evaluate",
     "load_bot_config",
     "parse_condition",

@@ -21,6 +21,7 @@ All models are ``frozen=True`` per §5.3 immutability convention.
 from __future__ import annotations
 
 import re
+from decimal import Decimal  # noqa: TC003 — runtime annotation on Pydantic Decimal fields
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -28,10 +29,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 __all__ = [
     "BotConfig",
     "Decision",
+    "ExchangeSection",
+    "ExecutionSection",
     "RuleResult",
     "ScoringConfig",
     "ScoringResult",
     "ScoringRule",
+    "SignalsSection",
 ]
 
 
@@ -153,17 +157,67 @@ class ScoringConfig(BaseModel):
         return self
 
 
+class ExchangeSection(BaseModel):
+    """§B.1 ``exchange:`` block (T-310a)."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    mode: Literal["live", "testnet", "paper"]
+    account: str
+    api_key_env: str
+    api_secret_env: str
+
+
+class SignalsSection(BaseModel):
+    """§B.1 ``signals:`` block (T-310a). Defaults match §B.1 + H-008 spec verbatim."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    source_filter: list[str] | None = None
+    ttl_seconds: int = 120
+
+
+class ExecutionSection(BaseModel):
+    """§B.1 ``execution:`` block (T-310a) plus T-310a ``qty`` per OQ-4 Path A.
+
+    §B.1 brief deviation (operator-approved 2026-05-02): brief §B.1 (lines
+    2934-2944) does NOT have ``qty:`` in the ``execution:`` block; brief
+    §B.1 ships a separate ``sizing:`` block (lines 3006-3025) with tier-
+    based balance sizing. T-310a deliberately simplifies to per-bot fixed
+    ``qty: Decimal``; F4+ task replaces with risk-based sizing reading
+    ``sizing.*`` block (currently absorbed by ``BotConfig.extra="ignore"``).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    # T-310a OQ-4 Path A 2026-05-02: per-bot fixed qty v1; §B.1 sizing:
+    # block (lines 3006-3025) deferred to F4+.
+    qty: Decimal
+    leverage: int
+    sl_pct: Decimal
+    tp_pct: Decimal
+    tp_qty_pct: Decimal
+    be_trigger: Decimal
+    be_sl_level: Decimal
+    trail_pct: Decimal
+    fee_rate: Decimal
+    sl_retry_count: int = 3
+    emergency_close_on_sl_fail: bool = True
+
+
 class BotConfig(BaseModel):
     """Top-level bot YAML config (§9.4 + §10).
 
     ``version`` field threads to ``scoring_evaluations.config_version``
     audit trail per T-301 Migration 0010.
 
-    ``extra="ignore"`` is the parser-drift firewall per T-308 WG#5: §B.1
-    extras (``exchange.*``, ``signals.*``, ``execution.*``, ``display_name``,
-    ``created_at``, ``status``, ``trading.primary_interval``) are NOT
-    parsed by T-308 yaml_loader; future tasks adding these sections
-    land as Pydantic fields here, NOT as another extra-ignore workaround.
+    ``extra="ignore"`` is defense-in-depth per T-308 WG#5 + T-310a: the
+    yaml_loader extracts specific kwargs (no ``**data`` splat into ``BotConfig(...)``),
+    so unmodeled top-level keys (``display_name``, ``created_at``, ``status``,
+    ``trading.primary_interval``, ``sizing``, ``shadow``) never reach the
+    ctor in the loader path. ``extra="ignore"`` defends against alternative
+    caller paths (e.g. analytics-api inspector) that might construct BotConfig
+    via ``**raw_dict``. Not a workaround — a hardening layer.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
@@ -171,6 +225,9 @@ class BotConfig(BaseModel):
     bot_id: str
     version: int = Field(default=1, ge=1)
     symbols: list[str]
+    exchange: ExchangeSection
+    signals: SignalsSection = Field(default_factory=SignalsSection)
+    execution: ExecutionSection
     scoring: ScoringConfig
 
     @field_validator("bot_id")

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from packages.core import non_idempotent
+from packages.core import idempotent, non_idempotent
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -25,7 +25,11 @@ if TYPE_CHECKING:
     # pass `async with pool.acquire() as conn` results without casting.
     type _DbExecutor = asyncpg.Connection[asyncpg.Record] | PoolConnectionProxy[asyncpg.Record]
 
-__all__ = ["fetch_symbol_mapping", "insert_signal"]
+__all__ = [
+    "fetch_symbol_mapping",
+    "insert_signal",
+    "select_signal_id_by_idempotency_key",
+]
 
 
 async def fetch_symbol_mapping(
@@ -111,3 +115,42 @@ async def insert_signal(
         msg = "INSERT ... RETURNING id produced no row"
         raise RuntimeError(msg)
     return int(row["id"])
+
+
+@idempotent
+async def select_signal_id_by_idempotency_key(
+    conn: _DbExecutor,
+    *,
+    idempotency_key: str,
+    received_at_lower_bound: datetime,
+) -> int | None:
+    """Return ``signals.id`` for a previously-inserted webhook, or ``None``.
+
+    Used by strategy-engine consumer (T-310b) to resolve ``signal_id: int``
+    from ``SignalValidated.idempotency_key: str`` (schema does not carry
+    the surrogate id; OQ-1 Path A operator-decision 2026-05-02).
+
+    Requires ``received_at_lower_bound`` for hypertable chunk pruning —
+    Timescale needs the partitioning column in WHERE for chunk-skip per
+    `services/feature_engine/app/yaml_loader.py` precedent. Caller passes
+    ``now - max_signal_age_seconds`` (T-310b default 600s).
+
+    The ``signals_idempotency`` UNIQUE composite index on
+    ``(idempotency_key, received_at)`` (migration 0002) supports the
+    range scan; ``ORDER BY received_at DESC LIMIT 1`` is the index-scan-
+    backwards top-K idiom (returns the most recent match if duplicate
+    keys span the window — defensive; the UNIQUE constraint prevents
+    duplicates within a single ``received_at`` instant).
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT id FROM signals
+        WHERE idempotency_key = $1
+          AND received_at >= $2
+        ORDER BY received_at DESC
+        LIMIT 1
+        """,
+        idempotency_key,
+        received_at_lower_bound,
+    )
+    return int(row["id"]) if row is not None else None

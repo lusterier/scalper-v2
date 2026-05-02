@@ -14,6 +14,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from packages.scoring import SignalsSection
 from packages.scoring.conditions import (
     AndCondition,
     BetweenCondition,
@@ -32,8 +33,34 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _write_yaml(tmp_path: Path, content: str) -> Path:
+# T-310a: BotConfig now requires `exchange:` + `execution:` sections.
+# `_write_yaml` auto-injects defaults if the fixture doesn't already supply
+# them, keeping pre-T-310a fixture texts unchanged. Tests that exercise
+# missing/invalid section behavior set `inject_defaults=False` and supply
+# the YAML verbatim.
+_DEFAULT_EXCHANGE_EXECUTION_YAML = """\
+exchange:
+  mode: paper
+  account: sub_alpha
+  api_key_env: BOT_ALPHA_BYBIT_API_KEY
+  api_secret_env: BOT_ALPHA_BYBIT_API_SECRET
+execution:
+  qty: 0.001
+  leverage: 20
+  sl_pct: 0.01
+  tp_pct: 0.01
+  tp_qty_pct: 0.5
+  be_trigger: 0.005
+  be_sl_level: 0.003
+  trail_pct: 0.005
+  fee_rate: 0.00055
+"""
+
+
+def _write_yaml(tmp_path: Path, content: str, *, inject_defaults: bool = True) -> Path:
     path = tmp_path / "alpha.yaml"
+    if inject_defaults and "exchange:" not in content:
+        content = content + _DEFAULT_EXCHANGE_EXECUTION_YAML
     path.write_text(content)
     return path
 
@@ -382,26 +409,26 @@ scoring:
     assert cfg.scoring.mode == "active"
 
 
-def test_b1_extras_ignored_via_extra_ignore(tmp_path: Path) -> None:
-    """§B.1 extras (exchange/signals/execution/display/etc.) parse without error."""
+def test_b1_remaining_unmodeled_extras_ignored_via_extra_ignore(tmp_path: Path) -> None:
+    """§B.1 unmodeled top-level keys (display_name/created_at/status/trading.primary_interval/
+    sizing/shadow) parse without error — T-308 WG#5 + T-310a defense-in-depth.
+
+    T-310a lands ``exchange:``/``signals:``/``execution:`` as first-class BotConfig fields;
+    this test now exercises only the remaining genuinely-unmodeled keys.
+    """
     yaml_text = """\
 bot_id: alpha
 display_name: "Alpha — RSI div passthrough"
 created_at: "2026-04-25T10:00:00+00:00"
 status: active
-exchange:
-  mode: testnet
-  account: sub_alpha
-  api_key_env: BOT_ALPHA_BYBIT_API_KEY
-signals:
-  source_filter: ["tv_rsi_divergence_v3"]
-  ttl_seconds: 120
 trading:
   universe: [BTCUSDT, ETHUSDT]
   primary_interval: 15m
-execution:
-  leverage: 20
-  sl_pct: 0.01
+sizing:
+  tiers:
+    - { balance_min: 500, size: 700 }
+shadow:
+  enabled: true
 scoring:
   mode: passthrough
   trigger_threshold: 4.0
@@ -576,6 +603,152 @@ scoring:
     rule = cfg.scoring.rules[0]
     assert rule.weight == 1.0
     assert isinstance(rule.weight, float)
+
+
+# region: T-310a — BotConfig sections (exchange/signals/execution) ----------
+
+
+def test_load_bot_config_full_b1_shape_round_trip(tmp_path: Path) -> None:
+    """Happy path: §B.1-verbatim YAML → BotConfig with all 4 sections populated.
+
+    Decimal precision pinned: ``Decimal("0.01")`` round-trips exact via
+    ``_to_decimal`` helper (string-conversion preserves YAML float form).
+    """
+    yaml_text = """\
+bot_id: alpha
+trading:
+  universe: [BTCUSDT, ETHUSDT]
+exchange:
+  mode: testnet
+  account: sub_alpha
+  api_key_env: BOT_ALPHA_BYBIT_API_KEY
+  api_secret_env: BOT_ALPHA_BYBIT_API_SECRET
+signals:
+  source_filter: [tv_rsi_v3]
+  ttl_seconds: 60
+execution:
+  qty: 0.001
+  leverage: 20
+  sl_pct: 0.01
+  tp_pct: 0.01
+  tp_qty_pct: 0.5
+  be_trigger: 0.005
+  be_sl_level: 0.003
+  trail_pct: 0.005
+  fee_rate: 0.00055
+scoring:
+  mode: active
+  trigger_threshold: 1.0
+  rules: []
+"""
+    cfg = load_bot_config(_write_yaml(tmp_path, yaml_text, inject_defaults=False))
+    from decimal import Decimal as _Decimal
+
+    assert cfg.exchange.mode == "testnet"
+    assert cfg.exchange.account == "sub_alpha"
+    assert cfg.signals.source_filter == ["tv_rsi_v3"]
+    assert cfg.signals.ttl_seconds == 60
+    assert cfg.execution.qty == _Decimal("0.001")
+    assert cfg.execution.leverage == 20
+    assert cfg.execution.sl_pct == _Decimal("0.01")
+    assert cfg.execution.fee_rate == _Decimal("0.00055")
+    assert cfg.execution.sl_retry_count == 3  # default
+    assert cfg.execution.emergency_close_on_sl_fail is True  # default
+
+
+def test_load_bot_config_signals_section_default_when_omitted(tmp_path: Path) -> None:
+    """WG#2: `_parse_signals({})` returns `SignalsSection()` — default ttl=120, no filter."""
+    yaml_text = """\
+bot_id: alpha
+trading:
+  universe: [BTCUSDT]
+scoring:
+  mode: active
+  trigger_threshold: 1.0
+  rules: []
+"""
+    cfg = load_bot_config(_write_yaml(tmp_path, yaml_text))
+    assert cfg.signals == SignalsSection()
+    assert cfg.signals.ttl_seconds == 120
+    assert cfg.signals.source_filter is None
+
+
+def test_load_bot_config_rejects_missing_exchange_section(tmp_path: Path) -> None:
+    """No `exchange:` block → ExchangeSection ValidationError surfaces (required fields missing)."""
+    yaml_text = """\
+bot_id: alpha
+trading:
+  universe: [BTCUSDT]
+execution:
+  qty: 0.001
+  leverage: 20
+  sl_pct: 0.01
+  tp_pct: 0.01
+  tp_qty_pct: 0.5
+  be_trigger: 0.005
+  be_sl_level: 0.003
+  trail_pct: 0.005
+  fee_rate: 0.00055
+scoring:
+  mode: active
+  trigger_threshold: 1.0
+  rules: []
+"""
+    with pytest.raises(ValidationError, match=r"mode|account|api_key_env|api_secret_env"):
+        load_bot_config(_write_yaml(tmp_path, yaml_text, inject_defaults=False))
+
+
+def test_load_bot_config_rejects_missing_execution_section(tmp_path: Path) -> None:
+    """No `execution:` block → ExecutionSection ValidationError surfaces."""
+    yaml_text = """\
+bot_id: alpha
+trading:
+  universe: [BTCUSDT]
+exchange:
+  mode: paper
+  account: sub_alpha
+  api_key_env: K
+  api_secret_env: S
+scoring:
+  mode: active
+  trigger_threshold: 1.0
+  rules: []
+"""
+    with pytest.raises(ValidationError, match=r"qty|leverage|sl_pct"):
+        load_bot_config(_write_yaml(tmp_path, yaml_text, inject_defaults=False))
+
+
+def test_load_bot_config_execution_decimal_strings_coerce(tmp_path: Path) -> None:
+    """WG#4: both `qty: "0.001"` (str) and `qty: 0.001` (float) coerce to Decimal exact."""
+    from decimal import Decimal as _Decimal
+
+    yaml_text_str = """\
+bot_id: alpha
+trading:
+  universe: [BTCUSDT]
+exchange:
+  mode: paper
+  account: sub_alpha
+  api_key_env: K
+  api_secret_env: S
+execution:
+  qty: "0.001"
+  leverage: 20
+  sl_pct: "0.01"
+  tp_pct: "0.01"
+  tp_qty_pct: "0.5"
+  be_trigger: "0.005"
+  be_sl_level: "0.003"
+  trail_pct: "0.005"
+  fee_rate: "0.00055"
+scoring:
+  mode: active
+  trigger_threshold: 1.0
+  rules: []
+"""
+    cfg_str = load_bot_config(_write_yaml(tmp_path, yaml_text_str, inject_defaults=False))
+    assert cfg_str.execution.qty == _Decimal("0.001")
+    assert cfg_str.execution.fee_rate == _Decimal("0.00055")
 
 
 def test_load_bot_config_weight_pre_check_runs_before_pydantic_ctor(

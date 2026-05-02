@@ -6,15 +6,38 @@ target ≥80% on `packages/scoring/` per §N5.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
 from packages.scoring import (
     BotConfig,
+    ExchangeSection,
+    ExecutionSection,
     RuleResult,
     ScoringConfig,
     ScoringResult,
     ScoringRule,
+    SignalsSection,
+)
+
+_DEFAULT_EXCHANGE = ExchangeSection(
+    mode="paper",
+    account="sub_alpha",
+    api_key_env="BOT_ALPHA_BYBIT_API_KEY",
+    api_secret_env="BOT_ALPHA_BYBIT_API_SECRET",
+)
+_DEFAULT_EXECUTION = ExecutionSection(
+    qty=Decimal("0.001"),
+    leverage=20,
+    sl_pct=Decimal("0.01"),
+    tp_pct=Decimal("0.01"),
+    tp_qty_pct=Decimal("0.5"),
+    be_trigger=Decimal("0.005"),
+    be_sl_level=Decimal("0.003"),
+    trail_pct=Decimal("0.005"),
+    fee_rate=Decimal("0.00055"),
 )
 
 
@@ -38,6 +61,8 @@ def _basic_bot(bot_id: str = "alpha") -> BotConfig:
     return BotConfig(
         bot_id=bot_id,
         symbols=["BTCUSDT"],
+        exchange=_DEFAULT_EXCHANGE,
+        execution=_DEFAULT_EXECUTION,
         scoring=_basic_scoring(),
     )
 
@@ -84,19 +109,37 @@ def test_bot_config_round_trip_via_model_dump() -> None:
 
 def test_bot_config_rejects_empty_bot_id() -> None:
     with pytest.raises(ValidationError, match="bot_id"):
-        BotConfig(bot_id="", symbols=["BTCUSDT"], scoring=_basic_scoring())
+        BotConfig(
+            bot_id="",
+            symbols=["BTCUSDT"],
+            exchange=_DEFAULT_EXCHANGE,
+            execution=_DEFAULT_EXECUTION,
+            scoring=_basic_scoring(),
+        )
 
 
 def test_bot_config_rejects_invalid_bot_id_charset() -> None:
     """Convention regex: lowercase + digits + underscore + hyphen, must start with letter."""
     for bad in ("Alpha", "1alpha", "alpha bot", "alpha.beta", "alpha/beta"):
         with pytest.raises(ValidationError, match="bot_id"):
-            BotConfig(bot_id=bad, symbols=["BTCUSDT"], scoring=_basic_scoring())
+            BotConfig(
+                bot_id=bad,
+                symbols=["BTCUSDT"],
+                exchange=_DEFAULT_EXCHANGE,
+                execution=_DEFAULT_EXECUTION,
+                scoring=_basic_scoring(),
+            )
 
 
 def test_bot_config_accepts_valid_bot_id_charset() -> None:
     for good in ("alpha", "alpha-2", "alpha_beta", "a", "alpha-bot-1"):
-        cfg = BotConfig(bot_id=good, symbols=["BTCUSDT"], scoring=_basic_scoring())
+        cfg = BotConfig(
+            bot_id=good,
+            symbols=["BTCUSDT"],
+            exchange=_DEFAULT_EXCHANGE,
+            execution=_DEFAULT_EXECUTION,
+            scoring=_basic_scoring(),
+        )
         assert cfg.bot_id == good
 
 
@@ -104,7 +147,14 @@ def test_bot_config_version_default_one_minimum_one() -> None:
     cfg = _basic_bot()
     assert cfg.version == 1
     with pytest.raises(ValidationError):
-        BotConfig(bot_id="alpha", version=0, symbols=["BTCUSDT"], scoring=_basic_scoring())
+        BotConfig(
+            bot_id="alpha",
+            version=0,
+            symbols=["BTCUSDT"],
+            exchange=_DEFAULT_EXCHANGE,
+            execution=_DEFAULT_EXECUTION,
+            scoring=_basic_scoring(),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +216,80 @@ def test_scoring_rule_condition_any_typing_accepts_dict() -> None:
     """
     rule = _basic_rule()
     assert rule.condition == {"type": "gt", "value": 50000}
+
+
+# ---------------------------------------------------------------------------
+# T-310a — ExchangeSection / SignalsSection / ExecutionSection (§B.1)
+# ---------------------------------------------------------------------------
+
+
+def test_exchange_section_round_trip() -> None:
+    """Happy path: all 4 ExchangeSection fields populated; frozen verified."""
+    section = ExchangeSection(
+        mode="testnet",
+        account="sub_alpha",
+        api_key_env="BOT_ALPHA_BYBIT_API_KEY",
+        api_secret_env="BOT_ALPHA_BYBIT_API_SECRET",
+    )
+    assert section.mode == "testnet"
+    assert section.account == "sub_alpha"
+    with pytest.raises(ValidationError):
+        section.mode = "live"
+
+
+def test_exchange_section_rejects_invalid_mode_literal() -> None:
+    """`mode: "demo"` not in Literal["live","testnet","paper"] → ValidationError."""
+    with pytest.raises(ValidationError, match=r"mode"):
+        ExchangeSection(
+            mode="demo",  # type: ignore[arg-type]
+            account="sub_alpha",
+            api_key_env="K",
+            api_secret_env="S",
+        )
+
+
+def test_signals_section_defaults_when_constructed_empty() -> None:
+    """`SignalsSection()` returns ttl_seconds=120 + source_filter=None per §B.1 + H-008."""
+    section = SignalsSection()
+    assert section.ttl_seconds == 120
+    assert section.source_filter is None
+
+
+def test_execution_section_decimal_round_trip() -> None:
+    """Decimal precision preserved across all 8 Decimal fields."""
+    section = ExecutionSection(
+        qty=Decimal("0.001"),
+        leverage=20,
+        sl_pct=Decimal("0.01"),
+        tp_pct=Decimal("0.01"),
+        tp_qty_pct=Decimal("0.5"),
+        be_trigger=Decimal("0.005"),
+        be_sl_level=Decimal("0.003"),
+        trail_pct=Decimal("0.005"),
+        fee_rate=Decimal("0.00055"),
+    )
+    assert section.qty == Decimal("0.001")
+    assert section.fee_rate == Decimal("0.00055")
+    assert section.sl_retry_count == 3
+    assert section.emergency_close_on_sl_fail is True
+    with pytest.raises(ValidationError):
+        section.qty = Decimal("0.002")
+
+
+def test_bot_config_with_all_three_new_sections() -> None:
+    """Full §B.1-shape BotConfig builds with exchange + signals + execution + scoring."""
+    cfg = BotConfig(
+        bot_id="alpha",
+        symbols=["BTCUSDT"],
+        exchange=_DEFAULT_EXCHANGE,
+        signals=SignalsSection(source_filter=["tv_rsi_v3"], ttl_seconds=60),
+        execution=_DEFAULT_EXECUTION,
+        scoring=_basic_scoring(),
+    )
+    assert cfg.exchange.mode == "paper"
+    assert cfg.signals.ttl_seconds == 60
+    assert cfg.execution.qty == Decimal("0.001")
+    assert cfg.exchange is _DEFAULT_EXCHANGE  # frozen instance reused
 
 
 # ---------------------------------------------------------------------------

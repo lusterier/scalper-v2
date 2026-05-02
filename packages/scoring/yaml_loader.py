@@ -48,7 +48,14 @@ from .conditions import (
     RisingCondition,
     WhenThenElseCondition,
 )
-from .types import BotConfig, ScoringConfig, ScoringRule
+from .types import (
+    BotConfig,
+    ExchangeSection,
+    ExecutionSection,
+    ScoringConfig,
+    ScoringRule,
+    SignalsSection,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -329,6 +336,47 @@ def _build_rule(
     )
 
 
+_EXECUTION_DECIMAL_FIELDS: frozenset[str] = frozenset(
+    {
+        "qty",
+        "sl_pct",
+        "tp_pct",
+        "tp_qty_pct",
+        "be_trigger",
+        "be_sl_level",
+        "trail_pct",
+        "fee_rate",
+    },
+)
+
+
+def _parse_exchange(spec: dict[str, Any]) -> ExchangeSection:
+    """Build ExchangeSection from §B.1 ``exchange:`` block (T-310a)."""
+    return ExchangeSection(**spec)
+
+
+def _parse_signals(spec: dict[str, Any]) -> SignalsSection:
+    """Build SignalsSection from §B.1 ``signals:`` block (T-310a).
+
+    Empty-dict input → ``SignalsSection()`` (default ttl=120, source_filter=None)
+    so loader can call this unconditionally with ``data.get("signals", {})``
+    regardless of YAML presence (per T-310a WG#2).
+    """
+    return SignalsSection(**spec)
+
+
+def _parse_execution(spec: dict[str, Any]) -> ExecutionSection:
+    """Build ExecutionSection from §B.1 ``execution:`` block + T-310a ``qty``.
+
+    Decimal coercion via shared :func:`_to_decimal` helper for all 8 Decimal
+    fields per T-310a WG#4 + §N1 / §5.13.
+    """
+    coerced = {
+        k: (_to_decimal(v) if k in _EXECUTION_DECIMAL_FIELDS else v) for k, v in spec.items()
+    }
+    return ExecutionSection(**coerced)
+
+
 def load_bot_config(
     path: Path,
     *,
@@ -360,5 +408,8 @@ def load_bot_config(
         bot_id=data["bot_id"],
         version=data.get("version", 1),  # Pydantic strict-mode rejects non-int
         symbols=list(symbols),
+        exchange=_parse_exchange(data.get("exchange", {})),
+        signals=_parse_signals(data.get("signals", {})),
+        execution=_parse_execution(data.get("execution", {})),
         scoring=scoring,
     )

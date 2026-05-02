@@ -23,7 +23,13 @@ from packages.scoring.conditions import (
     LtCondition,
 )
 from packages.scoring.resolver import ResolverResult
-from packages.scoring.types import BotConfig, ScoringConfig, ScoringRule
+from packages.scoring.types import (
+    BotConfig,
+    ExchangeSection,
+    ExecutionSection,
+    ScoringConfig,
+    ScoringRule,
+)
 
 _FIXED_NOW = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
 
@@ -41,6 +47,25 @@ def _signal(symbol: str = "BTCUSDT", action: str = "LONG") -> SignalValidated:
     )
 
 
+_DEFAULT_EXCHANGE = ExchangeSection(
+    mode="paper",
+    account="sub_alpha",
+    api_key_env="BOT_ALPHA_BYBIT_API_KEY",
+    api_secret_env="BOT_ALPHA_BYBIT_API_SECRET",
+)
+_DEFAULT_EXECUTION = ExecutionSection(
+    qty=Decimal("0.001"),
+    leverage=20,
+    sl_pct=Decimal("0.01"),
+    tp_pct=Decimal("0.01"),
+    tp_qty_pct=Decimal("0.5"),
+    be_trigger=Decimal("0.005"),
+    be_sl_level=Decimal("0.003"),
+    trail_pct=Decimal("0.005"),
+    fee_rate=Decimal("0.00055"),
+)
+
+
 def _bot(
     *,
     rules: list[ScoringRule],
@@ -52,6 +77,8 @@ def _bot(
         bot_id="alpha",
         version=version,
         symbols=["BTCUSDT"],
+        exchange=_DEFAULT_EXCHANGE,
+        execution=_DEFAULT_EXECUTION,
         scoring=ScoringConfig(
             mode=mode,  # type: ignore[arg-type]
             trigger_threshold=threshold,

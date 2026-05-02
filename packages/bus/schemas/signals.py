@@ -26,7 +26,12 @@ from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
-__all__ = ["SignalValidated", "message_id_for"]
+__all__ = [
+    "SignalRejected",
+    "SignalValidated",
+    "message_id_for",
+    "subject_for_signals_rejected",
+]
 
 
 # Project-unique namespace UUID, minted once for signals.validated
@@ -74,4 +79,48 @@ class SignalValidated(BaseModel):
     @field_serializer("received_at", "expires_at")
     def _serialize_utc(self, value: datetime) -> str:
         """ISO-8601 with explicit ``+00:00`` offset (§5.12)."""
+        return value.isoformat()
+
+
+def subject_for_signals_rejected(bot_id: str) -> str:
+    """Build §8 line 1204 subject ``signals.rejected.<bot_id>``."""
+    return f"signals.rejected.{bot_id}"
+
+
+class SignalRejected(BaseModel):
+    """``signals.rejected.<bot_id>`` payload for shadow tracking (§9.4:1541).
+
+    Published by strategy-engine (T-310b) when a per-bot scoring decision
+    is ``reject``. Consumed by analytics-api (F4) shadow-tracking pipeline.
+
+    UTC enforcement on ``rejected_at`` mirrors :class:`SignalValidated`:
+    naive or non-zero-offset datetimes rejected at validation;
+    serialisation emits explicit ``+00:00`` per §5.12.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    bot_id: str
+    signal_id: int
+    idempotency_key: str
+    symbol: str
+    action: Literal["LONG", "SHORT", "CLOSE"]
+    decision: Literal["reject"] = "reject"
+    reason: str
+    total_score: float
+    threshold: float
+    rejected_at: datetime
+
+    @field_validator("rejected_at")
+    @classmethod
+    def _rejected_at_must_be_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("datetime must be timezone-aware (tzinfo=datetime.UTC)")
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("datetime must be in UTC (utcoffset must be zero)")
+        return value if value.tzinfo is UTC else value.replace(tzinfo=UTC)
+
+    @field_serializer("rejected_at")
+    def _rejected_at_serialize_utc(self, value: datetime) -> str:
         return value.isoformat()

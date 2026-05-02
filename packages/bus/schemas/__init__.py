@@ -27,7 +27,12 @@ from .orders import (
     subject_for_orders_event,
     subject_for_orders_request,
 )
-from .signals import SignalValidated, message_id_for
+from .signals import (
+    SignalRejected,
+    SignalValidated,
+    message_id_for,
+    subject_for_signals_rejected,
+)
 
 __all__ = [
     "FeatureUpdate",
@@ -38,6 +43,7 @@ __all__ = [
     "OrderPlaced",
     "OrderRequest",
     "SLMoved",
+    "SignalRejected",
     "SignalValidated",
     "TradingEvent",
     "message_id_for",
@@ -46,4 +52,5 @@ __all__ = [
     "subject_for_orders_dlq",
     "subject_for_orders_event",
     "subject_for_orders_request",
+    "subject_for_signals_rejected",
 ]
