@@ -26,6 +26,7 @@ tests register the codec per-connection in fixtures (mirror T-108
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
@@ -39,13 +40,38 @@ if TYPE_CHECKING:
     type _DbExecutor = asyncpg.Connection[asyncpg.Record] | PoolConnectionProxy[asyncpg.Record]
 
 
-__all__ = ["OhlcRow", "fetch_ohlc_range", "fetch_warmup_window", "insert_feature"]
+__all__ = [
+    "LatestFeatureRow",
+    "OhlcRow",
+    "fetch_ohlc_range",
+    "fetch_warmup_window",
+    "insert_feature",
+    "select_latest_feature",
+]
 
 
 # Public row alias — T-110c imports for OhlcCandle(*row) mapping on
 # the use-case side. Tuple field order:
 # (symbol, bucket_start, open, high, low, close, volume, source)
 type OhlcRow = tuple[str, "datetime", "Decimal", "Decimal", "Decimal", "Decimal", "Decimal", str]
+
+
+@dataclass(frozen=True, slots=True)
+class LatestFeatureRow:
+    """Flat-projection of the four ``features`` columns T-306 resolver reads.
+
+    §N7 hexagonal seam: this module does NOT import :mod:`packages.features`
+    (see file-level docstring lines 9-14). Use-case layer
+    (:mod:`packages.scoring.resolver`) maps :class:`LatestFeatureRow`
+    primitives to :class:`packages.features.types.FeatureValue`. Mirrors
+    :data:`OhlcRow` precedent (line 48): primitives in, domain conversion
+    on the use-case side.
+    """
+
+    value_num: float | None
+    value_bool: bool | None
+    value_json: dict[str, object] | None
+    computed_at: datetime
 
 
 # Allow-list of supported intervals → source table. Validated before
@@ -241,3 +267,42 @@ async def fetch_ohlc_range(
         )
         for r in rows
     ]
+
+
+_SELECT_LATEST_FEATURE_SQL = """
+    SELECT value_num, value_bool, value_json, computed_at
+    FROM features
+    WHERE feature_name = $1 AND symbol = $2
+    ORDER BY computed_at DESC
+    LIMIT 1
+"""
+
+
+async def select_latest_feature(
+    conn: _DbExecutor,
+    *,
+    feature_name: str,
+    symbol: str,
+) -> LatestFeatureRow | None:
+    """Return latest ``features`` row for ``(feature_name, symbol)``, or None.
+
+    Uses the ``features_latest`` index ``(feature_name, symbol, computed_at DESC)``
+    per migration 0004:104 — single fetch with ``ORDER BY computed_at DESC LIMIT 1``.
+    Empty result returns ``None``.
+
+    Returns :class:`LatestFeatureRow` (primitives only — no
+    :class:`packages.features.types.FeatureValue` cross-import per §N7
+    seam at file:9-14). Use-case (resolver) maps to FeatureValue.
+
+    Read-only — no idempotency marker (markers are for external writes
+    per §N3, mirror :func:`fetch_warmup_window` precedent at line 162).
+    """
+    row = await conn.fetchrow(_SELECT_LATEST_FEATURE_SQL, feature_name, symbol)
+    if row is None:
+        return None
+    return LatestFeatureRow(
+        value_num=row["value_num"],
+        value_bool=row["value_bool"],
+        value_json=row["value_json"],
+        computed_at=row["computed_at"],
+    )

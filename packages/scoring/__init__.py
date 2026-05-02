@@ -9,6 +9,7 @@ flattens them for ergonomic import.
 from __future__ import annotations
 
 from .protocol import Rule, RuleOutcome
+from .resolver import FeatureResolver, ResolverResult, ResolverStatus
 from .types import (
     BotConfig,
     Decision,
@@ -21,6 +22,9 @@ from .types import (
 __all__ = [
     "BotConfig",
     "Decision",
+    "FeatureResolver",
+    "ResolverResult",
+    "ResolverStatus",
     "Rule",
     "RuleOutcome",
     "RuleResult",

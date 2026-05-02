@@ -1545,12 +1545,20 @@ source = { virtual = "packages/scoring" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "scalper-v2-bus" },
+    { name = "scalper-v2-core" },
+    { name = "scalper-v2-db" },
+    { name = "scalper-v2-features" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "pydantic", specifier = "==2.13.2" },
     { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "scalper-v2-bus", editable = "packages/bus" },
+    { name = "scalper-v2-core", editable = "packages/core" },
+    { name = "scalper-v2-db", editable = "packages/db" },
+    { name = "scalper-v2-features", editable = "packages/features" },
 ]
 
 [[package]]

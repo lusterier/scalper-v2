@@ -44,6 +44,7 @@ from packages.db.queries.feature_engine import (
     fetch_ohlc_range,
     fetch_warmup_window,
     insert_feature,
+    select_latest_feature,
 )
 
 if TYPE_CHECKING:
@@ -373,3 +374,34 @@ async def test_fetch_ohlc_range_unknown_interval_raises(conn: _Conn) -> None:
             from_dt=_bucket(0),
             to_dt=_bucket(10),
         )
+
+
+# ---------------------------------------------------------------------------
+# T-306 — select_latest_feature integration
+# ---------------------------------------------------------------------------
+
+
+async def test_select_latest_feature_returns_most_recent_row(conn: _Conn) -> None:
+    """INSERT 3 rows distinct computed_at; select_latest_feature returns latest by computed_at."""
+    base = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
+    for offset_seconds, value_num in ((0, 100.5), (60, 101.5), (120, 102.5)):
+        await insert_feature(
+            conn,
+            feature_name=_FEATURE_NAME,
+            symbol=_SYMBOL,
+            computed_at=base + timedelta(seconds=offset_seconds),
+            value_num=value_num,
+            value_bool=None,
+            value_json=None,
+            source_version=_SOURCE_VERSION,
+        )
+    row = await select_latest_feature(conn, feature_name=_FEATURE_NAME, symbol=_SYMBOL)
+    assert row is not None
+    assert row.value_num == 102.5
+    assert row.computed_at == base + timedelta(seconds=120)
+
+
+async def test_select_latest_feature_returns_none_when_no_row(conn: _Conn) -> None:
+    """No matching (feature_name, symbol) → None."""
+    row = await select_latest_feature(conn, feature_name="ind.nonexistent.1m.foo", symbol="NOSUCH")
+    assert row is None
