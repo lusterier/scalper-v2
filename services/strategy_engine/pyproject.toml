@@ -1,5 +1,43 @@
 [project]
 name = "scalper-v2-strategy-engine"
 version = "0.1.0"
-description = "Per-bot decision process: consumes validated signals + features, applies scoring, emits order requests. Scaffold stub; implementation lands in F3."
+description = "Per-bot decision process: consumes validated signals + features, applies scoring, emits order requests. T-309: skeleton; T-310: signal consumer body; T-311: per-bot Docker compose."
 requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.136.0",
+    "pydantic-settings==2.13.1",
+    "scalper-v2-bus",
+    "scalper-v2-core",
+    "scalper-v2-db",
+    "scalper-v2-observability",
+    "scalper-v2-scoring",
+    "uvicorn[standard]==0.45.0",
+    "uvloop==0.22.1",
+]
+
+[tool.uv.sources]
+scalper-v2-bus = { workspace = true }
+scalper-v2-core = { workspace = true }
+scalper-v2-db = { workspace = true }
+scalper-v2-observability = { workspace = true }
+scalper-v2-scoring = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Hatch scaffold per ADR-0002 (services/ analogue of the packages/ pattern):
+# flat-layout source files live directly in services/strategy_engine/; sources
+# remap adds the `services/strategy_engine/` wheel prefix so imports resolve as
+# `from services.strategy_engine import ...`. Repo-root services/__init__.py is
+# outside the wheel glob (PEP 420 at install time). dev-mode-dirs = ["."]
+# bypasses hatchling's editable-mode detection, which trips on sources-remap
+# + subpackages (pfmoore/editables#20) — load-bearing here because app/ is a
+# subpackage of the service.
+[tool.hatch.build.targets.wheel]
+include = ["*.py", "py.typed"]
+exclude = ["tests/**", "**/__pycache__/**"]
+dev-mode-dirs = ["."]
+
+[tool.hatch.build.targets.wheel.sources]
+"" = "services/strategy_engine"
