@@ -1,0 +1,7 @@
+# Plugin registry per BRIEF §10.6 — entries map (name, version) tuples to
+# Python entry-point dotted paths (e.g. plugins.rules.oi_squeeze:OISqueeze).
+#
+# Empty `rules: []` is the T-305 `load_plugin_registry` valid-empty contract
+# — service starts cleanly with no plugin conditions available. T-312 will
+# add the `oi_squeeze` plugin here per BRIEF §B.1:2985-2991 verbatim example.
+rules: []
