@@ -8,6 +8,7 @@ flattens them for ergonomic import.
 
 from __future__ import annotations
 
+from .evaluator import evaluate
 from .protocol import Rule, RuleOutcome
 from .resolver import FeatureResolver, ResolverResult, ResolverStatus
 from .types import (
@@ -31,4 +32,5 @@ __all__ = [
     "ScoringConfig",
     "ScoringResult",
     "ScoringRule",
+    "evaluate",
 ]
