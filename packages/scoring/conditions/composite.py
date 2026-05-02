@@ -72,8 +72,8 @@ class AndCondition(BaseModel):
     model_config = ConfigDict(frozen=True, strict=True)
 
     type: Literal["and"] = "and"
-    # TODO(T-307): retrofit to `list[ConditionUnion]` (discriminated union)
-    # once all 14 condition variants land via T-305 plugin + registry.
+    # BaseModel + isinstance via @runtime_checkable Condition (T-302); discriminated
+    # union construction lives in yaml_loader.py (T-308) — kept private to that module.
     conditions: list[BaseModel] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -95,7 +95,8 @@ class OrCondition(BaseModel):
     model_config = ConfigDict(frozen=True, strict=True)
 
     type: Literal["or"] = "or"
-    # TODO(T-307): retrofit to `list[ConditionUnion]` discriminated union.
+    # BaseModel + isinstance via @runtime_checkable Condition (T-302); discriminated
+    # union construction lives in yaml_loader.py (T-308) — kept private to that module.
     conditions: list[BaseModel] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -123,7 +124,8 @@ class NotCondition(BaseModel):
     model_config = ConfigDict(frozen=True, strict=True)
 
     type: Literal["not"] = "not"
-    # TODO(T-307): retrofit to `ConditionUnion` discriminated union.
+    # BaseModel + isinstance via @runtime_checkable Condition (T-302); discriminated
+    # union construction lives in yaml_loader.py (T-308) — kept private to that module.
     condition: BaseModel
 
     @model_validator(mode="after")
@@ -152,7 +154,8 @@ class WhenThenElseCondition(BaseModel):
     model_config = ConfigDict(frozen=True, strict=True)
 
     type: Literal["when_then_else"] = "when_then_else"
-    # TODO(T-307): retrofit `when` / `then_` / `else_` to ConditionUnion.
+    # BaseModel + isinstance via @runtime_checkable Condition (T-302); discriminated
+    # union construction lives in yaml_loader.py (T-308) — kept private to that module.
     when: BaseModel
     then_: BaseModel
     else_: BaseModel

@@ -19,6 +19,7 @@ from .types import (
     ScoringResult,
     ScoringRule,
 )
+from .yaml_loader import load_bot_config, parse_condition
 
 __all__ = [
     "BotConfig",
@@ -33,4 +34,6 @@ __all__ = [
     "ScoringResult",
     "ScoringRule",
     "evaluate",
+    "load_bot_config",
+    "parse_condition",
 ]

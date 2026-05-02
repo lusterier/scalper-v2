@@ -146,9 +146,15 @@ class BotConfig(BaseModel):
 
     ``version`` field threads to ``scoring_evaluations.config_version``
     audit trail per T-301 Migration 0010.
+
+    ``extra="ignore"`` is the parser-drift firewall per T-308 WG#5: §B.1
+    extras (``exchange.*``, ``signals.*``, ``execution.*``, ``display_name``,
+    ``created_at``, ``status``, ``trading.primary_interval``) are NOT
+    parsed by T-308 yaml_loader; future tasks adding these sections
+    land as Pydantic fields here, NOT as another extra-ignore workaround.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     bot_id: str
     version: int = Field(default=1, ge=1)
