@@ -335,6 +335,7 @@ def make_per_bot_handler(
         )
 
         # 12. T-217a — spawn PositionLifecycle monitor task post-emit (§9.5:1585-1592).
+        # T-217b — adapter threaded for BE/trail set_trading_stop calls.
         lifecycle_task = asyncio.create_task(
             run_position_monitor_for_trade(
                 bot_id=bot_id,
@@ -345,6 +346,7 @@ def make_per_bot_handler(
                 qty=request.qty,
                 pool=pool,
                 bus=bus,
+                adapter=adapter,
                 bound_logger=logger,
                 poll_interval_s=position_poll_interval_s,
                 stale_ticks_threshold=position_poll_stale_ticks,

@@ -37,7 +37,16 @@ from typing import TYPE_CHECKING
 
 from packages.db.queries.execution import (
     select_position_state,
+    select_trade_fsm_params,
     update_position_state_monitor_tick,
+    update_position_state_sl,
+)
+from packages.exchange.errors import (
+    AuthError,
+    NetworkTimeout,
+    OrderRejected,
+    RateLimitError,
+    UnknownState,
 )
 
 if TYPE_CHECKING:
@@ -49,6 +58,7 @@ if TYPE_CHECKING:
 
     from packages.bus import NatsClient
     from packages.core import BotId
+    from packages.exchange.protocols import ExchangeClient
 
 
 __all__ = ["run_position_monitor_for_trade"]
@@ -72,6 +82,7 @@ async def run_position_monitor_for_trade(
     qty: Decimal,
     pool: asyncpg.Pool,
     bus: NatsClient,
+    adapter: ExchangeClient,
     bound_logger: BoundLogger,
     poll_interval_s: float,
     stale_ticks_threshold: int,
@@ -146,6 +157,115 @@ async def run_position_monitor_for_trade(
                 running_pnl=running_pnl,
                 updated_at=now_fn(),
             )
+
+            # T-217b — BE trigger + trail SL adjustment.
+            fsm_params = await select_trade_fsm_params(conn, trade_id)
+            if fsm_params is None:
+                continue
+
+            if ps.sl_type == "protective" and _check_be_trigger(
+                side, current_price, entry_price, fsm_params["be_trigger"]
+            ):
+                new_be_sl = _compute_be_sl_price(side, entry_price, fsm_params["be_sl_level"])
+                try:
+                    await adapter.set_trading_stop(
+                        symbol=symbol,
+                        tpsl_mode="Full",
+                        sl_price=new_be_sl,
+                    )
+                except (
+                    AuthError,
+                    OrderRejected,
+                    NetworkTimeout,
+                    RateLimitError,
+                    UnknownState,
+                ) as exc:
+                    bound_logger.error(
+                        "execution.lifecycle_be_set_failed",
+                        bot_id=bot_id,
+                        trade_id=trade_id,
+                        symbol=symbol,
+                        error=str(exc),
+                    )
+                else:
+                    await update_position_state_sl(
+                        conn,
+                        bot_id=bot_id,
+                        symbol=symbol,
+                        sl_price=new_be_sl,
+                        sl_type="be",
+                        updated_at=now_fn(),
+                    )
+
+            elif ps.sl_type == "trail" and ps.best_price is not None and new_best != ps.best_price:
+                new_trail_sl = _compute_trail_sl_price(side, new_best, fsm_params["trail_pct"])
+                try:
+                    await adapter.set_trading_stop(
+                        symbol=symbol,
+                        tpsl_mode="Full",
+                        sl_price=new_trail_sl,
+                    )
+                except (
+                    AuthError,
+                    OrderRejected,
+                    NetworkTimeout,
+                    RateLimitError,
+                    UnknownState,
+                ) as exc:
+                    bound_logger.error(
+                        "execution.lifecycle_trail_set_failed",
+                        bot_id=bot_id,
+                        trade_id=trade_id,
+                        symbol=symbol,
+                        error=str(exc),
+                    )
+                else:
+                    await update_position_state_sl(
+                        conn,
+                        bot_id=bot_id,
+                        symbol=symbol,
+                        sl_price=new_trail_sl,
+                        sl_type="trail",
+                        updated_at=now_fn(),
+                    )
+
+
+def _check_be_trigger(
+    side: str,
+    current_price: Decimal,
+    entry_price: Decimal,
+    be_trigger: Decimal,
+) -> bool:
+    """Return True iff favorable move >= be_trigger.
+
+    Long: ``(current - entry) / entry >= be_trigger``.
+    Short: ``(entry - current) / entry >= be_trigger``.
+    """
+    if side == "buy":
+        return (current_price - entry_price) / entry_price >= be_trigger
+    return (entry_price - current_price) / entry_price >= be_trigger
+
+
+def _compute_be_sl_price(
+    side: str,
+    entry_price: Decimal,
+    be_sl_level: Decimal,
+) -> Decimal:
+    """Long: ``entry * (1 + be_sl_level)``; Short: ``entry * (1 - be_sl_level)``."""
+    if side == "buy":
+        return entry_price * (Decimal("1") + be_sl_level)
+    return entry_price * (Decimal("1") - be_sl_level)
+
+
+def _compute_trail_sl_price(
+    side: str,
+    best_price: Decimal,
+    trail_pct: Decimal,
+) -> Decimal:
+    """Long: ``best * (1 - trail_pct)``; Short: ``best * (1 + trail_pct)``."""
+    if side == "buy":
+        return best_price * (Decimal("1") - trail_pct)
+    return best_price * (Decimal("1") + trail_pct)
 
 
 def _update_best_price(

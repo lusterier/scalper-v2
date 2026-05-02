@@ -35,6 +35,7 @@ from packages.db.queries.execution import (
     select_trade_fsm_params,
     update_position_state_after_fill,
     update_position_state_monitor_tick,
+    update_position_state_sl,
     update_trade_close,
     update_trade_fees_incremental,
 )
@@ -662,3 +663,48 @@ async def test_insert_trade_writes_empty_object_jsonb_when_meta_kwarg_omitted() 
     )
     meta_arg = conn.fetchrow.await_args.args[10]
     assert meta_arg == "{}"
+
+
+# ---------------------------------------------------------------------------
+# T-217b — update_position_state_sl
+# ---------------------------------------------------------------------------
+
+
+async def test_update_position_state_sl_uses_composite_pk_only() -> None:
+    """H-018-symmetric — composite PK only; SET writes only sl_price/sl_type/updated_at."""
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await update_position_state_sl(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        sl_price=Decimal("100.300"),
+        sl_type="be",
+        updated_at=_FIXED_NOW,
+    )
+    sql = conn.execute.await_args.args[0]
+    where_clause = sql.split("WHERE")[1]
+    assert "bot_id = $4" in where_clause
+    assert "symbol = $5" in where_clause
+    # Column-disjoint from fill-flow + monitor-tick:
+    assert "remaining_qty" not in sql
+    assert "best_price" not in sql
+    assert "running_pnl" not in sql
+
+
+async def test_update_position_state_sl_writes_sl_type_literal_only() -> None:
+    """Literal narrowing pin — sl_type is Literal["protective","be","trail"]."""
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await update_position_state_sl(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        sl_price=Decimal("109.450"),
+        sl_type="trail",
+        updated_at=_FIXED_NOW,
+    )
+    args = conn.execute.await_args.args
+    # $1 = sl_price, $2 = sl_type, $3 = updated_at, $4 = bot_id, $5 = symbol.
+    assert args[1] == Decimal("109.450")
+    assert args[2] == "trail"

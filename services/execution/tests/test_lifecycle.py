@@ -94,6 +94,14 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     mocks: dict[str, Any] = {
         "select_position_state": AsyncMock(return_value=_ps_row()),
         "update_position_state_monitor_tick": AsyncMock(return_value=None),
+        "select_trade_fsm_params": AsyncMock(
+            return_value={
+                "be_trigger": Decimal("0.005"),
+                "be_sl_level": Decimal("0.003"),
+                "trail_pct": Decimal("0.005"),
+            }
+        ),
+        "update_position_state_sl": AsyncMock(return_value=None),
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(lifecycle_mod, name, mock)
@@ -172,7 +180,11 @@ def _build_args(
     qty: Decimal = Decimal("10"),
     poll_interval_s: float = 0.001,
     stale_ticks_threshold: int = 5,
+    adapter: MagicMock | None = None,
 ) -> dict[str, Any]:
+    used_adapter = adapter if adapter is not None else MagicMock()
+    if adapter is None:
+        used_adapter.set_trading_stop = AsyncMock()
     return {
         "bot_id": BotId("alpha"),
         "symbol": "BTCUSDT",
@@ -181,6 +193,7 @@ def _build_args(
         "entry_price": entry_price,
         "qty": qty,
         "pool": pool,
+        "adapter": used_adapter,
         "bus": bus,
         "bound_logger": MagicMock(),
         "poll_interval_s": poll_interval_s,
@@ -380,3 +393,226 @@ async def test_run_position_monitor_uses_now_fn_for_updated_at(
     await run_position_monitor_for_trade(**args)
     update_call = patched_queries["update_position_state_monitor_tick"].call_args
     assert update_call.kwargs["updated_at"] == fixed_t
+
+
+# ---------------------------------------------------------------------------
+# T-217b — BE trigger + trail SL adjustment helpers
+# ---------------------------------------------------------------------------
+
+
+from services.execution.app.lifecycle import (  # noqa: E402
+    _check_be_trigger,
+    _compute_be_sl_price,
+    _compute_trail_sl_price,
+)
+
+
+def test_check_be_trigger_long_returns_true_at_or_above_threshold() -> None:
+    """Fixture A — boundary: (100.5-100)/100 = 0.005 >= 0.005."""
+    assert _check_be_trigger("buy", Decimal("100.5"), Decimal("100"), Decimal("0.005")) is True
+
+
+def test_check_be_trigger_long_returns_false_below_threshold() -> None:
+    """Fixture B — (100.4-100)/100 = 0.004 < 0.005."""
+    assert _check_be_trigger("buy", Decimal("100.4"), Decimal("100"), Decimal("0.005")) is False
+
+
+def test_check_be_trigger_short_returns_true_at_threshold() -> None:
+    """Fixture C — (100-99.5)/100 = 0.005 >= 0.005."""
+    assert _check_be_trigger("sell", Decimal("99.5"), Decimal("100"), Decimal("0.005")) is True
+
+
+def test_compute_be_sl_price_long_adds_be_sl_level_to_entry() -> None:
+    """100 * (1 + 0.003) = 100.300."""
+    result = _compute_be_sl_price("buy", Decimal("100"), Decimal("0.003"))
+    assert result == Decimal("100.300")
+
+
+def test_compute_be_sl_price_short_subtracts_be_sl_level_from_entry() -> None:
+    """100 * (1 - 0.003) = 99.700."""
+    result = _compute_be_sl_price("sell", Decimal("100"), Decimal("0.003"))
+    assert result == Decimal("99.700")
+
+
+def test_compute_trail_sl_price_long_subtracts_trail_pct_from_best() -> None:
+    """Fixture D — 110 * (1 - 0.005) = 109.450."""
+    result = _compute_trail_sl_price("buy", Decimal("110"), Decimal("0.005"))
+    assert result == Decimal("109.450")
+
+
+def test_compute_trail_sl_price_short_adds_trail_pct_to_best() -> None:
+    """Fixture E — 90 * (1 + 0.005) = 90.450."""
+    result = _compute_trail_sl_price("sell", Decimal("90"), Decimal("0.005"))
+    assert result == Decimal("90.450")
+
+
+# ---------------------------------------------------------------------------
+# T-217b — run_position_monitor_for_trade BE/trail body tests
+# ---------------------------------------------------------------------------
+
+
+async def test_run_position_monitor_be_trigger_invokes_set_trading_stop_with_explicit_full_mode(
+    patched_queries: dict[str, Any],
+    fast_sleep: AsyncMock,
+) -> None:
+    """H-013 binding pin — BE call site uses tpsl_mode='Full' literal."""
+    bus = MagicMock()
+    bus.kv_get = AsyncMock(return_value=(b"100.5", 1))
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(side="buy", entry_price=Decimal("100"), sl_type="protective"),
+        None,  # 2nd tick: exit
+    ]
+    adapter = MagicMock()
+    adapter.set_trading_stop = AsyncMock()
+    pool = _build_pool()
+    args = _build_args(pool=pool, bus=bus, side="buy", entry_price=Decimal("100"), adapter=adapter)
+    await run_position_monitor_for_trade(**args)
+    adapter.set_trading_stop.assert_awaited_once()
+    call_kwargs = adapter.set_trading_stop.call_args.kwargs
+    assert call_kwargs["tpsl_mode"] == "Full"
+    assert call_kwargs["sl_price"] == Decimal("100.300")  # 100 * 1.003
+
+
+async def test_run_position_monitor_be_trigger_writes_sl_type_be_post_set_trading_stop_success(
+    patched_queries: dict[str, Any],
+    fast_sleep: AsyncMock,
+) -> None:
+    """On set_trading_stop success → update_position_state_sl with sl_type='be'."""
+    bus = MagicMock()
+    bus.kv_get = AsyncMock(return_value=(b"100.5", 1))
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(side="buy", entry_price=Decimal("100"), sl_type="protective"),
+        None,
+    ]
+    adapter = MagicMock()
+    adapter.set_trading_stop = AsyncMock()
+    pool = _build_pool()
+    args = _build_args(pool=pool, bus=bus, side="buy", entry_price=Decimal("100"), adapter=adapter)
+    await run_position_monitor_for_trade(**args)
+    sl_call = patched_queries["update_position_state_sl"].call_args
+    assert sl_call.kwargs["sl_type"] == "be"
+    assert sl_call.kwargs["sl_price"] == Decimal("100.300")
+
+
+async def test_run_position_monitor_be_trigger_idempotent_after_first_fire(
+    patched_queries: dict[str, Any],
+    fast_sleep: AsyncMock,
+) -> None:
+    """sl_type='be' on second tick → BE branch does NOT re-fire."""
+    bus = MagicMock()
+    bus.kv_get = AsyncMock(return_value=(b"105", 1))
+    # Tick 1: sl_type='be' (already past BE) → no fire.
+    # Tick 2: None → exit.
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(side="buy", entry_price=Decimal("100"), sl_type="be"),
+        None,
+    ]
+    adapter = MagicMock()
+    adapter.set_trading_stop = AsyncMock()
+    pool = _build_pool()
+    args = _build_args(pool=pool, bus=bus, side="buy", entry_price=Decimal("100"), adapter=adapter)
+    await run_position_monitor_for_trade(**args)
+    adapter.set_trading_stop.assert_not_called()
+    patched_queries["update_position_state_sl"].assert_not_called()
+
+
+async def test_run_position_monitor_trail_update_skipped_when_best_price_unchanged(
+    patched_queries: dict[str, Any],
+    fast_sleep: AsyncMock,
+) -> None:
+    """Fixture F — best_price unchanged → no set_trading_stop call (anti-spam)."""
+    bus = MagicMock()
+    # current=110 == ps.best_price=110 → new_best == ps.best_price → no movement.
+    bus.kv_get = AsyncMock(return_value=(b"110", 1))
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(
+            side="buy",
+            entry_price=Decimal("100"),
+            sl_type="trail",
+            best_price=Decimal("110"),
+        ),
+        None,
+    ]
+    adapter = MagicMock()
+    adapter.set_trading_stop = AsyncMock()
+    pool = _build_pool()
+    args = _build_args(pool=pool, bus=bus, side="buy", entry_price=Decimal("100"), adapter=adapter)
+    await run_position_monitor_for_trade(**args)
+    adapter.set_trading_stop.assert_not_called()
+    patched_queries["update_position_state_sl"].assert_not_called()
+
+
+async def test_run_position_monitor_trail_update_invokes_set_trading_stop_on_best_move(
+    patched_queries: dict[str, Any],
+    fast_sleep: AsyncMock,
+) -> None:
+    """Long: best moves up 110 → 115 → set_trading_stop with 115*0.995=114.425."""
+    bus = MagicMock()
+    bus.kv_get = AsyncMock(return_value=(b"115", 1))
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(
+            side="buy",
+            entry_price=Decimal("100"),
+            sl_type="trail",
+            best_price=Decimal("110"),
+        ),
+        None,
+    ]
+    adapter = MagicMock()
+    adapter.set_trading_stop = AsyncMock()
+    pool = _build_pool()
+    args = _build_args(pool=pool, bus=bus, side="buy", entry_price=Decimal("100"), adapter=adapter)
+    await run_position_monitor_for_trade(**args)
+    adapter.set_trading_stop.assert_awaited_once()
+    call_kwargs = adapter.set_trading_stop.call_args.kwargs
+    assert call_kwargs["sl_price"] == Decimal("114.425")  # 115 * 0.995
+
+
+async def test_run_position_monitor_trail_update_invokes_set_trading_stop_with_explicit_full_mode(
+    patched_queries: dict[str, Any],
+    fast_sleep: AsyncMock,
+) -> None:
+    """H-013 binding pin — trail call site uses tpsl_mode='Full' literal (WG#14)."""
+    bus = MagicMock()
+    bus.kv_get = AsyncMock(return_value=(b"115", 1))
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(
+            side="buy",
+            entry_price=Decimal("100"),
+            sl_type="trail",
+            best_price=Decimal("110"),
+        ),
+        None,
+    ]
+    adapter = MagicMock()
+    adapter.set_trading_stop = AsyncMock()
+    pool = _build_pool()
+    args = _build_args(pool=pool, bus=bus, side="buy", entry_price=Decimal("100"), adapter=adapter)
+    await run_position_monitor_for_trade(**args)
+    call_kwargs = adapter.set_trading_stop.call_args.kwargs
+    assert call_kwargs["tpsl_mode"] == "Full"
+
+
+async def test_run_position_monitor_be_set_failure_logs_error_and_continues_loop(
+    patched_queries: dict[str, Any],
+    fast_sleep: AsyncMock,
+) -> None:
+    """WG#13 / OQ-D — set_trading_stop exception → log ERROR + continue, no UPDATE."""
+    from packages.exchange.errors import NetworkTimeout
+
+    bus = MagicMock()
+    bus.kv_get = AsyncMock(return_value=(b"100.5", 1))
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(side="buy", entry_price=Decimal("100"), sl_type="protective"),
+        None,
+    ]
+    adapter = MagicMock()
+    adapter.set_trading_stop = AsyncMock(side_effect=NetworkTimeout("timeout"))
+    pool = _build_pool()
+    args = _build_args(pool=pool, bus=bus, side="buy", entry_price=Decimal("100"), adapter=adapter)
+    args["bound_logger"] = MagicMock()
+    await run_position_monitor_for_trade(**args)
+    error_event_names = [c.args[0] for c in args["bound_logger"].error.call_args_list]
+    assert "execution.lifecycle_be_set_failed" in error_event_names
+    # WG#16 else clause — no UPDATE on exception path.
+    patched_queries["update_position_state_sl"].assert_not_called()

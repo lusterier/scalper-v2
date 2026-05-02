@@ -53,6 +53,7 @@ __all__ = [
     "select_trade_fsm_params",
     "update_position_state_after_fill",
     "update_position_state_monitor_tick",
+    "update_position_state_sl",
     "update_trade_close",
     "update_trade_fees_incremental",
 ]
@@ -692,6 +693,45 @@ async def update_position_state_monitor_tick(
         mfe_price,
         mae_price,
         running_pnl,
+        updated_at,
+        bot_id,
+        symbol,
+    )
+
+
+# T-217b — PositionLifecycle BE trigger + trail SL adjustment ----------------
+
+
+async def update_position_state_sl(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    symbol: str,
+    sl_price: Decimal,
+    sl_type: Literal["protective", "be", "trail"],
+    updated_at: datetime,
+) -> None:
+    """Composite-PK UPDATE for SL-adjustment paths (T-217b BE / trail).
+
+    H-018-symmetric: composite PK ``(bot_id, symbol)`` only. Column-disjoint
+    from :func:`update_position_state_after_fill` (writes ``remaining_qty``)
+    and :func:`update_position_state_monitor_tick` (writes monitor-only fields)
+    — distinct writer for SL-adjustment flow keeps the multi-writer choreography
+    column-disjoint and MVCC-safe.
+
+    Write-side ``sl_type`` is tightened to ``Literal["protective","be","trail"]``
+    so a typo at the call-site fails compile-time. Read-side
+    :class:`PositionStateRow.sl_type` stays loose ``str | None`` for read
+    robustness.
+    """
+    await conn.execute(
+        """
+        UPDATE position_state
+        SET sl_price = $1, sl_type = $2, updated_at = $3
+        WHERE bot_id = $4 AND symbol = $5
+        """,
+        sl_price,
+        sl_type,
         updated_at,
         bot_id,
         symbol,
