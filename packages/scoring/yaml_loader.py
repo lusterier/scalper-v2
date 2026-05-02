@@ -317,7 +317,7 @@ def _build_rule(
     if not isinstance(weight_raw, (int, float)) or isinstance(weight_raw, bool):
         msg = f"rule {rule_yaml.get('name')!r}: weight must be a number; got {weight_raw!r}"
         raise ValueError(msg)
-    return ScoringRule.model_construct(
+    return ScoringRule(
         name=rule_yaml["name"],
         weight=float(weight_raw),
         feature=feature,

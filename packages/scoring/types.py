@@ -101,21 +101,33 @@ class ScoringResult(BaseModel):
 class ScoringRule(BaseModel):
     """One rule within a bot's scoring config (§10.1).
 
-    ``applies_when`` and ``condition`` are typed as ``dict[str, Any]``
-    placeholders at T-300; T-302..T-305 narrow them to discriminated
-    Pydantic unions over the §10.2 condition catalog (equals, gt,
-    rising, ema_stack, and, or, not, when_then_else, plugin, etc.).
-    T-300 callers MUST construct these as ``{"type": "<variant>",
-    ...}`` shape — the discriminator key is ``"type"``.
+    ``applies_when`` is typed ``dict[str, Any] | None`` — raw YAML
+    pass-through; T-307 evaluator v1 ignores it (see grep-anchor
+    comment at evaluator.py:107).
+
+    ``condition`` is typed ``Any``: T-308 yaml_loader populates with a
+    Condition instance from ``parse_condition`` (Pydantic ``BaseModel``
+    subclass per T-302..T-305 catalog). Runtime narrowing happens via
+    ``@runtime_checkable Condition`` Protocol (T-302), not Pydantic
+    discrimination — the Path C / RuleContext architecture made this
+    placeholder permanent. ``Any`` is the honest typing.
+
+    T-308b switched ``model_config`` to ``strict=True`` so coercion-
+    friendly fields (``required``, ``max_staleness_sec``) reject
+    string/int-as-bool footguns at YAML parse time. The yaml_loader's
+    manual ``weight`` pre-check (yaml_loader.py:316-319) stays as
+    belt-and-suspenders for the error-message clarity it gives on
+    ``weight: True`` — Pydantic strict rejects bool→float but with a
+    less actionable message.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, strict=True)
 
     name: str
     weight: float
     feature: str  # templated reference, e.g. "ind.${signal.symbol}.15m.ema_20"
     applies_when: dict[str, Any] | None = None
-    condition: dict[str, Any]
+    condition: Any
     on_error: Literal["skip", "reject"] = "skip"
     required: bool = False
     max_staleness_sec: int | None = None  # None: resolver default 2 * interval_seconds

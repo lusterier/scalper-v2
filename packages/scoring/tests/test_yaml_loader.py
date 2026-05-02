@@ -445,3 +445,166 @@ scoring:
 """
     with pytest.raises(ValidationError):
         load_bot_config(_write_yaml(tmp_path, yaml_text))
+
+
+# region: T-308b — ScoringRule field-level validation hardening --------------
+
+
+def _yaml_with_rule_overrides(extra_rule_lines: str) -> str:
+    """Build a minimal valid bot YAML with one rule, plus injected lines.
+
+    The injected ``extra_rule_lines`` string (already YAML-indented at 6
+    spaces to match `rules:` list-item indent) goes after the standard
+    name/weight/feature/condition triple. Used to inject a typo'd field
+    into an otherwise-valid rule for ValidationError tests.
+    """
+    return f"""\
+bot_id: alpha
+trading: {{ universe: [BTCUSDT] }}
+scoring:
+  mode: active
+  trigger_threshold: 1.0
+  rules:
+    - name: r1
+      weight: 1.0
+      condition:
+        type: gt
+        feature: ind.btcusdt.15m.rsi_14
+        value: "0"
+{extra_rule_lines}"""
+
+
+def test_load_bot_config_rejects_non_string_rule_name(tmp_path: Path) -> None:
+    """name: 42 (int) → ValidationError mentions 'name' (Pydantic strict)."""
+    yaml_text = """\
+bot_id: alpha
+trading: { universe: [BTCUSDT] }
+scoring:
+  mode: active
+  trigger_threshold: 1.0
+  rules:
+    - name: 42
+      weight: 1.0
+      condition:
+        type: gt
+        feature: ind.btcusdt.15m.rsi_14
+        value: "0"
+"""
+    with pytest.raises(ValidationError, match=r"name"):
+        load_bot_config(_write_yaml(tmp_path, yaml_text))
+
+
+def test_load_bot_config_rejects_invalid_on_error_literal(tmp_path: Path) -> None:
+    """on_error: 'blow_up' → ValidationError; not in Literal['skip','reject']."""
+    yaml_text = _yaml_with_rule_overrides('      on_error: "blow_up"\n')
+    with pytest.raises(ValidationError, match=r"on_error"):
+        load_bot_config(_write_yaml(tmp_path, yaml_text))
+
+
+def test_load_bot_config_rejects_non_bool_required(tmp_path: Path) -> None:
+    """required: 'yes' (str) → ValidationError; strict-mode rejects str→bool."""
+    yaml_text = _yaml_with_rule_overrides('      required: "yes"\n')
+    with pytest.raises(ValidationError, match=r"required"):
+        load_bot_config(_write_yaml(tmp_path, yaml_text))
+
+
+def test_load_bot_config_rejects_non_int_max_staleness_sec(tmp_path: Path) -> None:
+    """max_staleness_sec: '60s' → ValidationError; strict-mode rejects str→int."""
+    yaml_text = _yaml_with_rule_overrides('      max_staleness_sec: "60s"\n')
+    with pytest.raises(ValidationError, match=r"max_staleness_sec"):
+        load_bot_config(_write_yaml(tmp_path, yaml_text))
+
+
+def test_load_bot_config_rejects_non_dict_applies_when(tmp_path: Path) -> None:
+    """applies_when: 'all' → ValidationError; strict-mode rejects str→dict."""
+    yaml_text = _yaml_with_rule_overrides('      applies_when: "all"\n')
+    with pytest.raises(ValidationError, match=r"applies_when"):
+        load_bot_config(_write_yaml(tmp_path, yaml_text))
+
+
+def test_load_bot_config_accepts_condition_instance_via_any_typing(
+    tmp_path: Path,
+) -> None:
+    """Regression: condition: Any accepts Condition instance (T-308b Path A1).
+
+    Validates that replacing model_construct with normal ScoringRule(...)
+    ctor still accepts the Condition instance produced by parse_condition,
+    via condition: Any typing in T-300 ScoringRule.
+    """
+    yaml_text = _yaml_with_rule_overrides("")
+    cfg = load_bot_config(_write_yaml(tmp_path, yaml_text))
+    rule = cfg.scoring.rules[0]
+    cond: object = rule.condition
+    assert isinstance(cond, GtCondition)
+
+
+def test_load_bot_config_accepts_int_max_staleness_sec(tmp_path: Path) -> None:
+    """Pydantic 2 strict-mode accepts int→int for max_staleness_sec: 60."""
+    yaml_text = _yaml_with_rule_overrides("      max_staleness_sec: 60\n")
+    cfg = load_bot_config(_write_yaml(tmp_path, yaml_text))
+    assert cfg.scoring.rules[0].max_staleness_sec == 60
+
+
+def test_load_bot_config_accepts_int_weight_under_strict(tmp_path: Path) -> None:
+    """Pin Pydantic 2 strict int→float contract for weight.
+
+    PyYAML parses ``weight: 1`` as Python int. The yaml_loader's manual
+    pre-check passes int through ``float(weight_raw)`` before invoking the
+    Pydantic ctor — Pydantic strict-mode then receives a true float and
+    accepts. Final ``rule.weight`` is float 1.0.
+
+    Per WG#1: strict-mode also accepts int→float natively (verified
+    empirically against pydantic==2.13.2 workspace pin), so the pre-check
+    here is L-008 belt-and-suspenders for bool→float rejection clarity,
+    not a fixture-compat shim.
+    """
+    yaml_text = """\
+bot_id: alpha
+trading: { universe: [BTCUSDT] }
+scoring:
+  mode: active
+  trigger_threshold: 1.0
+  rules:
+    - name: r1
+      weight: 1
+      condition:
+        type: gt
+        feature: ind.btcusdt.15m.rsi_14
+        value: "0"
+"""
+    cfg = load_bot_config(_write_yaml(tmp_path, yaml_text))
+    rule = cfg.scoring.rules[0]
+    assert rule.weight == 1.0
+    assert isinstance(rule.weight, float)
+
+
+def test_load_bot_config_weight_pre_check_runs_before_pydantic_ctor(
+    tmp_path: Path,
+) -> None:
+    """Pin pre-check ordering — manual weight check raises BEFORE Pydantic.
+
+    ``weight: true`` in YAML → PyYAML bool. The manual pre-check at
+    yaml_loader.py:317 rejects with verbatim message
+    ``rule 'r1': weight must be a number; got True``. Without the pre-
+    check, Pydantic strict-mode would reject too but with a less
+    actionable message (Input should be a valid number / Input type=bool).
+
+    This test pins the error-message clarity provided by the pre-check
+    (L-008 active control + L-001 field-named diagnostics).
+    """
+    yaml_text = """\
+bot_id: alpha
+trading: { universe: [BTCUSDT] }
+scoring:
+  mode: active
+  trigger_threshold: 1.0
+  rules:
+    - name: r1
+      weight: true
+      condition:
+        type: gt
+        feature: ind.btcusdt.15m.rsi_14
+        value: "0"
+"""
+    with pytest.raises(ValueError, match=r"weight must be a number; got True"):
+        load_bot_config(_write_yaml(tmp_path, yaml_text))

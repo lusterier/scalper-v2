@@ -156,6 +156,18 @@ def test_scoring_rule_max_staleness_sec_default_none() -> None:
     assert rule.max_staleness_sec is None
 
 
+def test_scoring_rule_condition_any_typing_accepts_dict() -> None:
+    """Regression pin — T-308b switched ``condition: dict[str, Any]`` → ``condition: Any``.
+
+    The Any typing must still accept dicts (existing T-300 test fixtures use
+    ``condition={"type": "gt", "value": 50000}`` shape). yaml_loader (T-308)
+    now passes a Condition instance instead, also via Any. This pin guards
+    that existing dict-shaped fixtures continue to round-trip unchanged.
+    """
+    rule = _basic_rule()
+    assert rule.condition == {"type": "gt", "value": 50000}
+
+
 # ---------------------------------------------------------------------------
 # ScoringResult
 # ---------------------------------------------------------------------------

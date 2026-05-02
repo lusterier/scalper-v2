@@ -237,7 +237,7 @@ async def _evaluate_rule(
         feature_ref=resolved_ref,
     )
     try:
-        outcome, error_info = rule.condition.evaluate(ctx)  # type: ignore[attr-defined]
+        outcome, error_info = rule.condition.evaluate(ctx)
     except Exception as exc:
         if rule.on_error == "reject":
             bound_logger.info(
