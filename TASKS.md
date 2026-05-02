@@ -1,7 +1,7 @@
 # Tasks
 
-## Current Phase: F2 — Execution
-Unlocked: 2026-04-26
+## Current Phase: F3 — Strategy Engine + Multi-bot
+Unlocked: 2026-05-02 (operator-unlocked after F2 deliverables shipped 2026-05-02; F2 E1 manual testnet smoke deferred — `chore(F2-close)` pending operator-driven run + lokálny dev compose F2 overlay).
 
 ## In progress
 (none)
@@ -88,7 +88,23 @@ Unlocked: 2026-04-26
 
 ## Next (do not start without operator approval)
 
-(F1 closed; F2 unlocked 2026-04-26; §9.5 placement pipeline steps 1-9 complete after T-216b2 ship 2026-05-01. Top-of-DAG F2 tasks now unblocked: **T-217** PositionLifecycle FSM monitor task (spawned post-T-216b2 emit boundary), **T-218** Execution event dispatcher (stream_executions + DedupingConsumer + OrderFilled emit per H-024). **T-219** cumulative-delta P&L close flow has T-217+T-218 prerequisite + ADR-Q-B prerequisite. **T-220** APScheduler P&L audit + Migration 0009 has T-218 prerequisite + ADR-Q-C prerequisite. **T-221** post-restart reconciliation has T-217+T-218 prerequisite.)
+F3 numbered (operator-approved 14-task plan 2026-05-02; total est ~30 days at F2 pace):
+- [ ] T-300: `packages/scoring/types.py` — Pydantic types for BotConfig + ScoringConfig + ScoringRule + ScoringResult + RuleResult + decision enum. Foundational types module; no I/O. Per BRIEF §10.1 + §10.4 + §7.2:1036 (scoring_evaluations columns derived from these types). Est: ~150 LOC src + ~120 LOC tests.
+- [ ] T-301: Migration 0010 `scoring_evaluations` hypertable + query helpers (`insert_scoring_evaluation`, `select_scoring_evaluations_by_signal`). Per BRIEF §7.2:1036-1055 verbatim columns + indices. Blocked by T-300. Est: ~80 LOC migration + ~100 LOC helpers + ~100 LOC tests.
+- [ ] T-302: Condition Protocol + 8 simple comparisons (equals, not_equals, gt, gte, lt, lte, between, in) per §10.2. Each condition implements `Condition.evaluate(signal, feature_snapshot) -> tuple[bool, dict | None]`. Blocked by T-300. Est: ~200 LOC + ~250 LOC tests.
+- [ ] T-303: Series conditions (rising, falling, ema_stack) per §10.2. Series conditions read N-back samples; resolver returns history slice. Blocked by T-302. Est: ~150 LOC + ~200 LOC tests.
+- [ ] T-304: Composite conditions (and, or, not, when_then_else) per §10.2. Recursive evaluation; short-circuit semantics. Blocked by T-302. Est: ~120 LOC + ~150 LOC tests.
+- [ ] T-305: Plugin condition + `plugin_registry.yaml` loader per §10.6. Entry-point loading via `importlib.import_module`. Blocked by T-302 + T-307 (registry). Est: ~100 LOC + ~80 LOC tests.
+- [ ] T-306: Feature reference resolver per §10.3 — templated `${signal.symbol}` substitution + NATS KV `feature_latest` lookup + DB `features` table fallback + staleness check (`max_staleness_sec` default `2 × interval_seconds`). Blocked by T-300. Est: ~150 LOC + ~180 LOC tests.
+- [ ] T-307: Evaluator pipeline `evaluate(BotConfig, Signal, FeatureSnapshot) -> ScoringResult` per §10.4 verbatim pseudocode. Handles applies_when gate + on_error skip/reject + required + passthrough mode. Blocked by T-300, T-302-305, T-306. Est: ~200 LOC + ~300 LOC tests.
+- [ ] T-308: `configs/bots/<id>.yaml` Pydantic schema + on-startup loader + validator (rule name uniqueness, weight type validation, condition discriminator). Blocked by T-300. Est: ~120 LOC + ~150 LOC tests.
+- [ ] T-309: `services/strategy_engine/` skeleton (lifespan: pool + bus + bot config loader; `/health`, `/ready`, `/metrics`). Per BRIEF §9.4. Mirror execution-service T-214 skeleton. Blocked by T-308. Est: ~150 LOC + ~100 LOC tests.
+- [ ] T-310: Per-bot signal consumer + scoring_evaluations writes + emit OrderRequest/SignalRejected per §9.4 main loop steps 3a-3h. TTL check, symbol filter, feature snapshot, evaluate, write audit, publish. Blocked by T-301, T-307, T-309. Est: ~250 LOC + ~250 LOC tests.
+- [ ] T-311: Per-bot Docker container variant + compose multi-bot config (`BOT_ID` env-parameterized; mounted `configs/bots/` volume). Blocked by T-309. Est: ~50 LOC compose + Dockerfile.
+- [ ] T-312: `plugins/rules/oi_squeeze` example plugin per §10.6. OI drop detection over lookback candles. Blocked by T-305. Est: ~100 LOC + ~120 LOC tests.
+- [ ] T-313: F3 exit-criteria integration bundle (E1 dvoj-bot test, E2 audit, E3 passthrough, E4 plugin) per §19:2546-2550. Mirror T-222 pattern. Blocked by all prior F3 tasks. Est: ~250 LOC tests + runbook if needed.
+
+F2 deliverables shipped 2026-05-02 (T-200..T-222 complete); F2 phase exit criteria pending only manual operator E1 testnet smoke per `docs/runbooks/F2_E1_testnet_smoke.md` + `chore(F2-close)`. Local dev compose F2 overlay (compose.dev.yaml extension for execution-service + market-data-svc + feature-engine) is a prerequisite blocker for E1 — operator decision to defer 2026-05-02; tracked as F2+ opportunistic.
 
 ## Backlog
 
