@@ -91,3 +91,7 @@ class Settings(BaseSettings):
 
     # T-218a — ExecutionDispatcher per-bot ring capacity (H-009; §9.5:1591 size-10k default).
     dispatch_dedup_capacity: int = 10000
+
+    # T-217a — PositionLifecycle FSM monitor (§9.5:1585-1592 / §N9 configurability).
+    position_poll_interval_s: float = 1.0
+    position_poll_stale_ticks: int = 5

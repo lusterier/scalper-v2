@@ -16,8 +16,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
+
+if TYPE_CHECKING:
+    import asyncio
 
 import pytest
 
@@ -122,7 +125,7 @@ def _patch_persist_and_emit(monkeypatch: pytest.MonkeyPatch) -> None:
     these via their own monkeypatch in the test body.
     """
 
-    async def _no_op_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved]:
+    async def _no_op_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
         return (
             OrderPlaced(
                 bot_id="alpha",
@@ -140,6 +143,7 @@ def _patch_persist_and_emit(monkeypatch: pytest.MonkeyPatch) -> None:
                 new_sl_price=Decimal("1"),
                 sl_type="protective",
             ),
+            1,  # T-217a — trade_id BIGSERIAL
         )
 
     async def _no_op_emit(**kwargs: Any) -> None:
@@ -164,11 +168,13 @@ def _build(
     pool: MagicMock | None = None,
     dedup_capacity: int = 100,
     now_fn: Any = None,
+    position_lifecycle_tasks: dict[int, asyncio.Task[None]] | None = None,
 ) -> tuple[Any, MagicMock, MagicMock, MagicMock]:
     used_adapter = adapter or _ok_adapter()
     used_bus = bus or _ok_bus()
     used_pool = pool if pool is not None else _mock_pool()
     used_now_fn = now_fn if now_fn is not None else (lambda: _FIXED_NOW)
+    used_lifecycle_tasks = position_lifecycle_tasks if position_lifecycle_tasks is not None else {}
     logger = MagicMock()
     handler = make_per_bot_handler(
         bot_id=BotId(bot_id),
@@ -180,6 +186,9 @@ def _build(
         now_fn=used_now_fn,
         fill_price_retry_attempts=attempts,
         fill_price_retry_backoff_s=backoff,
+        position_lifecycle_tasks=used_lifecycle_tasks,
+        position_poll_interval_s=3600.0,  # long so spawned task sleeps in background
+        position_poll_stale_ticks=5,
     )
     return handler, used_adapter, used_bus, logger
 
@@ -218,6 +227,9 @@ async def test_two_handlers_have_independent_closures_with_distinct_adapters() -
         now_fn=lambda: _FIXED_NOW,
         fill_price_retry_attempts=3,
         fill_price_retry_backoff_s=0.0,
+        position_lifecycle_tasks={},
+        position_poll_interval_s=3600.0,
+        position_poll_stale_ticks=5,
     )
     handler_b = make_per_bot_handler(
         bot_id=BotId("beta"),
@@ -229,6 +241,9 @@ async def test_two_handlers_have_independent_closures_with_distinct_adapters() -
         now_fn=lambda: _FIXED_NOW,
         fill_price_retry_attempts=3,
         fill_price_retry_backoff_s=0.0,
+        position_lifecycle_tasks={},
+        position_poll_interval_s=3600.0,
+        position_poll_stale_ticks=5,
     )
     await handler_a(_envelope(_request_payload(bot_id="alpha")))
     adapter_a.set_leverage.assert_awaited_once()
@@ -441,7 +456,7 @@ async def test_post_fill_price_paper_mode_does_not_acquire_pool_or_publish(
     persist_calls: list[Any] = []
     emit_calls: list[Any] = []
 
-    async def _capture_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved]:
+    async def _capture_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
         persist_calls.append(kwargs)
         return (
             OrderPlaced(
@@ -460,6 +475,7 @@ async def test_post_fill_price_paper_mode_does_not_acquire_pool_or_publish(
                 new_sl_price=Decimal("1"),
                 sl_type="protective",
             ),
+            1,
         )
 
     async def _capture_emit(**kwargs: Any) -> None:
@@ -523,7 +539,7 @@ async def test_post_fill_price_live_sl_set_failure_invokes_emergency_close_and_r
 
     persist_calls: list[Any] = []
 
-    async def _no_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved]:
+    async def _no_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
         persist_calls.append(kwargs)
         raise AssertionError("persist_placement_tx must NOT be called after emergency_close")
 
@@ -570,7 +586,7 @@ async def test_post_fill_price_live_tp_set_failure_logs_error_and_continues_to_p
     persist_calls: list[Any] = []
     emit_calls: list[Any] = []
 
-    async def _capture_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved]:
+    async def _capture_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
         persist_calls.append(kwargs)
         return (
             OrderPlaced(
@@ -589,6 +605,7 @@ async def test_post_fill_price_live_tp_set_failure_logs_error_and_continues_to_p
                 new_sl_price=Decimal("1"),
                 sl_type="protective",
             ),
+            1,
         )
 
     async def _capture_emit(**kwargs: Any) -> None:
@@ -628,7 +645,7 @@ async def test_post_fill_price_live_persist_called_after_sl_and_tp_succeed(
     async def _track_set_trading_stop(*args: Any, **kwargs: Any) -> None:
         sequence.append(f"set_trading_stop_{kwargs.get('tpsl_mode', '?').lower()}")
 
-    async def _track_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved]:
+    async def _track_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
         sequence.append("persist_placement_tx")
         return (
             OrderPlaced(
@@ -647,6 +664,7 @@ async def test_post_fill_price_live_persist_called_after_sl_and_tp_succeed(
                 new_sl_price=Decimal("1"),
                 sl_type="protective",
             ),
+            1,
         )
 
     monkeypatch.setattr(
@@ -671,7 +689,7 @@ async def test_post_fill_price_live_emit_called_after_persist_tx_returns(
     """Q2 — emit invoked after persist_placement_tx returns."""
     sequence: list[str] = []
 
-    async def _track_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved]:
+    async def _track_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
         sequence.append("persist")
         return (
             OrderPlaced(
@@ -690,6 +708,7 @@ async def test_post_fill_price_live_emit_called_after_persist_tx_returns(
                 new_sl_price=Decimal("1"),
                 sl_type="protective",
             ),
+            1,
         )
 
     async def _track_emit(**kwargs: Any) -> None:
@@ -714,7 +733,7 @@ async def test_post_fill_price_live_persist_tx_failure_does_not_emit(
     """WG#8 — persist failure SHORT-CIRCUITS emit (publish-after-persist guarantee)."""
     emit_calls: list[Any] = []
 
-    async def _failing_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved]:
+    async def _failing_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
         raise RuntimeError("db disconnect")
 
     async def _capture_emit(**kwargs: Any) -> None:
@@ -794,3 +813,134 @@ async def test_post_fill_price_does_not_emit_OrderFilled_at_T_216b2_boundary(
     assert not any(isinstance(p, OrderFilled) for p in emit_payloads)
     assert any(isinstance(p, OrderPlaced) for p in emit_payloads)
     assert any(isinstance(p, SLMoved) for p in emit_payloads)
+
+
+# ---------------------------------------------------------------------------
+# T-217a — PositionLifecycle spawn pin tests
+# ---------------------------------------------------------------------------
+
+
+async def test_placement_persists_fsm_params_into_trades_meta_jsonb(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-217a OQ-A — FSM params round-trip from OrderRequest into trades.meta."""
+    captured: dict[str, Any] = {}
+
+    async def _capture_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
+        captured.update(kwargs)
+        return (
+            OrderPlaced(
+                bot_id="alpha",
+                order_id=1,
+                exchange_order_id="ord-1",
+                symbol="BTCUSDT",
+                timestamp=_FIXED_NOW,
+            ),
+            SLMoved(
+                bot_id="alpha",
+                order_id=1,
+                exchange_order_id="ord-1",
+                symbol="BTCUSDT",
+                timestamp=_FIXED_NOW,
+                new_sl_price=Decimal("1"),
+                sl_type="protective",
+            ),
+            42,
+        )
+
+    async def _no_op_emit(**kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "services.execution.app.placement.persist_placement_tx",
+        _capture_persist,
+    )
+    monkeypatch.setattr(
+        "services.execution.app.placement.emit_post_commit_events",
+        _no_op_emit,
+    )
+
+    handler, _, _, _ = _build()
+    await handler(_envelope())
+    request = captured["request"]
+    # Verify the OrderRequest threaded through has the FSM fields
+    # (persist_placement_tx is responsible for writing them to trades.meta).
+    assert request.be_trigger == Decimal("0.003")
+    assert request.be_sl_level == Decimal("0.001")
+    assert request.trail_pct == Decimal("0.002")
+
+
+async def test_placement_spawns_lifecycle_task_post_emit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-217a — placement spawns asyncio.Task named lifecycle_<bot_id>_<trade_id>."""
+
+    async def _no_op_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
+        return (
+            OrderPlaced(
+                bot_id="alpha",
+                order_id=1,
+                exchange_order_id="ord-1",
+                symbol="BTCUSDT",
+                timestamp=_FIXED_NOW,
+            ),
+            SLMoved(
+                bot_id="alpha",
+                order_id=1,
+                exchange_order_id="ord-1",
+                symbol="BTCUSDT",
+                timestamp=_FIXED_NOW,
+                new_sl_price=Decimal("1"),
+                sl_type="protective",
+            ),
+            7,  # trade_id
+        )
+
+    async def _no_op_emit(**kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "services.execution.app.placement.persist_placement_tx",
+        _no_op_persist,
+    )
+    monkeypatch.setattr(
+        "services.execution.app.placement.emit_post_commit_events",
+        _no_op_emit,
+    )
+
+    lifecycle_tasks: dict[int, asyncio.Task[None]] = {}
+    handler, _, _, _ = _build(position_lifecycle_tasks=lifecycle_tasks)
+    await handler(_envelope())
+    assert 7 in lifecycle_tasks
+    task = lifecycle_tasks[7]
+    assert task.get_name() == "lifecycle_alpha_7"
+    task.cancel()
+
+
+async def test_placement_lifecycle_task_not_spawned_on_emergency_close_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Emergency-closed trades have no monitor — lifecycle dict stays empty."""
+
+    async def _no_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
+        raise AssertionError("persist must NOT be called on emergency_close path")
+
+    async def _capture_emergency(**kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "services.execution.app.placement.persist_placement_tx",
+        _no_persist,
+    )
+    monkeypatch.setattr(
+        "services.execution.app.placement.emergency_close",
+        _capture_emergency,
+    )
+
+    adapter = _ok_adapter()
+    sl_fail = AsyncMock(side_effect=NetworkTimeout("sl set timeout"))
+    adapter.set_trading_stop = sl_fail
+    lifecycle_tasks: dict[int, asyncio.Task[None]] = {}
+    handler, _, _, _ = _build(adapter=adapter, position_lifecycle_tasks=lifecycle_tasks)
+    await handler(_envelope())
+    assert lifecycle_tasks == {}

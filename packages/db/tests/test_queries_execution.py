@@ -32,7 +32,9 @@ from packages.db.queries.execution import (
     select_position_state,
     select_trade_by_close_order_id,
     select_trade_by_open_order_id,
+    select_trade_fsm_params,
     update_position_state_after_fill,
+    update_position_state_monitor_tick,
     update_trade_close,
     update_trade_fees_incremental,
 )
@@ -414,6 +416,10 @@ async def test_select_position_state_returns_row_with_sl_type_and_remaining_qty(
             "sl_price": Decimal("44775.4975"),
             "tp_price": Decimal("45675.5075"),
             "sl_type": "trail",
+            "best_price": None,
+            "mfe_price": None,
+            "mae_price": None,
+            "running_pnl": Decimal("0"),
         }
     )
     result = await select_position_state(conn, bot_id="alpha", symbol="BTCUSDT")
@@ -545,3 +551,114 @@ async def test_insert_execution_writes_exec_type_and_trade_id_nullable() -> None
     assert sql_args[2] == 100  # order_id
     assert sql_args[3] is None  # trade_id nullable
     assert sql_args[10] == "open"  # exec_type
+
+
+# ---------------------------------------------------------------------------
+# T-217a — PositionLifecycle FSM helper tests
+# ---------------------------------------------------------------------------
+
+
+async def test_select_trade_fsm_params_returns_decimal_dict_from_meta_jsonb() -> None:
+    """T-217a / WG#5 / WG#20 — read-side test isolated from write-side codec.
+
+    Mock returns raw JSONB-as-dict (asyncpg native codec); helper constructs
+    Decimal from string values per Pydantic Decimal-as-string convention.
+    """
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "meta": {
+                "be_trigger": "0.005",
+                "be_sl_level": "0.003",
+                "trail_pct": "0.005",
+            }
+        }
+    )
+    result = await select_trade_fsm_params(conn, 1)
+    assert result == {
+        "be_trigger": Decimal("0.005"),
+        "be_sl_level": Decimal("0.003"),
+        "trail_pct": Decimal("0.005"),
+    }
+
+
+async def test_select_trade_fsm_params_returns_none_when_trade_missing() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    assert await select_trade_fsm_params(conn, 999) is None
+
+
+async def test_select_trade_fsm_params_handles_string_jsonb_codec() -> None:
+    """asyncpg may return JSONB as string in some configurations — fallback path."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value={"meta": '{"be_trigger":"0.01","be_sl_level":"0.005","trail_pct":"0.02"}'}
+    )
+    result = await select_trade_fsm_params(conn, 1)
+    assert result is not None
+    assert result["be_trigger"] == Decimal("0.01")
+
+
+async def test_update_position_state_monitor_tick_uses_composite_pk_only() -> None:
+    """H-018-symmetric — composite PK ``(bot_id, symbol)`` only; SQL has no other WHERE clauses."""
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await update_position_state_monitor_tick(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        best_price=Decimal("105.5"),
+        mfe_price=Decimal("110"),
+        mae_price=Decimal("98"),
+        running_pnl=Decimal("0.1234"),
+        updated_at=_FIXED_NOW,
+    )
+    sql = conn.execute.await_args.args[0]
+    where_clause = sql.split("WHERE")[1]
+    assert "bot_id = $6" in where_clause
+    assert "symbol = $7" in where_clause
+    # No fill-flow column writes:
+    assert "remaining_qty" not in sql
+    assert "sl_type" not in sql
+
+
+async def test_insert_trade_persists_meta_jsonb_when_kwarg_provided() -> None:
+    """T-217a — insert_trade meta kwarg threads OrderRequest FSM params into trades.meta."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"id": 1})
+    await insert_trade(
+        conn,
+        bot_id="alpha",
+        signal_id=1,
+        open_order_id=100,
+        symbol="BTCUSDT",
+        side="buy",
+        entry_price=Decimal("100"),
+        qty=Decimal("1"),
+        notional_usd=Decimal("100"),
+        opened_at=_FIXED_NOW,
+        meta={"be_trigger": "0.005", "be_sl_level": "0.003", "trail_pct": "0.005"},
+    )
+    meta_arg = conn.fetchrow.await_args.args[10]
+    parsed = json.loads(meta_arg)
+    assert parsed["be_trigger"] == "0.005"
+
+
+async def test_insert_trade_writes_empty_object_jsonb_when_meta_kwarg_omitted() -> None:
+    """T-216b1 backward-compat — default meta=None → meta='{}' preserves prior behavior."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"id": 1})
+    await insert_trade(
+        conn,
+        bot_id="alpha",
+        signal_id=1,
+        open_order_id=100,
+        symbol="BTCUSDT",
+        side="buy",
+        entry_price=Decimal("100"),
+        qty=Decimal("1"),
+        notional_usd=Decimal("100"),
+        opened_at=_FIXED_NOW,
+    )
+    meta_arg = conn.fetchrow.await_args.args[10]
+    assert meta_arg == "{}"

@@ -147,6 +147,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bound_logger=logger,
         )
 
+        # T-217a — single shared registry across all bots; trade_id is BIGSERIAL global-unique.
+        position_lifecycle_tasks: dict[int, asyncio.Task[None]] = {}
+
         # 5. Per-bot orders.requests.<bot_id> subscription (T-216a + T-216b2 wrap).
         # The handler returned by make_per_bot_handler is the OrderRequestDedupConsumer.consume
         # bound method (H-009 per-bot ring; capacity from Settings). Subscribe failure
@@ -162,6 +165,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 now_fn=lambda: datetime.now(UTC),
                 fill_price_retry_attempts=settings.execution_fill_price_retry_attempts,
                 fill_price_retry_backoff_s=settings.execution_fill_price_retry_backoff_s,
+                position_lifecycle_tasks=position_lifecycle_tasks,
+                position_poll_interval_s=settings.position_poll_interval_s,
+                position_poll_stale_ticks=settings.position_poll_stale_ticks,
             )
             await bus.subscribe(subject_for_orders_request(bot_id), handler)
 
@@ -194,6 +200,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.ws_tasks = adapter_pool.ws_tasks
         app.state.paper_consumer_tasks = adapter_pool.paper_consumer_tasks
         app.state.dispatcher_tasks = dispatcher_tasks
+        app.state.position_lifecycle_tasks = position_lifecycle_tasks
 
         logger.info(
             "service_started",
@@ -204,10 +211,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             # Reverse shutdown:
-            #   bus.close → dispatcher_tasks cancel (consume from adapter.stream_*;
-            #   must drain before adapter.close pulls the WS) → ws_tasks cancel →
-            #   adapter.close → pool.close.
+            #   bus.close → position_lifecycle_tasks cancel (T-217a; monitors write
+            #   monitor-only fields, dispatcher writes fill-flow fields; column-disjoint
+            #   UPDATEs are MVCC-safe but ordering keeps shutdown's audit log monotonic) →
+            #   dispatcher_tasks cancel (consume from adapter.stream_*; must drain before
+            #   adapter.close pulls the WS) → ws_tasks cancel → adapter.close → pool.close.
             await bus.close()
+            for task in position_lifecycle_tasks.values():
+                task.cancel()
+            if position_lifecycle_tasks:
+                await asyncio.gather(*position_lifecycle_tasks.values(), return_exceptions=True)
             for task in dispatcher_tasks:
                 task.cancel()
             if dispatcher_tasks:

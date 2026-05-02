@@ -527,7 +527,7 @@ _SL_SET_AT = datetime(2026, 5, 1, 10, 30, 0, tzinfo=UTC)
 
 async def _call_persist_tx(
     *, side: str = "buy", sl_set_at: datetime = _SL_SET_AT
-) -> tuple[Any, Any]:
+) -> tuple[Any, Any, Any]:
     from services.execution.app.placement_persist import persist_placement_tx
 
     return await persist_placement_tx(
@@ -587,7 +587,7 @@ async def test_persist_placement_tx_patches_order_placed_payload_with_returned_o
 ) -> None:
     """WG#2 — OrderPlaced.order_id reflects real BIGSERIAL id from insert_order."""
     captured = _patch_inserts(monkeypatch, open_order_id=12345)
-    order_placed, _sl_moved = await _call_persist_tx()
+    order_placed, _sl_moved, _trade_id = await _call_persist_tx()
     assert order_placed.order_id == 12345
     # And the trading_event payload carries the real id too.
     order_placed_event_payload = captured["insert_trading_event"][0]["payload"]

@@ -366,15 +366,17 @@ async def persist_placement_tx(
     tp_size: Decimal,
     notional_usd: Decimal,
     sl_set_at: datetime,
-) -> tuple[OrderPlaced, SLMoved]:
+) -> tuple[OrderPlaced, SLMoved, int]:
     """Single-tx 5-INSERT for happy-path placement (§9.5 step 8).
 
     Caller wraps in ``async with pool.acquire() as conn, conn.transaction():``.
-    Inserts open ``orders`` row (status='filled'), open ``trades`` row,
-    initial ``position_state`` (sl_type='protective'), and 2 ``trading_events``
-    rows (``order_placed`` + ``sl_moved``). Returns ``(OrderPlaced, SLMoved)``
-    payloads with real ``order_id`` patched post-INSERT — caller emits
-    post-commit via :func:`emit_post_commit_events`.
+    Inserts open ``orders`` row (status='filled'), open ``trades`` row
+    (with FSM runtime params persisted to ``trades.meta`` JSONB per T-217a
+    OQ-A), initial ``position_state`` (sl_type='protective'), and 2
+    ``trading_events`` rows (``order_placed`` + ``sl_moved``). Returns
+    ``(OrderPlaced, SLMoved, trade_id)`` — caller emits post-commit via
+    :func:`emit_post_commit_events` and uses ``trade_id`` to spawn the
+    T-217a PositionLifecycle monitor task.
     """
     open_order_id = await insert_order(
         conn,
@@ -394,6 +396,11 @@ async def persist_placement_tx(
         closed_at=None,
         idempotent_flag=False,
     )
+    fsm_params_meta = {
+        "be_trigger": str(request.be_trigger),
+        "be_sl_level": str(request.be_sl_level),
+        "trail_pct": str(request.trail_pct),
+    }
     trade_id = await insert_trade(
         conn,
         bot_id=str(bot_id),
@@ -405,6 +412,7 @@ async def persist_placement_tx(
         qty=request.qty,
         notional_usd=notional_usd,
         opened_at=place_result.placed_at,
+        meta=fsm_params_meta,
     )
     await insert_position_state(
         conn,
@@ -452,7 +460,7 @@ async def persist_placement_tx(
         event_type="sl_moved",
         payload=sl_moved_payload.model_dump(mode="json"),
     )
-    return order_placed_payload, sl_moved_payload
+    return order_placed_payload, sl_moved_payload, trade_id
 
 
 async def emit_post_commit_events(

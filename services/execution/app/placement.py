@@ -62,6 +62,7 @@ from packages.exchange.errors import (
     UnknownState,
 )
 
+from .lifecycle import run_position_monitor_for_trade
 from .placement_persist import (
     OrderRequestDedupConsumer,
     compute_notional_usd,
@@ -112,6 +113,9 @@ def make_per_bot_handler(
     now_fn: Callable[[], datetime],
     fill_price_retry_attempts: int,
     fill_price_retry_backoff_s: float,
+    position_lifecycle_tasks: dict[int, asyncio.Task[None]],
+    position_poll_interval_s: float,
+    position_poll_stale_ticks: int,
 ) -> Callable[[MessageEnvelope], Awaitable[None]]:
     """Closure factory returning the per-bot ``orders.requests.<bot_id>`` handler.
 
@@ -298,7 +302,7 @@ def make_per_bot_handler(
         # 10. Persistence-tx (§9.5 step 8). On failure: orphan; T-221 reconciles.
         try:
             async with pool.acquire() as conn, conn.transaction():
-                order_placed_payload, sl_moved_payload = await persist_placement_tx(
+                order_placed_payload, sl_moved_payload, trade_id = await persist_placement_tx(
                     conn=conn,
                     bot_id=bot_id,
                     request=request,
@@ -329,6 +333,26 @@ def make_per_bot_handler(
             sl_moved_payload=sl_moved_payload,
             bound_logger=logger,
         )
+
+        # 12. T-217a — spawn PositionLifecycle monitor task post-emit (§9.5:1585-1592).
+        lifecycle_task = asyncio.create_task(
+            run_position_monitor_for_trade(
+                bot_id=bot_id,
+                symbol=request.symbol,
+                trade_id=trade_id,
+                side=request.side,
+                entry_price=fill_price,
+                qty=request.qty,
+                pool=pool,
+                bus=bus,
+                bound_logger=logger,
+                poll_interval_s=position_poll_interval_s,
+                stale_ticks_threshold=position_poll_stale_ticks,
+                now_fn=now_fn,
+            ),
+            name=f"lifecycle_{bot_id}_{trade_id}",
+        )
+        position_lifecycle_tasks[trade_id] = lifecycle_task
 
     consumer = OrderRequestDedupConsumer(
         handler=_handle,

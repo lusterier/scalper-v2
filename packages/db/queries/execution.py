@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from packages.core import non_idempotent
 
 if TYPE_CHECKING:
     from datetime import datetime
-    from decimal import Decimal
 
     import asyncpg
     from asyncpg.pool import PoolConnectionProxy
@@ -50,7 +50,9 @@ __all__ = [
     "select_position_state",
     "select_trade_by_close_order_id",
     "select_trade_by_open_order_id",
+    "select_trade_fsm_params",
     "update_position_state_after_fill",
+    "update_position_state_monitor_tick",
     "update_trade_close",
     "update_trade_fees_incremental",
 ]
@@ -176,19 +178,29 @@ async def insert_trade(
     qty: Decimal,
     notional_usd: Decimal,
     opened_at: datetime,
+    meta: dict[str, Any] | None = None,
 ) -> int:
     """INSERT into ``trades`` (status='open'); return BIGSERIAL ``id``.
 
     ``realized_pnl`` and ``fees_paid`` NULL initial (T-218/T-219 backfill
     from execution stream + cumulative-delta close per H-012).
+
+    T-217a extension: ``meta`` kwarg accepts a dict (e.g., FSM runtime params
+    ``be_trigger`` / ``be_sl_level`` / ``trail_pct`` from ``OrderRequest``).
+    Decimals serialize as strings via ``json.dumps(meta, default=str)`` so
+    Pydantic's Decimal-as-string convention is preserved end-to-end. When
+    omitted, the column is written as ``'{}'::jsonb`` per T-216b1-shipped behavior
+    (preserves the ``emergency_close`` no-meta path; emergency-closed trades
+    are not monitored so they carry no FSM params).
     """
+    meta_json = "{}" if meta is None else json.dumps(meta, default=str)
     row = await conn.fetchrow(
         """
         INSERT INTO trades (
             bot_id, signal_id, open_order_id, symbol, side, entry_price,
             qty, notional_usd, opened_at, status, meta
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'open', '{}'::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'open', $10::jsonb)
         RETURNING id
         """,
         bot_id,
@@ -200,6 +212,7 @@ async def insert_trade(
         qty,
         notional_usd,
         opened_at,
+        meta_json,
     )
     if row is None:
         msg = "INSERT trades ... RETURNING id produced no row"
@@ -355,6 +368,10 @@ class PositionStateRow:
     sl_price: Decimal | None
     tp_price: Decimal | None
     sl_type: str | None
+    best_price: Decimal | None = None
+    mfe_price: Decimal | None = None
+    mae_price: Decimal | None = None
+    running_pnl: Decimal = Decimal("0")
 
 
 async def select_order_id_by_exchange_id(
@@ -448,11 +465,17 @@ async def select_position_state(
     bot_id: str,
     symbol: str,
 ) -> PositionStateRow | None:
-    """Return current ``position_state`` row for ``(bot_id, symbol)`` PK or None."""
+    """Return current ``position_state`` row for ``(bot_id, symbol)`` PK or None.
+
+    T-217a extension: SELECT now reads 4 monitor fields (``best_price``,
+    ``mfe_price``, ``mae_price``, ``running_pnl``) consumed by the
+    PositionLifecycle FSM. T-217b extends with ``tp_hit`` + ``trailing_active``.
+    """
     row = await conn.fetchrow(
         """
         SELECT bot_id, symbol, trade_id, side, entry_price, qty, remaining_qty,
-               sl_price, tp_price, sl_type
+               sl_price, tp_price, sl_type,
+               best_price, mfe_price, mae_price, running_pnl
         FROM position_state
         WHERE bot_id = $1 AND symbol = $2
         """,
@@ -472,6 +495,10 @@ async def select_position_state(
         sl_price=row["sl_price"],
         tp_price=row["tp_price"],
         sl_type=row["sl_type"],
+        best_price=row["best_price"],
+        mfe_price=row["mfe_price"],
+        mae_price=row["mae_price"],
+        running_pnl=row["running_pnl"],
     )
 
 
@@ -602,4 +629,70 @@ async def insert_execution(
         fee,
         exec_type,
         executed_at,
+    )
+
+
+# T-217a — PositionLifecycle FSM helpers (§9.5:1585-1592) -------------------
+
+
+async def select_trade_fsm_params(
+    conn: _DbExecutor,
+    trade_id: int,
+) -> dict[str, Decimal] | None:
+    """Read FSM runtime params from ``trades.meta`` JSONB by ``trades.id`` PK.
+
+    Returns ``{'be_trigger': Decimal(...), 'be_sl_level': Decimal(...),
+    'trail_pct': Decimal(...)}`` or None if trade row missing. Pydantic
+    Decimal-as-string serialization expected (per :func:`insert_trade`
+    ``meta`` kwarg convention via ``json.dumps(default=str)``).
+    """
+    row = await conn.fetchrow(
+        "SELECT meta FROM trades WHERE id = $1",
+        trade_id,
+    )
+    if row is None:
+        return None
+    meta_raw = row["meta"]
+    meta: dict[str, Any] = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+    return {
+        "be_trigger": Decimal(meta["be_trigger"]),
+        "be_sl_level": Decimal(meta["be_sl_level"]),
+        "trail_pct": Decimal(meta["trail_pct"]),
+    }
+
+
+async def update_position_state_monitor_tick(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    symbol: str,
+    best_price: Decimal,
+    mfe_price: Decimal,
+    mae_price: Decimal,
+    running_pnl: Decimal,
+    updated_at: datetime,
+) -> None:
+    """Composite-PK UPDATE for monitor-loop fields.
+
+    H-018-symmetric: composite PK ``(bot_id, symbol)`` only; no LIKE-style
+    multi-row updates possible. Distinct from
+    :func:`update_position_state_after_fill` (which writes ``remaining_qty`` +
+    ``sl_type``) — this writer owns monitor-only fields, no overlap with
+    fill-flow writes (column-disjoint UPDATEs are MVCC-safe regardless of
+    interleaving).
+    """
+    await conn.execute(
+        """
+        UPDATE position_state
+        SET best_price = $1, mfe_price = $2, mae_price = $3,
+            running_pnl = $4, updated_at = $5
+        WHERE bot_id = $6 AND symbol = $7
+        """,
+        best_price,
+        mfe_price,
+        mae_price,
+        running_pnl,
+        updated_at,
+        bot_id,
+        symbol,
     )

@@ -476,3 +476,80 @@ def test_lifespan_threads_settings_dispatch_dedup_capacity_to_dispatcher(
     assert kwargs["pool"] is mock_pool
     assert kwargs["bus"] is mock_bus
     assert callable(kwargs["now_fn"])
+
+
+# ---------------------------------------------------------------------------
+# T-217a — PositionLifecycle lifespan integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_lifespan_initializes_empty_position_lifecycle_tasks_dict(
+    app_with_mocks: FastAPI,
+) -> None:
+    """T-217a — app.state.position_lifecycle_tasks is an empty dict at lifespan start."""
+    with TestClient(app_with_mocks):
+        assert app_with_mocks.state.position_lifecycle_tasks == {}
+        assert isinstance(app_with_mocks.state.position_lifecycle_tasks, dict)
+
+
+def test_lifespan_threads_settings_position_poll_to_make_per_bot_handler(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-217a — Settings position_poll fields threaded into make_per_bot_handler ctor."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    def _adapter() -> _MagicMock:
+        a = _MagicMock()
+        a.close = _AsyncMock()
+        return a
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _adapter()}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    captured_kwargs: list[dict[str, object]] = []
+
+    def _capture_handler(**kwargs: object) -> object:
+        captured_kwargs.append(kwargs)
+
+        async def _handler(_envelope: object) -> None:
+            return None
+
+        return _handler
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.make_per_bot_handler",
+        _capture_handler,
+    )
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+    assert len(captured_kwargs) == 1
+    kwargs = captured_kwargs[0]
+    assert kwargs["position_poll_interval_s"] == settings.position_poll_interval_s  # type: ignore[attr-defined]
+    assert kwargs["position_poll_stale_ticks"] == settings.position_poll_stale_ticks  # type: ignore[attr-defined]
+    assert kwargs["position_lifecycle_tasks"] is app.state.position_lifecycle_tasks
