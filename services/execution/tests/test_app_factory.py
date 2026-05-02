@@ -16,7 +16,7 @@ Verifies that:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi.testclient import TestClient
 
@@ -553,3 +553,211 @@ def test_lifespan_threads_settings_position_poll_to_make_per_bot_handler(
     assert kwargs["position_poll_interval_s"] == settings.position_poll_interval_s  # type: ignore[attr-defined]
     assert kwargs["position_poll_stale_ticks"] == settings.position_poll_stale_ticks  # type: ignore[attr-defined]
     assert kwargs["position_lifecycle_tasks"] is app.state.position_lifecycle_tasks
+
+
+# ---------------------------------------------------------------------------
+# T-220b — APScheduler lifespan integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_lifespan_creates_scheduler_with_timezone_utc_and_starts(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-220b — AsyncIOScheduler ctor with timezone=UTC + start() per ADR-0007 D1+D2."""
+    from datetime import UTC
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    captured_ctor_kwargs: list[dict[str, object]] = []
+    fake_scheduler = _MagicMock()
+    fake_scheduler.start = _MagicMock()
+    fake_scheduler.add_job = _MagicMock()
+    fake_scheduler.add_listener = _MagicMock()
+    fake_scheduler.shutdown = _MagicMock()
+
+    def _capture_scheduler(**kwargs: object) -> _MagicMock:
+        captured_ctor_kwargs.append(kwargs)
+        return fake_scheduler
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _MagicMock(_sub_account="alpha-sub", close=_AsyncMock())}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.AsyncIOScheduler",
+        _capture_scheduler,
+    )
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+    assert len(captured_ctor_kwargs) == 1
+    assert captured_ctor_kwargs[0]["timezone"] == UTC
+    fake_scheduler.start.assert_called_once()
+    fake_scheduler.add_listener.assert_called_once()
+    fake_scheduler.shutdown.assert_called_once_with(wait=True)
+
+
+def test_daily_report_runs_at_configured_utc_time(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """H-021 verbatim test name (per ADR-0007 D6) — scheduler.add_job invoked once
+    with id='pnl_audit', trigger='interval', seconds=Settings.execution_audit_tick_interval_seconds,
+    misfire_grace_time=120, and NO timezone= kwarg (UTC enforced at scheduler ctor only).
+    """
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    captured_add_job_kwargs: list[dict[str, Any]] = []
+    fake_scheduler = _MagicMock()
+    fake_scheduler.start = _MagicMock()
+    fake_scheduler.add_listener = _MagicMock()
+    fake_scheduler.shutdown = _MagicMock()
+
+    def _capture_add_job(*args: object, **kwargs: Any) -> None:
+        captured_add_job_kwargs.append(kwargs)
+
+    fake_scheduler.add_job = _capture_add_job
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _MagicMock(_sub_account="alpha-sub", close=_AsyncMock())}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.AsyncIOScheduler",
+        _MagicMock(return_value=fake_scheduler),
+    )
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+    assert len(captured_add_job_kwargs) == 1
+    add_job_kwargs = captured_add_job_kwargs[0]
+    assert add_job_kwargs["id"] == "pnl_audit"
+    assert add_job_kwargs["trigger"] == "interval"
+    assert add_job_kwargs["seconds"] == settings.execution_audit_tick_interval_seconds  # type: ignore[attr-defined]
+    assert add_job_kwargs["misfire_grace_time"] == 120
+    # Critical: NO timezone= kwarg per ADR-0007 D2 (UTC enforced at scheduler ctor).
+    assert "timezone" not in add_job_kwargs
+
+
+def test_lifespan_shutdown_calls_scheduler_shutdown_wait_true_before_adapter_close(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """ADR-0007 D6 — scheduler.shutdown(wait=True) MUST run before adapter.close()
+    + pool.close() in reverse-shutdown order. Use a shared call-log to assert ordering.
+    """
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    call_log: list[str] = []
+
+    fake_scheduler = _MagicMock()
+    fake_scheduler.start = _MagicMock()
+    fake_scheduler.add_job = _MagicMock()
+    fake_scheduler.add_listener = _MagicMock()
+
+    def _scheduler_shutdown(**kwargs: object) -> None:
+        assert kwargs == {"wait": True}, "must pass wait=True per ADR-0007 D6"
+        call_log.append("scheduler.shutdown")
+
+    fake_scheduler.shutdown = _scheduler_shutdown
+
+    async def _adapter_close() -> None:
+        call_log.append("adapter.close")
+
+    async def _pool_close() -> None:
+        call_log.append("pool.close")
+
+    fake_adapter = _MagicMock()
+    fake_adapter._sub_account = "alpha-sub"
+    fake_adapter.close = _adapter_close
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": fake_adapter}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    mock_pool.close = _pool_close
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.AsyncIOScheduler",
+        _MagicMock(return_value=fake_scheduler),
+    )
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+    assert "scheduler.shutdown" in call_log, "scheduler.shutdown not called"
+    assert "adapter.close" in call_log, "adapter.close not called"
+    sched_idx = call_log.index("scheduler.shutdown")
+    adapter_idx = call_log.index("adapter.close")
+    assert sched_idx < adapter_idx, (
+        f"ADR-0007 D6 violation: scheduler.shutdown must precede adapter.close; "
+        f"got call_log={call_log}"
+    )

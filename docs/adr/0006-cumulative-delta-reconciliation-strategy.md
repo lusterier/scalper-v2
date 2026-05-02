@@ -159,6 +159,7 @@ Negative / trade-offs:
 - T-208a `packages/exchange/bybit_v5/adapter.py:299-335` (`get_closed_pnl_cumulative` impl with `_MAX_CLOSED_PNL_PAGES` pagination cap).
 - T-208b `packages/exchange/paper/persistence.py:471` (paper-mode closed_pnl simulation).
 - T-216b1 `packages/db/queries/execution.py:287` (`update_trade_close` PK-only invariant).
+- **T-220b addendum (2026-05-02)**: Brief §9.5:1605 "updates `trades.realized_pnl`" superseded by H-017 cumulative-delta direction; T-220 audit writes `trade_pnl_deltas` only, NEVER back-corrects `trades.realized_pnl`. T-219 cumulative-delta close flow (this ADR) is the single source of truth for `trades.realized_pnl` writes.
 - T-218a `packages/db/queries/execution.py:delete_position_state` (composite-PK DELETE).
 
 ## Follow-up

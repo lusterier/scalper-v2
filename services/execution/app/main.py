@@ -76,6 +76,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from apscheduler.events import EVENT_JOB_ERROR, JobExecutionEvent  # type: ignore[import-untyped]
+from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 from fastapi import FastAPI
 
 from packages.bus import NatsClient
@@ -89,6 +91,7 @@ from packages.observability import (
     make_registry,
 )
 
+from .audit import run_pnl_audit_tick
 from .config import Settings
 from .dispatcher import ExecutionDispatcher, run_dispatcher_for_bot
 from .health import router as health_router
@@ -216,7 +219,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             dispatcher_tasks.append(task)
 
-        # 7. State attach.
+        # 7. T-220b — APScheduler-driven P&L audit (per ADR-0007 D1-D7).
+        # Sub-account → adapter + bot_ids reverse mapping for audit job composition.
+        sub_account_to_adapter: dict[str, object] = {}
+        sub_account_to_bot_ids: dict[str, list[str]] = {}
+        for bot_id, adapter in adapter_pool.adapters.items():
+            sub = _resolve_sub_account(adapter)
+            sub_account_to_adapter.setdefault(sub, adapter)
+            sub_account_to_bot_ids.setdefault(sub, []).append(str(bot_id))
+
+        scheduler = AsyncIOScheduler(timezone=UTC)
+
+        def _on_job_error(event: JobExecutionEvent) -> None:
+            logger.error(
+                "scheduler.job_failed",
+                job_id=event.job_id,
+                scheduled_run_time=event.scheduled_run_time.isoformat(),
+                traceback=event.traceback,
+            )
+
+        scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
+
+        async def _audit_job() -> None:
+            audit_logger = logger.bind(component="audit")
+            await run_pnl_audit_tick(
+                pool=pool,
+                sub_account_to_adapter=sub_account_to_adapter,  # type: ignore[arg-type]
+                sub_account_to_bot_ids=sub_account_to_bot_ids,
+                window_seconds=settings.execution_audit_window_seconds,
+                divergence_threshold_usd=settings.execution_audit_divergence_threshold_usd,
+                bound_logger=audit_logger,
+                now_fn=lambda: datetime.now(UTC),
+            )
+
+        scheduler.add_job(
+            _audit_job,
+            trigger="interval",
+            seconds=settings.execution_audit_tick_interval_seconds,
+            id="pnl_audit",
+            misfire_grace_time=120,
+        )
+        scheduler.start()
+
+        # 8. State attach.
         app.state.pool = pool
         app.state.bus = bus
         app.state.rate_limiter = rate_limiter
@@ -226,6 +271,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.dispatcher_tasks = dispatcher_tasks
         app.state.position_lifecycle_tasks = position_lifecycle_tasks
         app.state.closed_pnl_locks = closed_pnl_locks
+        app.state.scheduler = scheduler
 
         logger.info(
             "service_started",
@@ -258,6 +304,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 task.cancel()
             if background_tasks:
                 await asyncio.gather(*background_tasks, return_exceptions=True)
+            # T-220b — scheduler shutdown(wait=True) BEFORE adapter.close + pool.close
+            # so in-flight audit job's adapter REST call + DB query can finish per
+            # ADR-0007 D6.
+            scheduler.shutdown(wait=True)
             for adapter in adapter_pool.adapters.values():
                 await adapter.close()
             await pool.close()

@@ -128,6 +128,8 @@ Idempotency contract: every scheduled job MUST be safe to run multiple times for
 
 T-220 plan must explicitly call out: (i) divergence threshold filter as primary idempotency mechanism; (ii) Migration 0009 UNIQUE constraint as secondary; (iii) SELECT-before-INSERT pattern is NOT used (let DB raise on UNIQUE violation if the threshold filter logic ever regresses). This is a job-author contract, not enforced by APScheduler.
 
+**T-220a addendum (2026-05-02)**: UNIQUE constraint scope is `(sub_account, audit_run_at)` per T-220a Migration 0009 OQ-A — D7 narrative pre-T-220a "UNIQUE (trade_id, audit_run_at)" was a placeholder; sub_account-window granularity per H-017 cumulative-attribution-only rules out per-trade columns (no `trade_id` in `trade_pnl_deltas` schema). Idempotency contract holds at the sub_account-window level: same `(sub_account, audit_run_at)` collision → UNIQUE violation → caught + WARN per T-220b job body.
+
 ## Rationale
 
 - **D1 lifespan-owned singleton**: matches existing F2 composition pattern (pool/bus/adapter_pool/dispatcher_tasks all in `app.state`); APScheduler design assumes singleton-per-loop.

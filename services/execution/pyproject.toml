@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Order placement, lifecycle FSM, SL/TP/BE/trail, cumulative-delta reconciliation, exchange adapter pool. T-214: skeleton; T-215: adapter pool composition; T-216: order placement; T-217: PositionLifecycle FSM; T-218: dispatcher; T-219: cumulative-delta close; T-220: P&L audit; T-221: post-restart reconciliation."
 requires-python = ">=3.12"
 dependencies = [
+    "apscheduler==3.10.4",
     "fastapi==0.136.0",
     "pydantic-settings==2.13.1",
     "scalper-v2-bus",
