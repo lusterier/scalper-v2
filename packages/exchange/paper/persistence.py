@@ -43,6 +43,7 @@ __all__ = [
     "select_paper_positions",
     "select_paper_positions_for_hydrate",
     "sum_paper_trades_realized_pnl",
+    "sum_paper_trades_realized_pnl_since",
     "update_paper_order_cancelled",
     "update_paper_position_partial",
     "update_paper_position_sl_tp",
@@ -478,6 +479,39 @@ async def sum_paper_trades_realized_pnl(
         WHERE bot_id = $1 AND status = 'closed'
         """,
         bot_id,
+    )
+    if row is None:
+        return Decimal("0")
+    total = row["total"]
+    if isinstance(total, Decimal):
+        return total
+    return Decimal(total)
+
+
+async def sum_paper_trades_realized_pnl_since(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    since: datetime,
+) -> Decimal:
+    """T-220a — time-windowed companion to :func:`sum_paper_trades_realized_pnl`.
+
+    Used by :meth:`PaperExchange.get_closed_pnl_window`. Decision #8 — COALESCE
+    NULL → ``Decimal("0")`` so consumers see numeric, not None. Per WG#13:
+    ``status = 'closed'`` for symmetry with existing helper + ``closed_at IS NOT NULL``
+    defensive belt-and-suspenders + ``closed_at >= since`` for window filter.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT COALESCE(SUM(realized_pnl), 0) AS total
+        FROM paper_trades
+        WHERE bot_id = $1
+          AND status = 'closed'
+          AND closed_at IS NOT NULL
+          AND closed_at >= $2
+        """,
+        bot_id,
+        since,
     )
     if row is None:
         return Decimal("0")

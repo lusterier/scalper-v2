@@ -334,6 +334,59 @@ class BybitV5Adapter:
         )
         return total
 
+    @idempotent
+    async def get_closed_pnl_window(self, sub_account: str, since: datetime) -> Decimal:
+        """T-220a — time-windowed sum companion to :meth:`get_closed_pnl_cumulative`.
+
+        Bybit V5 ``/v5/position/closed-pnl`` accepts ``startTime`` (Unix ms);
+        sums ``closedPnl`` rows where ``execTime >= since_ms``. Caller (T-220b
+        audit) computes ``since = now_utc() - timedelta(seconds=window_s)``.
+
+        Sub_account validation BEFORE limiter.acquire per OQ-10 default A.
+        UTC contract: caller MUST pass aware UTC datetime; ``int(since.timestamp() * 1000)``
+        converts to Unix ms.
+        """
+        if sub_account != self._sub_account:
+            raise ValueError(
+                f"sub_account mismatch: got {sub_account!r}, expected {self._sub_account!r}",
+            )
+        since_ms = int(since.timestamp() * 1000)
+        total = Decimal("0")
+        cursor: str | None = None
+        for _page in range(_MAX_CLOSED_PNL_PAGES):
+            params: dict[str, Any] = {
+                "category": _CATEGORY,
+                "limit": 200,
+                "startTime": since_ms,
+            }
+            if cursor is not None:
+                params["cursor"] = cursor
+            await self._limiter.acquire(self._sub_account, "positions")
+            try:
+                result = await self._client.request(
+                    "GET",
+                    "/v5/position/closed-pnl",
+                    params=params,
+                    retries=3,
+                )
+            except RateLimitError:
+                await self._on_rate_limit_hit("positions")
+                raise
+            for item in result.get("list", []):
+                total += Decimal(item["closedPnl"])
+            cursor = result.get("nextPageCursor") or None
+            if not cursor:
+                return total
+        logger.warning(
+            "bybit_v5.closed_pnl_window_pagination_capped_at_max_pages",
+            extra={
+                "max_pages": _MAX_CLOSED_PNL_PAGES,
+                "sub_account": sub_account,
+                "since": since.isoformat(),
+            },
+        )
+        return total
+
     # T-209 stream + close (delegates to BybitV5PrivateWs) ------------------
 
     def stream_executions(self) -> AsyncIterator[ExecutionEvent]:

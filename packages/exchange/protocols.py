@@ -36,6 +36,7 @@ from packages.core import idempotent, non_idempotent
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from datetime import datetime
     from decimal import Decimal
 
     from .types import ExecutionEvent, OrderPlaceResult, Position, PositionEvent
@@ -109,6 +110,9 @@ class ExchangeClient(Protocol):
 
     @idempotent
     async def get_closed_pnl_cumulative(self, sub_account: str) -> Decimal: ...
+
+    @idempotent
+    async def get_closed_pnl_window(self, sub_account: str, since: datetime) -> Decimal: ...
 
     def stream_executions(self) -> AsyncIterator[ExecutionEvent]: ...
 

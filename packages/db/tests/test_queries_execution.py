@@ -25,12 +25,14 @@ from packages.db.queries.execution import (
     insert_order,
     insert_position_state,
     insert_trade,
+    insert_trade_pnl_delta,
     insert_trading_event,
     select_active_bots,
     select_open_order_id_by_trade_id,
     select_order_id_by_exchange_id,
     select_order_meta_by_id,
     select_position_state,
+    select_realized_pnl_sum_for_bots_since,
     select_trade_by_close_order_id,
     select_trade_by_open_order_id,
     select_trade_fsm_params,
@@ -776,3 +778,72 @@ async def test_select_order_meta_by_id_returns_none_when_missing() -> None:
     conn = MagicMock()
     conn.fetchrow = AsyncMock(return_value=None)
     assert await select_order_meta_by_id(conn, 999) is None
+
+
+# ---------------------------------------------------------------------------
+# T-220a — P&L audit loop helpers
+# ---------------------------------------------------------------------------
+
+
+async def test_select_realized_pnl_sum_for_bots_since_returns_zero_for_empty_bot_ids() -> None:
+    """T-220a WG#7 — empty bot_ids short-circuits without DB roundtrip."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock()
+    result = await select_realized_pnl_sum_for_bots_since(
+        conn,
+        bot_ids=[],
+        since=_FIXED_NOW,
+    )
+    assert result == Decimal("0")
+    conn.fetchrow.assert_not_awaited()
+
+
+async def test_select_realized_pnl_sum_for_bots_since_uses_any_array_param() -> None:
+    """Multi-bot composition pin — bot_ids passed as ANY($1::text[])."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"total": Decimal("123.45")})
+    result = await select_realized_pnl_sum_for_bots_since(
+        conn,
+        bot_ids=["alpha", "beta"],
+        since=_FIXED_NOW,
+    )
+    assert result == Decimal("123.45")
+    sql = conn.fetchrow.await_args.args[0]
+    assert "bot_id = ANY($1::text[])" in sql
+    assert "closed_at IS NOT NULL" in sql
+    assert "closed_at >= $2" in sql
+
+
+async def test_select_realized_pnl_sum_for_bots_since_returns_zero_when_row_none() -> None:
+    """Defensive — fetchrow None → Decimal('0')."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    result = await select_realized_pnl_sum_for_bots_since(
+        conn,
+        bot_ids=["alpha"],
+        since=_FIXED_NOW,
+    )
+    assert result == Decimal("0")
+
+
+async def test_insert_trade_pnl_delta_writes_all_columns_with_decimal_precision() -> None:
+    """T-220a — INSERT trade_pnl_deltas with all 7 audit fields."""
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await insert_trade_pnl_delta(
+        conn,
+        sub_account="alpha-sub",
+        audit_run_at=_FIXED_NOW,
+        window_start=_FIXED_NOW,
+        window_end=_FIXED_NOW,
+        cumulative_bybit=Decimal("100.1234"),
+        cumulative_db=Decimal("99.6234"),
+        delta=Decimal("0.5000"),
+    )
+    args = conn.execute.await_args.args
+    sql = args[0]
+    assert "INSERT INTO trade_pnl_deltas" in sql
+    assert args[1] == "alpha-sub"
+    assert args[5] == Decimal("100.1234")
+    assert args[6] == Decimal("99.6234")
+    assert args[7] == Decimal("0.5000")

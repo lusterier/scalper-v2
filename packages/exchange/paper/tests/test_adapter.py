@@ -147,6 +147,7 @@ _LABELED_METHODS_EXPECTED = (
     ("get_positions", is_idempotent),
     ("get_fill_price", is_idempotent),
     ("get_closed_pnl_cumulative", is_idempotent),
+    ("get_closed_pnl_window", is_idempotent),
 )
 
 

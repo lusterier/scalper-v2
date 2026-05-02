@@ -43,12 +43,14 @@ __all__ = [
     "insert_order",
     "insert_position_state",
     "insert_trade",
+    "insert_trade_pnl_delta",
     "insert_trading_event",
     "select_active_bots",
     "select_open_order_id_by_trade_id",
     "select_order_id_by_exchange_id",
     "select_order_meta_by_id",
     "select_position_state",
+    "select_realized_pnl_sum_for_bots_since",
     "select_trade_by_close_order_id",
     "select_trade_by_open_order_id",
     "select_trade_fsm_params",
@@ -780,4 +782,78 @@ async def update_position_state_sl(
         updated_at,
         bot_id,
         symbol,
+    )
+
+
+# T-220a — P&L audit loop helpers (§9.5:1601-1605; H-017; ADR-0007 D7) -------
+
+
+async def select_realized_pnl_sum_for_bots_since(
+    conn: _DbExecutor,
+    *,
+    bot_ids: list[str],
+    since: datetime,
+) -> Decimal:
+    """Sum trades.realized_pnl WHERE bot_id IN (...) AND closed_at >= since.
+
+    T-220b audit uses this for cumulative_db computation per sub-account window.
+    Multi-bot list supports cross-bot shared-sub-account composition (per ADR-0004).
+    NULL realized_pnl filtered (trades not yet closed by T-219 reconcile_close)
+    via ``closed_at IS NOT NULL`` predicate. Empty bot_ids → returns Decimal("0")
+    without DB roundtrip (defensive against sub_account misconfiguration per WG#7).
+    """
+    if not bot_ids:
+        return Decimal("0")
+    row = await conn.fetchrow(
+        """
+        SELECT COALESCE(SUM(realized_pnl), 0) AS total
+        FROM trades
+        WHERE bot_id = ANY($1::text[])
+          AND closed_at IS NOT NULL
+          AND closed_at >= $2
+        """,
+        bot_ids,
+        since,
+    )
+    if row is None:
+        return Decimal("0")
+    total = row["total"]
+    if isinstance(total, Decimal):
+        return total
+    return Decimal(total)
+
+
+@non_idempotent
+async def insert_trade_pnl_delta(
+    conn: _DbExecutor,
+    *,
+    sub_account: str,
+    audit_run_at: datetime,
+    window_start: datetime,
+    window_end: datetime,
+    cumulative_bybit: Decimal,
+    cumulative_db: Decimal,
+    delta: Decimal,
+) -> None:
+    """INSERT trade_pnl_deltas; UNIQUE (sub_account, audit_run_at) raises on dup.
+
+    ``@non_idempotent`` per T-213b precedent — INSERT writes audit-grade row;
+    no replay-safe key. ``UniqueViolationError`` surfaces concurrent-run conflict
+    per ADR-0007 D7 (let DB raise; T-220b job catches + WARN + next tick).
+    """
+    await conn.execute(
+        """
+        INSERT INTO trade_pnl_deltas (
+            sub_account, audit_run_at, window_start, window_end,
+            cumulative_bybit, cumulative_db, delta
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """,
+        sub_account,
+        audit_run_at,
+        window_start,
+        window_end,
+        cumulative_bybit,
+        cumulative_db,
+        delta,
     )

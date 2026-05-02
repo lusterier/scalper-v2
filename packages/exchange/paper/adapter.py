@@ -926,6 +926,20 @@ class PaperExchange:
                 bot_id=str(self._bot_id),
             )
 
+    @idempotent
+    async def get_closed_pnl_window(self, sub_account: str, since: datetime) -> Decimal:
+        """T-220a — time-windowed companion. Decision #8 sub_account==bot_id contract."""
+        if sub_account != str(self._bot_id):
+            raise ValueError(
+                f"sub_account mismatch: got {sub_account!r}, expected {str(self._bot_id)!r}"
+            )
+        async with self._pool.acquire() as conn:
+            return await persistence.sum_paper_trades_realized_pnl_since(
+                conn,
+                bot_id=str(self._bot_id),
+                since=since,
+            )
+
     def stream_executions(self) -> AsyncIterator[ExecutionEvent]:
         """Decision #12: ``def`` (NOT ``async def``) per T-201 OQ-1.
 

@@ -150,10 +150,11 @@ def test_unlabeled_methods_set_is_complete() -> None:
 
     Pinned counts:
 
-    * ExchangeClient declares exactly 10 public methods (§11.1 verbatim:
-      4 writes + 3 reads + 2 streams + 1 lifecycle). Catches future
-      Python upstream additions to ``typing.Protocol`` that might
-      silently expand the surface and pass the contract test vacuously.
+    * ExchangeClient declares exactly 11 public methods (§11.1 verbatim:
+      4 writes + 4 reads + 2 streams + 1 lifecycle; T-220a added
+      ``get_closed_pnl_window`` as 4th read). Catches future Python
+      upstream additions to ``typing.Protocol`` that might silently
+      expand the surface and pass the contract test vacuously.
     * ``_UNLABELED_METHODS`` has exactly 3 entries (``stream_executions``,
       ``stream_positions``, ``close``). Forces a deliberate update path:
       if a future task adds a fourth exemption, both the frozenset and
@@ -161,8 +162,8 @@ def test_unlabeled_methods_set_is_complete() -> None:
       for review.
     """
     protocol_methods = _protocol_method_names()
-    assert len(protocol_methods) == 10, (
-        f"ExchangeClient must declare exactly 10 public methods (§11.1 verbatim); "
+    assert len(protocol_methods) == 11, (
+        f"ExchangeClient must declare exactly 11 public methods (§11.1 verbatim + T-220a); "
         f"got {len(protocol_methods)}: {sorted(protocol_methods)}"
     )
     bad = _UNLABELED_METHODS - protocol_methods

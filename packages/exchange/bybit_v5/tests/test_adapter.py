@@ -746,6 +746,57 @@ async def test_get_closed_pnl_cumulative_calls_upstream_with_bybit_v5_query_shap
     assert call.kwargs["params"] == {"category": "linear", "limit": 200}
 
 
+# --- T-220a: get_closed_pnl_window time-windowed companion ----------------
+
+
+async def test_get_closed_pnl_window_passes_starttime_ms_param() -> None:
+    """T-220a — `since` datetime → Unix ms via int(timestamp() * 1000)."""
+    from datetime import UTC, datetime
+
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [], "nextPageCursor": ""})
+    adapter = _make_adapter(client=client)
+    since = datetime(2026, 5, 2, 9, 0, 0, tzinfo=UTC)
+    await adapter.get_closed_pnl_window("sub-a", since)
+    call = client.request.await_args
+    assert call.args == ("GET", "/v5/position/closed-pnl")
+    assert call.kwargs["params"]["startTime"] == int(since.timestamp() * 1000)
+    assert call.kwargs["params"]["category"] == "linear"
+    assert call.kwargs["params"]["limit"] == 200
+
+
+async def test_get_closed_pnl_window_validates_sub_account_before_limiter() -> None:
+    """OQ-10/W#5 mirror — ValueError BEFORE limiter.acquire — no token consumed."""
+    from datetime import UTC, datetime
+
+    client = _make_client_mock()
+    limiter = _make_limiter_mock()
+    adapter = _make_adapter(client=client, limiter=limiter)
+    since = datetime(2026, 5, 2, 9, 0, 0, tzinfo=UTC)
+    with pytest.raises(ValueError, match="sub_account mismatch"):
+        await adapter.get_closed_pnl_window("other-sub", since)
+    assert limiter.acquire.await_count == 0
+    assert client.request.await_count == 0
+
+
+async def test_get_closed_pnl_window_paginates_via_next_page_cursor() -> None:
+    from datetime import UTC, datetime
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        side_effect=[
+            {"list": [{"closedPnl": "10.00"}], "nextPageCursor": "page-2"},
+            {"list": [{"closedPnl": "20.00"}], "nextPageCursor": ""},
+        ],
+    )
+    adapter = _make_adapter(client=client)
+    since = datetime(2026, 5, 2, 9, 0, 0, tzinfo=UTC)
+    total = await adapter.get_closed_pnl_window("sub-a", since)
+    assert total == _D("30.00")
+    assert client.request.await_count == 2
+
+
 # --- T-208b: endpoint-group routing + RateLimitError handler --------------
 
 

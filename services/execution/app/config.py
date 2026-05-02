@@ -36,6 +36,7 @@ F2-specific fields landing in later owner tasks per §0.8 anti-hypothetical:
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -98,3 +99,8 @@ class Settings(BaseSettings):
 
     # T-219 — closed-pnl post-close sleep (H-011; ADR-0006 D2).
     execution_closed_pnl_post_close_sleep_s: float = 2.0
+
+    # T-220 — P&L audit loop (§9.5:1601-1605; H-017; ADR-0007 D7).
+    execution_audit_tick_interval_seconds: int = 300
+    execution_audit_window_seconds: int = 10800
+    execution_audit_divergence_threshold_usd: Decimal = Decimal("0.50")
