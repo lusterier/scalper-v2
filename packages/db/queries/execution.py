@@ -45,6 +45,7 @@ __all__ = [
     "insert_trade",
     "insert_trading_event",
     "select_active_bots",
+    "select_open_order_id_by_trade_id",
     "select_order_id_by_exchange_id",
     "select_position_state",
     "select_trade_by_close_order_id",
@@ -418,6 +419,27 @@ async def select_trade_by_close_order_id(
         close_order_id=int(row["close_order_id"]),
         side=row["side"],
     )
+
+
+async def select_open_order_id_by_trade_id(
+    conn: _DbExecutor,
+    trade_id: int,
+) -> int | None:
+    """Return ``trades.open_order_id`` given trades.id PK; None if trade missing.
+
+    T-218b dispatcher uses this in the synthetic SL/TP/trail fill path
+    where ``executions.order_id`` is NOT NULL FK and we have no orders
+    row issued for the synthetic fill — the FK is attributed to the
+    entry order context (the order that opened the position the
+    synthetic fill is closing). Defensible: every fill is anchored to
+    a placed-order context even if the fill itself wasn't issued
+    against that order.
+    """
+    row = await conn.fetchrow(
+        "SELECT open_order_id FROM trades WHERE id = $1",
+        trade_id,
+    )
+    return None if row is None else int(row["open_order_id"])
 
 
 async def select_position_state(

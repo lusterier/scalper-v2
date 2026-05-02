@@ -27,6 +27,7 @@ from packages.db.queries.execution import (
     insert_trade,
     insert_trading_event,
     select_active_bots,
+    select_open_order_id_by_trade_id,
     select_order_id_by_exchange_id,
     select_position_state,
     select_trade_by_close_order_id,
@@ -500,6 +501,24 @@ async def test_update_trade_fees_incremental_coalesce_uses_bare_zero_not_decimal
     sql = conn.execute.await_args.args[0]
     assert "COALESCE(fees_paid, 0)" in sql
     assert "Decimal" not in sql  # Decimal is Python type, not PG type — would raise syntax error
+
+
+async def test_select_open_order_id_by_trade_id_returns_open_order_id_when_found() -> None:
+    """T-218b 8th helper — synthetic-fill FK resolution via trade_id → trades.open_order_id.
+
+    Returns int when row found; None when trades.id missing.
+    """
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"open_order_id": 100})
+    result = await select_open_order_id_by_trade_id(conn, 1)
+    assert result == 100
+    conn.fetchrow.assert_awaited_once()
+    sql = conn.fetchrow.await_args.args[0]
+    assert "SELECT open_order_id FROM trades WHERE id = $1" in sql
+
+    conn.fetchrow = AsyncMock(return_value=None)
+    result_none = await select_open_order_id_by_trade_id(conn, 999)
+    assert result_none is None
 
 
 async def test_insert_execution_writes_exec_type_and_trade_id_nullable() -> None:
