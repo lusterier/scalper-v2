@@ -15,11 +15,11 @@ or treat that brief path as a forward-ref. T-302 itself uses
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from packages.bus.schemas.signals import SignalValidated
     from packages.features.types import FeatureValue
@@ -47,6 +47,13 @@ class RuleContext:
     signal: SignalValidated
     feature_snapshot: Mapping[str, FeatureValue]
     feature_ref: str
+    feature_history: Mapping[str, Sequence[FeatureValue]] = field(default_factory=dict)
+    """T-303 series conditions read N-sample history per feature_ref.
+
+    Chronological ordering: index 0 oldest, index -1 newest. T-306 resolver
+    populates; T-302 simple conditions ignore. Default empty mapping is
+    backward-compatible — existing T-302 callers don't pass this field.
+    """
 
 
 @runtime_checkable

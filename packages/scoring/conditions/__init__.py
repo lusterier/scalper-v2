@@ -8,6 +8,7 @@ composite, and plugin variants in their own submodules.
 from __future__ import annotations
 
 from .base import Condition, RuleContext
+from .series import EmaStackCondition, FallingCondition, RisingCondition
 from .simple import (
     BetweenCondition,
     EqualsCondition,
@@ -22,12 +23,15 @@ from .simple import (
 __all__ = [
     "BetweenCondition",
     "Condition",
+    "EmaStackCondition",
     "EqualsCondition",
+    "FallingCondition",
     "GtCondition",
     "GteCondition",
     "InCondition",
     "LtCondition",
     "LteCondition",
     "NotEqualsCondition",
+    "RisingCondition",
     "RuleContext",
 ]
