@@ -39,10 +39,17 @@ _T_TICK = datetime(2026, 5, 2, 12, 0, 5, tzinfo=UTC)
 async def _seed_position_state(conn: asyncpg.Connection[asyncpg.Record]) -> None:
     """Set up bots → orders → trades → position_state row for tick test."""
     await conn.execute(
-        """
-        INSERT INTO bots (bot_id, display_name, exchange_mode, status)
-        VALUES ('alpha', 'Alpha Bot', 'paper', 'active')
-        """,
+        "INSERT INTO bots "
+        "(bot_id, display_name, created_at, status, exchange_mode, "
+        " config_hash, config_applied_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "alpha",
+        "Alpha Bot",
+        _T_ENTRY,
+        "active",
+        "paper",
+        "sha256:smoke",
+        _T_ENTRY,
     )
     open_order_id = await insert_order(
         conn,
