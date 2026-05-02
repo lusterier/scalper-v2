@@ -50,7 +50,9 @@ __all__ = [
     "select_order_id_by_exchange_id",
     "select_order_meta_by_id",
     "select_position_state",
+    "select_position_states_for_bots",
     "select_realized_pnl_sum_for_bots_since",
+    "select_recent_open_trade_exists",
     "select_trade_by_close_order_id",
     "select_trade_by_open_order_id",
     "select_trade_fsm_params",
@@ -548,6 +550,87 @@ async def select_position_state(
         mae_price=row["mae_price"],
         running_pnl=row["running_pnl"],
     )
+
+
+_SELECT_POSITION_STATES_FOR_BOTS_SQL = """
+    SELECT bot_id, symbol, trade_id, side, entry_price, qty, remaining_qty,
+           sl_price, tp_price, sl_type,
+           best_price, mfe_price, mae_price, running_pnl
+    FROM position_state
+    WHERE bot_id = ANY($1::text[])
+    ORDER BY bot_id, symbol
+"""
+
+
+async def select_position_states_for_bots(
+    conn: _DbExecutor,
+    bot_ids: list[str],
+) -> list[PositionStateRow]:
+    """Return all open ``position_state`` rows for the given bot_ids.
+
+    T-221 post-restart reconciliation reads every bot's open positions in
+    one round-trip per pool connection. Empty ``bot_ids`` short-circuits
+    to ``[]`` without DB roundtrip (defensive against an empty adapter
+    pool — startup before any bot is configured). Result is ordered by
+    ``(bot_id, symbol)`` for deterministic logging during reconcile.
+    """
+    if not bot_ids:
+        return []
+    rows = await conn.fetch(_SELECT_POSITION_STATES_FOR_BOTS_SQL, bot_ids)
+    return [
+        PositionStateRow(
+            bot_id=row["bot_id"],
+            symbol=row["symbol"],
+            trade_id=int(row["trade_id"]),
+            side=row["side"],
+            entry_price=row["entry_price"],
+            qty=row["qty"],
+            remaining_qty=row["remaining_qty"],
+            sl_price=row["sl_price"],
+            tp_price=row["tp_price"],
+            sl_type=row["sl_type"],
+            best_price=row["best_price"],
+            mfe_price=row["mfe_price"],
+            mae_price=row["mae_price"],
+            running_pnl=row["running_pnl"],
+        )
+        for row in rows
+    ]
+
+
+_SELECT_RECENT_OPEN_TRADE_EXISTS_SQL = """
+    SELECT 1 FROM trades
+    WHERE bot_id = $1 AND symbol = $2 AND opened_at >= $3 AND status = 'open'
+    LIMIT 1
+"""
+
+
+async def select_recent_open_trade_exists(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    symbol: str,
+    since: datetime,
+) -> bool:
+    """Return True if any ``trades`` row exists for ``(bot_id, symbol)``
+    with ``opened_at >= since`` AND ``status = 'open'``.
+
+    T-221 H-026 race-window guard: before market-closing an exchange
+    orphan (position on exchange but no ``position_state`` row in DB),
+    check whether a placement is in flight for this ``(bot_id, symbol)``.
+    The ``>=`` predicate is verbatim — boundary tick at exact ``since``
+    counts as "in race window" (test pin per Fixture D).
+
+    Note: only ``status='open'`` trades match. A closed trade in the
+    last race-window seconds does NOT indicate an in-flight placement.
+    """
+    row = await conn.fetchrow(
+        _SELECT_RECENT_OPEN_TRADE_EXISTS_SQL,
+        bot_id,
+        symbol,
+        since,
+    )
+    return row is not None
 
 
 async def update_position_state_after_fill(

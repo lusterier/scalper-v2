@@ -97,6 +97,7 @@ from .dispatcher import ExecutionDispatcher, run_dispatcher_for_bot
 from .health import router as health_router
 from .placement import make_per_bot_handler
 from .pool import build_adapter_pool
+from .restart import reconcile_on_startup
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -173,6 +174,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 position_poll_stale_ticks=settings.position_poll_stale_ticks,
             )
             await bus.subscribe(subject_for_orders_request(bot_id), handler)
+
+        # 5.5. T-221 — post-restart reconciliation per H-020 + H-026.
+        # Runs BEFORE dispatchers start so monitor tasks for matching trades are
+        # already in position_lifecycle_tasks registry by the time fills arrive.
+        await reconcile_on_startup(
+            pool=pool,
+            bus=bus,
+            adapters=adapter_pool.adapters,
+            position_lifecycle_tasks=position_lifecycle_tasks,
+            race_window_seconds=settings.execution_reconcile_race_window_seconds,
+            position_poll_interval_s=settings.position_poll_interval_s,
+            position_poll_stale_ticks=settings.position_poll_stale_ticks,
+            bound_logger=logger,
+            now_fn=lambda: datetime.now(UTC),
+        )
 
         # T-219 — per-sub-account asyncio.Lock registry per ADR-0006 D4.
         # Multiple bots may share a sub_account (per ADR-0004 H-022 family);

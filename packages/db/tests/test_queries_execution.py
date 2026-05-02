@@ -32,7 +32,9 @@ from packages.db.queries.execution import (
     select_order_id_by_exchange_id,
     select_order_meta_by_id,
     select_position_state,
+    select_position_states_for_bots,
     select_realized_pnl_sum_for_bots_since,
+    select_recent_open_trade_exists,
     select_trade_by_close_order_id,
     select_trade_by_open_order_id,
     select_trade_fsm_params,
@@ -847,3 +849,78 @@ async def test_insert_trade_pnl_delta_writes_all_columns_with_decimal_precision(
     assert args[5] == Decimal("100.1234")
     assert args[6] == Decimal("99.6234")
     assert args[7] == Decimal("0.5000")
+
+
+# ---------------------------------------------------------------------------
+# T-221 — select_position_states_for_bots + select_recent_open_trade_exists
+# ---------------------------------------------------------------------------
+
+
+async def test_select_position_states_for_bots_empty_short_circuits() -> None:
+    """Empty bot_ids → [] without DB roundtrip per T-221 plan."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock()
+    result = await select_position_states_for_bots(conn, [])
+    assert result == []
+    conn.fetch.assert_not_awaited()
+
+
+async def test_select_position_states_for_bots_uses_any_array_param() -> None:
+    """Multi-bot composition pin — bot_ids passed as ANY($1::text[]) per plan SQL constant."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "bot_id": "alpha",
+                "symbol": "BTCUSDT",
+                "trade_id": 42,
+                "side": "buy",
+                "entry_price": Decimal("50000"),
+                "qty": Decimal("0.1"),
+                "remaining_qty": Decimal("0.1"),
+                "sl_price": None,
+                "tp_price": None,
+                "sl_type": "protective",
+                "best_price": None,
+                "mfe_price": None,
+                "mae_price": None,
+                "running_pnl": Decimal("0"),
+            },
+        ]
+    )
+    rows = await select_position_states_for_bots(conn, ["alpha", "beta"])
+    assert len(rows) == 1
+    assert rows[0].trade_id == 42
+    sql = conn.fetch.await_args.args[0]
+    assert "bot_id = ANY($1::text[])" in sql
+    assert "ORDER BY bot_id, symbol" in sql
+
+
+async def test_select_recent_open_trade_exists_uses_gte_since_predicate() -> None:
+    """H-026 race-window verbatim test pin: SQL contains `opened_at >= $3` (NOT `>`)."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"?column?": 1})
+    result = await select_recent_open_trade_exists(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        since=_FIXED_NOW,
+    )
+    assert result is True
+    sql = conn.fetchrow.await_args.args[0]
+    assert "opened_at >= $3" in sql
+    assert "status = 'open'" in sql
+    assert "LIMIT 1" in sql
+
+
+async def test_select_recent_open_trade_exists_returns_false_when_no_row() -> None:
+    """No matching trade → False (not None)."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    result = await select_recent_open_trade_exists(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        since=_FIXED_NOW,
+    )
+    assert result is False

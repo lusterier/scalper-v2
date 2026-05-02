@@ -44,6 +44,17 @@ def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     return Settings()  # type: ignore[call-arg]
 
 
+@pytest.fixture(autouse=True)
+def _patch_reconcile_on_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-221 — default no-op reconcile so existing app_factory tests don't need
+    full adapter.get_positions wiring. Tests verifying reconcile must override.
+    """
+    monkeypatch.setattr(
+        "services.execution.app.main.reconcile_on_startup",
+        AsyncMock(return_value=None),
+    )
+
+
 @pytest.fixture
 def mock_pool() -> MagicMock:
     """asyncpg.Pool stand-in.
@@ -54,8 +65,15 @@ def mock_pool() -> MagicMock:
     pool = MagicMock()
     pool.close = AsyncMock()
 
+    fake_conn = MagicMock()
+    # T-221 reconcile_on_startup acquires a connection and calls
+    # select_position_states_for_bots → conn.fetch. Default to empty rows so
+    # tests that don't touch reconcile aren't burdened with extra patches.
+    fake_conn.fetch = AsyncMock(return_value=[])
+    fake_conn.fetchrow = AsyncMock(return_value=None)
+
     cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=MagicMock())
+    cm.__aenter__ = AsyncMock(return_value=fake_conn)
     cm.__aexit__ = AsyncMock(return_value=None)
     pool.acquire = MagicMock(return_value=cm)
     return pool

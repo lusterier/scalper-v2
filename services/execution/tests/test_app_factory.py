@@ -16,6 +16,7 @@ Verifies that:
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from fastapi.testclient import TestClient
@@ -761,3 +762,74 @@ def test_lifespan_shutdown_calls_scheduler_shutdown_wait_true_before_adapter_clo
         f"ADR-0007 D6 violation: scheduler.shutdown must precede adapter.close; "
         f"got call_log={call_log}"
     )
+
+
+def test_lifespan_invokes_reconcile_on_startup_before_dispatchers(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-221 — reconcile_on_startup must run BEFORE any dispatcher_task is created.
+
+    Verified via call_log order: reconcile.call recorded before any
+    asyncio.create_task that names a 'dispatcher_*' task.
+    """
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    call_log: list[str] = []
+
+    async def _reconcile(**_kwargs: Any) -> None:
+        call_log.append("reconcile_on_startup")
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _MagicMock(_sub_account="alpha-sub", close=_AsyncMock())}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    real_create_task = asyncio.create_task
+
+    def _create_task_proxy(coro: Any, *, name: str = "") -> Any:
+        if name.startswith("dispatcher_"):
+            call_log.append(f"create_task:{name}")
+        return real_create_task(coro, name=name)
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.reconcile_on_startup",
+        _reconcile,
+    )
+    monkeypatch.setattr(asyncio, "create_task", _create_task_proxy)  # type: ignore[attr-defined]
+
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+
+    assert "reconcile_on_startup" in call_log
+    reconcile_idx = call_log.index("reconcile_on_startup")
+    dispatcher_idxs = [
+        i for i, entry in enumerate(call_log) if entry.startswith("create_task:dispatcher_")
+    ]
+    if dispatcher_idxs:
+        assert reconcile_idx < min(dispatcher_idxs), (
+            f"reconcile_on_startup must precede dispatcher tasks; got call_log={call_log}"
+        )

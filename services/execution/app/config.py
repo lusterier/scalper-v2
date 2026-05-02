@@ -104,3 +104,6 @@ class Settings(BaseSettings):
     execution_audit_tick_interval_seconds: int = 300
     execution_audit_window_seconds: int = 10800
     execution_audit_divergence_threshold_usd: Decimal = Decimal("0.50")
+
+    # T-221 — post-restart reconciliation race-window (H-026 spec literal 60s).
+    execution_reconcile_race_window_seconds: int = 60
