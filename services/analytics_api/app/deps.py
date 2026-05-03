@@ -2,19 +2,21 @@
 
 Providers read from :attr:`fastapi.Request.app.state`, where the
 lifespan in :mod:`services.analytics_api.app.main` attaches the
-asyncpg pool and NATS client. Mirrors the strategy-engine DI shape
-(T-309), itself a mirror of execution-service (T-214) — single
-composition root, no module globals.
+asyncpg pool, NATS client, and (T-401b) `now_fn` callable. Mirrors
+the strategy-engine DI shape (T-309), itself a mirror of execution-
+service (T-214) — single composition root, no module globals.
 
 Starlette's ``app.state`` exposes attributes as ``Any``; each provider
 narrows to the expected type via :func:`typing.cast`. Runtime behaviour
 is unchanged — the cast is purely for mypy ``warn_return_any``
 compliance.
 
-T-400 ships 4 providers: ``get_pool``, ``get_bus``, ``get_settings``,
-``get_logger_dep``. Future endpoint tasks (T-401..T-408) add their own
-providers as request handlers need them (e.g. ``get_query_runner``,
-``get_sse_broker``).
+T-400 shipped 4 providers: ``get_pool``, ``get_bus``, ``get_settings``,
+``get_logger_dep``. T-401b adds ``get_now_fn`` — first canonical
+FastAPI deps ``now_fn`` provider in the repo (other services plumb it
+as constructor argument; T-401b establishes the FastAPI deps pattern
+for analytics-api endpoints needing audit-row timestamps). T-405+
+reuse via import.
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ from typing import TYPE_CHECKING, cast
 from fastapi import Request  # noqa: TC002
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from datetime import datetime
+
     import asyncpg
     from structlog.stdlib import BoundLogger
 
@@ -36,6 +41,7 @@ if TYPE_CHECKING:
 __all__ = [
     "get_bus",
     "get_logger_dep",
+    "get_now_fn",
     "get_pool",
     "get_settings",
 ]
@@ -59,3 +65,12 @@ def get_settings(request: Request) -> Settings:
 def get_logger_dep(request: Request) -> BoundLogger:
     """Return the system-stream :class:`BoundLogger` attached in lifespan."""
     return cast("BoundLogger", request.app.state.logger)
+
+
+def get_now_fn(request: Request) -> Callable[[], datetime]:
+    """Return the ``now_fn`` callable attached to ``app.state`` in lifespan.
+
+    Tests monkey-patch ``client.app.state.now_fn`` to a fixed-time lambda
+    for deterministic timestamps in audit_events writes (T-401b WG#7).
+    """
+    return cast("Callable[[], datetime]", request.app.state.now_fn)

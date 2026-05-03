@@ -22,11 +22,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from packages.core.types import BotStatus, ExchangeMode
+from packages.core import is_non_idempotent
+from packages.core.types import BotStatus, ExchangeMode, ExchangeSource
 from packages.db.queries.analytics import (
     BotDetailRow,
+    SymbolMapRow,
+    delete_symbol_map_entry,
+    insert_symbol_map_entry,
     select_all_bots,
+    select_all_symbol_map_entries,
     select_bot_by_id,
+    select_symbol_map_entry,
+    update_symbol_map_entry,
 )
 
 _T_CREATED = datetime(2026, 4, 20, 0, 0, 0, tzinfo=UTC)
@@ -166,3 +173,180 @@ async def test_select_all_bots_raises_on_unknown_exchange_mode_enum() -> None:
     )
     with pytest.raises(ValueError, match="garbage_mode"):
         await select_all_bots(conn)
+
+
+# ---------------------------------------------------------------------------
+# T-401b — symbol_map CRUD tests
+# ---------------------------------------------------------------------------
+
+_T_SM_CREATED = datetime(2026, 4, 20, 0, 0, 0, tzinfo=UTC)
+_T_SM_UPDATED = datetime(2026, 5, 3, 12, 0, 0, tzinfo=UTC)
+
+
+def _make_sm_row(
+    *,
+    input_symbol: str = "BTCUSDT.P",
+    canonical_symbol: str = "BTCUSDT",
+    exchange_source: str = "binance",
+    notes: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "input_symbol": input_symbol,
+        "canonical_symbol": canonical_symbol,
+        "exchange_source": exchange_source,
+        "notes": notes,
+        "created_at": _T_SM_CREATED,
+        "updated_at": _T_SM_UPDATED,
+    }
+
+
+async def test_select_all_symbol_map_entries_returns_typed_list() -> None:
+    """Two rows → list of 2 SymbolMapRow with exchange_source narrowed."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _make_sm_row(input_symbol="BTCUSDT.P", exchange_source="binance"),
+            _make_sm_row(input_symbol="ETHUSDT.P", exchange_source="bybit"),
+        ]
+    )
+    rows = await select_all_symbol_map_entries(conn)
+    assert len(rows) == 2
+    assert all(isinstance(r, SymbolMapRow) for r in rows)
+    assert rows[0].exchange_source is ExchangeSource.BINANCE
+    assert rows[1].exchange_source is ExchangeSource.BYBIT
+
+
+async def test_select_all_symbol_map_entries_returns_empty_list() -> None:
+    """Empty fetch → empty list."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    rows = await select_all_symbol_map_entries(conn)
+    assert rows == []
+
+
+async def test_select_all_symbol_map_entries_query_orders_by_input_symbol() -> None:
+    """SQL contains ``ORDER BY input_symbol`` per analytics.py contract."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_all_symbol_map_entries(conn)
+    assert "ORDER BY input_symbol" in captured[0]
+
+
+async def test_select_symbol_map_entry_returns_row_on_hit() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_sm_row())
+    row = await select_symbol_map_entry(conn, "BTCUSDT.P")
+    assert row is not None
+    assert isinstance(row, SymbolMapRow)
+    assert row.input_symbol == "BTCUSDT.P"
+
+
+async def test_select_symbol_map_entry_returns_none_on_miss() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    row = await select_symbol_map_entry(conn, "MISSING.P")
+    assert row is None
+
+
+async def test_insert_symbol_map_entry_returns_inserted_row() -> None:
+    """RETURNING * roundtrip: inserted row materialised as SymbolMapRow."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value=_make_sm_row(
+            input_symbol="LTCUSDT.P",
+            canonical_symbol="LTCUSDT",
+            notes="example",
+        )
+    )
+    row = await insert_symbol_map_entry(
+        conn,
+        input_symbol="LTCUSDT.P",
+        canonical_symbol="LTCUSDT",
+        exchange_source="binance",
+        notes="example",
+        created_at=_T_SM_CREATED,
+        updated_at=_T_SM_CREATED,
+    )
+    assert isinstance(row, SymbolMapRow)
+    assert row.input_symbol == "LTCUSDT.P"
+    assert row.notes == "example"
+
+
+def test_insert_symbol_map_entry_marker_is_non_idempotent() -> None:
+    assert is_non_idempotent(insert_symbol_map_entry)
+    assert insert_symbol_map_entry.__non_idempotent__ is True  # type: ignore[attr-defined]
+
+
+async def test_update_symbol_map_entry_returns_updated_row_when_pk_exists() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value=_make_sm_row(
+            input_symbol="BTCUSDT.P",
+            canonical_symbol="BTCUSDT_NEW",
+        )
+    )
+    row = await update_symbol_map_entry(
+        conn,
+        input_symbol="BTCUSDT.P",
+        canonical_symbol="BTCUSDT_NEW",
+        exchange_source="bybit",
+        notes=None,
+        updated_at=_T_SM_UPDATED,
+    )
+    assert row is not None
+    assert row.canonical_symbol == "BTCUSDT_NEW"
+
+
+async def test_update_symbol_map_entry_returns_none_when_pk_missing() -> None:
+    """0 rows affected → returns None (caller returns 404)."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    row = await update_symbol_map_entry(
+        conn,
+        input_symbol="MISSING.P",
+        canonical_symbol="X",
+        exchange_source="custom",
+        notes=None,
+        updated_at=_T_SM_UPDATED,
+    )
+    assert row is None
+
+
+def test_update_symbol_map_entry_marker_is_non_idempotent() -> None:
+    assert is_non_idempotent(update_symbol_map_entry)
+    assert update_symbol_map_entry.__non_idempotent__ is True  # type: ignore[attr-defined]
+
+
+async def test_delete_symbol_map_entry_returns_true_when_deleted() -> None:
+    conn = MagicMock()
+    conn.execute = AsyncMock(return_value="DELETE 1")
+    deleted = await delete_symbol_map_entry(conn, "BTCUSDT.P")
+    assert deleted is True
+
+
+async def test_delete_symbol_map_entry_returns_false_when_not_found() -> None:
+    conn = MagicMock()
+    conn.execute = AsyncMock(return_value="DELETE 0")
+    deleted = await delete_symbol_map_entry(conn, "MISSING.P")
+    assert deleted is False
+
+
+def test_delete_symbol_map_entry_marker_is_non_idempotent() -> None:
+    assert is_non_idempotent(delete_symbol_map_entry)
+    assert delete_symbol_map_entry.__non_idempotent__ is True  # type: ignore[attr-defined]
+
+
+async def test_select_symbol_map_raises_on_unknown_exchange_source() -> None:
+    """Unknown exchange_source value → ExchangeSource(...) raises ValueError."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[_make_sm_row(exchange_source="garbage_source")],
+    )
+    with pytest.raises(ValueError, match="garbage_source"):
+        await select_all_symbol_map_entries(conn)

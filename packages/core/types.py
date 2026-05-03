@@ -16,6 +16,7 @@ __all__ = [
     "BotStatus",
     "CorrelationId",
     "ExchangeMode",
+    "ExchangeSource",
     "Symbol",
     "TraceId",
 ]
@@ -54,3 +55,15 @@ class ExchangeMode(StrEnum):
     LIVE = "live"
     TESTNET = "testnet"
     PAPER = "paper"
+
+
+class ExchangeSource(StrEnum):
+    """Origin of a symbol_map alias (§7.2 symbol_map DDL).
+
+    `binance` for TradingView-side aliases like `BTCUSDT.P`; `bybit` for
+    Bybit-canonical inputs; `custom` for operator-defined entries.
+    """
+
+    BINANCE = "binance"
+    BYBIT = "bybit"
+    CUSTOM = "custom"

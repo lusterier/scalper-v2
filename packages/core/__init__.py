@@ -23,6 +23,7 @@ from .types import (
     BotStatus,
     CorrelationId,
     ExchangeMode,
+    ExchangeSource,
     Symbol,
     TraceId,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "BotStatus",
     "CorrelationId",
     "ExchangeMode",
+    "ExchangeSource",
     "ScalperError",
     "Symbol",
     "TraceId",

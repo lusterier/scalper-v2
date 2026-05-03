@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
@@ -61,6 +62,7 @@ from packages.observability import (
 from .config import Settings
 from .health import router as health_router
 from .routers.bots import router as bots_router
+from .routers.symbol_map import router as symbol_map_router
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -117,6 +119,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 3. State attach.
         app.state.pool = pool
         app.state.bus = bus
+        # T-401b — now_fn injection point for audit-row timestamps;
+        # tests monkey-patch via `client.app.state.now_fn = lambda: FIXED_NOW`.
+        app.state.now_fn = lambda: datetime.now(UTC)
 
         logger.info(
             "service_started",
@@ -138,5 +143,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(bots_router)
+    app.include_router(symbol_map_router)
     app.mount("/metrics", make_metrics_asgi_app(registry_metrics))
     return app
