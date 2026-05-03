@@ -17,6 +17,8 @@ __all__ = [
     "CorrelationId",
     "ExchangeMode",
     "ExchangeSource",
+    "IngestionStatus",
+    "ScoringDecision",
     "Symbol",
     "TraceId",
     "TradeStatus",
@@ -81,3 +83,29 @@ class TradeStatus(StrEnum):
     OPEN = "open"
     CLOSED = "closed"
     ERROR = "error"
+
+
+class IngestionStatus(StrEnum):
+    """signals.ingestion_status enum (§7.2:890).
+
+    `validated` for clean inbound signals; `duplicate` for idempotency-key
+    repeats; `invalid` for schema/HMAC failures (signal-gateway records
+    them anyway for audit per §9.1).
+    """
+
+    VALIDATED = "validated"
+    DUPLICATE = "duplicate"
+    INVALID = "invalid"
+
+
+class ScoringDecision(StrEnum):
+    """scoring_evaluations.decision enum (§7.2:1046).
+
+    `execute` → strategy-engine emits OrderRequest; `reject` → discarded
+    with audit row; `passthrough` → bot in shadow/observe mode emits
+    no order but records the would-be evaluation.
+    """
+
+    EXECUTE = "execute"
+    REJECT = "reject"
+    PASSTHROUGH = "passthrough"

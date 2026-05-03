@@ -25,17 +25,24 @@ import pytest
 
 from packages.core import is_non_idempotent
 from packages.core.types import (
+    Action,
     BotStatus,
     ExchangeMode,
     ExchangeSource,
+    IngestionStatus,
+    ScoringDecision,
     TradeStatus,
 )
 from packages.db.queries.analytics import (
     BotDetailRow,
     OpenPositionRow,
+    ScoringEvaluationRow,
+    SignalRow,
     SymbolMapRow,
     TradeRow,
+    _build_signals_where_clause,
     _build_trades_where_clause,
+    count_signals,
     count_trades,
     delete_symbol_map_entry,
     insert_symbol_map_entry,
@@ -43,6 +50,9 @@ from packages.db.queries.analytics import (
     select_all_symbol_map_entries,
     select_bot_by_id,
     select_open_positions,
+    select_scoring_evaluations_by_signal_id,
+    select_signal_by_id,
+    select_signals_paginated,
     select_symbol_map_entry,
     select_trade_by_id,
     select_trades_paginated,
@@ -790,3 +800,357 @@ async def test_select_trades_unknown_status_raises_value_error() -> None:
     conn.fetchrow = AsyncMock(return_value=_make_trade_row(status_value="garbage"))
     with pytest.raises(ValueError, match="garbage"):
         await select_trade_by_id(conn, 1)
+
+
+# ---------------------------------------------------------------------------
+# T-403 — /api/signals/* + /api/scoring/* read endpoint queries
+# ---------------------------------------------------------------------------
+
+_T_RECEIVED = datetime(2026, 5, 1, 10, 0, 0, tzinfo=UTC)
+_T_EVAL = datetime(2026, 5, 1, 10, 0, 1, tzinfo=UTC)
+
+
+def _make_signal_row(
+    *,
+    signal_id: int = 1,
+    source: str = "tv_rsi_div_v3",
+    symbol: str = "BTCUSDT",
+    action_value: str = "LONG",
+    ingestion_status_value: str = "validated",
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": signal_id,
+        "received_at": _T_RECEIVED,
+        "schema_version": "1",
+        "source": source,
+        "idempotency_key": f"key-{signal_id}",
+        "symbol": symbol,
+        "original_symbol": f"{symbol}.P",
+        "action": action_value,
+        "payload": payload if payload is not None else {"price": "50000"},
+        "ingestion_status": ingestion_status_value,
+        "correlation_id": f"cid-{signal_id}",
+    }
+
+
+def _make_scoring_row(
+    *,
+    eval_id: int = 1,
+    bot_id: str = "alpha",
+    signal_id: int = 1,
+    decision_value: str = "execute",
+    rule_results: list[dict[str, Any]] | None = None,
+    feature_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": eval_id,
+        "bot_id": bot_id,
+        "signal_id": signal_id,
+        "evaluated_at": _T_EVAL,
+        "trigger_threshold": 1.0,
+        "total_score": 1.5,
+        "decision": decision_value,
+        "config_version": 1,
+        "rule_results": rule_results
+        if rule_results is not None
+        else [
+            {"name": "r1", "weight": 1.0, "applied_weight": 1.0, "result": "True", "error": None},
+        ],
+        "feature_snapshot": feature_snapshot
+        if feature_snapshot is not None
+        else {
+            "ind.btcusdt.15m.ema_20": "50000",
+        },
+        "correlation_id": f"cid-{signal_id}",
+    }
+
+
+# ---- _build_signals_where_clause ----
+
+
+def test_build_signals_where_returns_empty_when_all_filters_none() -> None:
+    where, args = _build_signals_where_clause(
+        source=None,
+        symbol=None,
+        action=None,
+        ingestion_status=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert where == ""
+    assert args == []
+
+
+def test_build_signals_where_combines_all_6_filters_via_AND() -> None:
+    where, args = _build_signals_where_clause(
+        source="tv_rsi_div_v3",
+        symbol="BTCUSDT",
+        action=Action.LONG,
+        ingestion_status=IngestionStatus.VALIDATED,
+        from_at=_T_RECEIVED,
+        to_at=_T_EVAL,
+    )
+    assert where == (
+        "WHERE source = $1 AND symbol = $2 AND action = $3 "
+        "AND ingestion_status = $4 AND received_at >= $5 AND received_at < $6"
+    )
+    assert args == [
+        "tv_rsi_div_v3",
+        "BTCUSDT",
+        "LONG",
+        "validated",
+        _T_RECEIVED,
+        _T_EVAL,
+    ]
+
+
+def test_build_signals_where_filters_received_at_range() -> None:
+    """from_at/to_at filter on received_at column (NOT closed_at like trades)."""
+    where, _args = _build_signals_where_clause(
+        source=None,
+        symbol=None,
+        action=None,
+        ingestion_status=None,
+        from_at=_T_RECEIVED,
+        to_at=_T_EVAL,
+    )
+    assert "received_at >= $1" in where
+    assert "received_at < $2" in where
+    assert "closed_at" not in where
+
+
+# ---- select_signals_paginated ----
+
+
+async def test_select_signals_paginated_returns_typed_list() -> None:
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _make_signal_row(signal_id=1, action_value="LONG"),
+            _make_signal_row(signal_id=2, action_value="SHORT"),
+        ]
+    )
+    rows = await select_signals_paginated(
+        conn,
+        source=None,
+        symbol=None,
+        action=None,
+        ingestion_status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert len(rows) == 2
+    assert all(isinstance(r, SignalRow) for r in rows)
+    assert rows[0].action is Action.LONG
+    assert rows[1].action is Action.SHORT
+    assert rows[0].ingestion_status is IngestionStatus.VALIDATED
+
+
+async def test_select_signals_paginated_orders_by_received_at_desc() -> None:
+    """ORDER BY received_at DESC, id DESC per analytics.py contract (WG#6)."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_signals_paginated(
+        conn,
+        source=None,
+        symbol=None,
+        action=None,
+        ingestion_status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert "ORDER BY received_at DESC, id DESC" in captured[0]
+
+
+async def test_select_signals_paginated_uses_parameterized_placeholders() -> None:
+    """WG#3 — `$N` placeholders only, never f-string interpolation of values."""
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured_args.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_signals_paginated(
+        conn,
+        source="tv_rsi_div_v3",
+        symbol="BTCUSDT",
+        action=Action.LONG,
+        ingestion_status=IngestionStatus.VALIDATED,
+        from_at=_T_RECEIVED,
+        to_at=_T_EVAL,
+        limit=10,
+        offset=20,
+    )
+    sql, *bind_args = captured_args[0]
+    assert "tv_rsi_div_v3" not in sql
+    assert "BTCUSDT" not in sql
+    assert "$1" in sql
+    assert "$8" in sql  # 6 filters + limit + offset
+    assert bind_args == [
+        "tv_rsi_div_v3",
+        "BTCUSDT",
+        "LONG",
+        "validated",
+        _T_RECEIVED,
+        _T_EVAL,
+        10,
+        20,
+    ]
+
+
+# ---- count_signals ----
+
+
+async def test_count_signals_returns_int_matching_filters() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"n": 7})
+    n = await count_signals(
+        conn,
+        source="tv_rsi_div_v3",
+        symbol=None,
+        action=None,
+        ingestion_status=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert n == 7
+
+
+async def test_count_signals_uses_same_where_clause_as_select_signals_paginated() -> None:
+    """WG#3 — both helpers route through `_build_signals_where_clause`."""
+    conn = MagicMock()
+    captured_select: list[str] = []
+    captured_count: list[str] = []
+
+    async def _capture_fetch(sql: str, *_args: Any) -> list[Any]:
+        captured_select.append(sql)
+        return []
+
+    async def _capture_fetchrow(sql: str, *_args: Any) -> dict[str, int]:
+        captured_count.append(sql)
+        return {"n": 0}
+
+    conn.fetch = _capture_fetch
+    conn.fetchrow = _capture_fetchrow
+    common: dict[str, Any] = {
+        "source": "tv_rsi_div_v3",
+        "symbol": "BTCUSDT",
+        "action": Action.LONG,
+        "ingestion_status": IngestionStatus.VALIDATED,
+        "from_at": _T_RECEIVED,
+        "to_at": _T_EVAL,
+    }
+    await select_signals_paginated(conn, **common, limit=50, offset=0)
+    await count_signals(conn, **common)
+    where = (
+        "WHERE source = $1 AND symbol = $2 AND action = $3 "
+        "AND ingestion_status = $4 AND received_at >= $5 AND received_at < $6"
+    )
+    assert where in captured_select[0]
+    assert where in captured_count[0]
+
+
+# ---- select_signal_by_id ----
+
+
+async def test_select_signal_by_id_returns_row_on_hit() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_signal_row(signal_id=42))
+    row = await select_signal_by_id(conn, 42)
+    assert row is not None
+    assert isinstance(row, SignalRow)
+    assert row.id == 42
+
+
+async def test_select_signal_by_id_returns_none_on_miss() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    row = await select_signal_by_id(conn, 999)
+    assert row is None
+
+
+async def test_signal_action_narrowing_raises_on_unknown_enum() -> None:
+    """Defensive: unknown action raises ValueError at row narrowing."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_signal_row(action_value="GARBAGE"))
+    with pytest.raises(ValueError, match="GARBAGE"):
+        await select_signal_by_id(conn, 1)
+
+
+async def test_signal_ingestion_status_narrowing_raises_on_unknown_enum() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value=_make_signal_row(ingestion_status_value="garbage_status")
+    )
+    with pytest.raises(ValueError, match="garbage_status"):
+        await select_signal_by_id(conn, 1)
+
+
+# ---- select_scoring_evaluations_by_signal_id ----
+
+
+async def test_select_scoring_evaluations_by_signal_id_returns_typed_list() -> None:
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _make_scoring_row(eval_id=1, bot_id="alpha", decision_value="execute"),
+            _make_scoring_row(eval_id=2, bot_id="beta", decision_value="passthrough"),
+        ]
+    )
+    rows = await select_scoring_evaluations_by_signal_id(conn, 1)
+    assert len(rows) == 2
+    assert all(isinstance(r, ScoringEvaluationRow) for r in rows)
+    assert rows[0].decision is ScoringDecision.EXECUTE
+    assert rows[1].decision is ScoringDecision.PASSTHROUGH
+
+
+async def test_select_scoring_evaluations_by_signal_id_returns_empty_list() -> None:
+    """Empty list (NOT None) when no evaluations for signal."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    rows = await select_scoring_evaluations_by_signal_id(conn, 999)
+    assert rows == []
+
+
+async def test_select_scoring_evaluations_orders_by_bot_id_asc() -> None:
+    """SQL contains ORDER BY bot_id ASC for deterministic UI ordering."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_scoring_evaluations_by_signal_id(conn, 1)
+    assert "ORDER BY bot_id ASC" in captured[0]
+
+
+async def test_scoring_decision_narrowing_raises_on_unknown_enum() -> None:
+    """Defensive: unknown decision raises ValueError."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[_make_scoring_row(decision_value="garbage_decision")])
+    with pytest.raises(ValueError, match="garbage_decision"):
+        await select_scoring_evaluations_by_signal_id(conn, 1)
+
+
+async def test_scoring_evaluation_double_precision_fields_stay_as_float() -> None:
+    """trigger_threshold + total_score are float (DOUBLE PRECISION domain)."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[_make_scoring_row()])
+    rows = await select_scoring_evaluations_by_signal_id(conn, 1)
+    assert isinstance(rows[0].trigger_threshold, float)
+    assert isinstance(rows[0].total_score, float)

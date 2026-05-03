@@ -16,6 +16,12 @@ T-402 extends: ``OpenPositionRow`` + ``TradeRow`` + 4 read functions
 `/api/trades/*` dashboard endpoints. Dynamic SQL filter builder
 ``_build_trades_where_clause`` constructs WHERE clause via ``$N``
 placeholders only (NEVER string interpolation per L-008 + §5.10).
+T-403 extends: ``SignalRow`` + ``ScoringEvaluationRow`` + 4 read
+functions (``select_signals_paginated`` + ``count_signals`` +
+``select_signal_by_id`` + ``select_scoring_evaluations_by_signal_id``)
+for `/api/signals/*` + `/api/scoring/*` dashboard endpoints. Mirror
+T-402 dynamic builder pattern via ``_build_signals_where_clause``
+(6 filters; `$N` placeholders only).
 
 ``BotStatus`` / ``ExchangeMode`` / ``ExchangeSource`` / ``TradeStatus``
 enum narrowing uses canonical :mod:`packages.core.types` StrEnums; the
@@ -33,9 +39,12 @@ from typing import TYPE_CHECKING, Any
 
 from packages.core import non_idempotent
 from packages.core.types import (
+    Action,
     BotStatus,
     ExchangeMode,
     ExchangeSource,
+    IngestionStatus,
+    ScoringDecision,
     TradeStatus,
 )
 
@@ -51,8 +60,11 @@ if TYPE_CHECKING:
 __all__ = [
     "BotDetailRow",
     "OpenPositionRow",
+    "ScoringEvaluationRow",
+    "SignalRow",
     "SymbolMapRow",
     "TradeRow",
+    "count_signals",
     "count_trades",
     "delete_symbol_map_entry",
     "insert_symbol_map_entry",
@@ -60,6 +72,9 @@ __all__ = [
     "select_all_symbol_map_entries",
     "select_bot_by_id",
     "select_open_positions",
+    "select_scoring_evaluations_by_signal_id",
+    "select_signal_by_id",
+    "select_signals_paginated",
     "select_symbol_map_entry",
     "select_trade_by_id",
     "select_trades_paginated",
@@ -570,3 +585,246 @@ async def select_trade_by_id(
     """Return one ``trades`` row by PK; ``None`` if not found."""
     row = await conn.fetchrow(_SELECT_TRADE_BY_ID_SQL, trade_id)
     return _row_to_trade(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
+# T-403 — /api/signals/* + /api/scoring/* read endpoints (§7.2:880-1055, §9.6:1625-1626)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SignalRow:
+    """Full projection of ``signals`` row (12 fields per §7.2:880-893)."""
+
+    id: int
+    received_at: datetime
+    schema_version: str
+    source: str
+    idempotency_key: str
+    symbol: str
+    original_symbol: str | None
+    action: Action
+    payload: dict[str, Any]
+    ingestion_status: IngestionStatus
+    correlation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringEvaluationRow:
+    """Full projection of ``scoring_evaluations`` row (11 fields per §7.2:1039-1051).
+
+    DOUBLE PRECISION fields (``trigger_threshold`` / ``total_score``) stay
+    as ``float`` per §5.13 — statistical metrics, not money.
+    """
+
+    id: int
+    bot_id: str
+    signal_id: int
+    evaluated_at: datetime
+    trigger_threshold: float
+    total_score: float
+    decision: ScoringDecision
+    config_version: int
+    rule_results: list[dict[str, Any]]
+    feature_snapshot: dict[str, Any]
+    correlation_id: str
+
+
+_SIGNALS_BASE_COLUMNS = (
+    "id, received_at, schema_version, source, idempotency_key, symbol, "
+    "original_symbol, action, payload, ingestion_status, correlation_id"
+)
+
+_SELECT_SIGNAL_BY_ID_SQL = f"SELECT {_SIGNALS_BASE_COLUMNS} FROM signals WHERE id = $1"  # noqa: S608  # nosec B608
+
+_SELECT_SCORING_BY_SIGNAL_ID_SQL = """
+    SELECT id, bot_id, signal_id, evaluated_at, trigger_threshold,
+           total_score, decision, config_version, rule_results,
+           feature_snapshot, correlation_id
+    FROM scoring_evaluations
+    WHERE signal_id = $1
+    ORDER BY bot_id ASC
+"""
+
+
+def _row_to_signal(row: asyncpg.Record) -> SignalRow:
+    payload = row["payload"]
+    return SignalRow(
+        id=int(row["id"]),
+        received_at=row["received_at"],
+        schema_version=str(row["schema_version"]),
+        source=str(row["source"]),
+        idempotency_key=str(row["idempotency_key"]),
+        symbol=str(row["symbol"]),
+        original_symbol=(
+            str(row["original_symbol"]) if row["original_symbol"] is not None else None
+        ),
+        action=Action(str(row["action"])),
+        payload=payload if isinstance(payload, dict) else {},
+        ingestion_status=IngestionStatus(str(row["ingestion_status"])),
+        correlation_id=str(row["correlation_id"]),
+    )
+
+
+def _row_to_scoring_evaluation(row: asyncpg.Record) -> ScoringEvaluationRow:
+    rule_results = row["rule_results"]
+    feature_snapshot = row["feature_snapshot"]
+    return ScoringEvaluationRow(
+        id=int(row["id"]),
+        bot_id=str(row["bot_id"]),
+        signal_id=int(row["signal_id"]),
+        evaluated_at=row["evaluated_at"],
+        trigger_threshold=float(row["trigger_threshold"]),
+        total_score=float(row["total_score"]),
+        decision=ScoringDecision(str(row["decision"])),
+        config_version=int(row["config_version"]),
+        rule_results=rule_results if isinstance(rule_results, list) else [],
+        feature_snapshot=feature_snapshot if isinstance(feature_snapshot, dict) else {},
+        correlation_id=str(row["correlation_id"]),
+    )
+
+
+def _build_signals_where_clause(
+    *,
+    source: str | None,
+    symbol: str | None,
+    action: Action | None,
+    ingestion_status: IngestionStatus | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> tuple[str, list[Any]]:
+    """Compose dynamic WHERE clause + bind args for signals queries.
+
+    Mirror :func:`_build_trades_where_clause` shape — `$N` placeholders
+    only (never string interpolation per L-008 + §5.10). 6 filter slots
+    (no `bot_id` — signals lack bot_id column). `from_at`/`to_at`
+    filter on `received_at` column (NOT `closed_at` like trades).
+
+    Returns ``("", [])`` when all filters are None (no WHERE clause).
+    """
+    predicates: list[str] = []
+    bind_args: list[Any] = []
+    if source is not None:
+        bind_args.append(source)
+        predicates.append(f"source = ${len(bind_args)}")
+    if symbol is not None:
+        bind_args.append(symbol)
+        predicates.append(f"symbol = ${len(bind_args)}")
+    if action is not None:
+        bind_args.append(str(action))
+        predicates.append(f"action = ${len(bind_args)}")
+    if ingestion_status is not None:
+        bind_args.append(str(ingestion_status))
+        predicates.append(f"ingestion_status = ${len(bind_args)}")
+    if from_at is not None:
+        bind_args.append(from_at)
+        predicates.append(f"received_at >= ${len(bind_args)}")
+    if to_at is not None:
+        bind_args.append(to_at)
+        predicates.append(f"received_at < ${len(bind_args)}")
+    if not predicates:
+        return ("", [])
+    return ("WHERE " + " AND ".join(predicates), bind_args)
+
+
+async def select_signals_paginated(
+    conn: _DbExecutor,
+    *,
+    source: str | None,
+    symbol: str | None,
+    action: Action | None,
+    ingestion_status: IngestionStatus | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+    limit: int,
+    offset: int,
+) -> list[SignalRow]:
+    """Return one page of signals with optional filters.
+
+    ORDER BY ``received_at DESC, id DESC`` for "most recent first"
+    deterministic pagination (signals.received_at is NOT NULL so no
+    NULLS FIRST needed). `received_at >= from_at AND received_at < to_at`
+    range filter (NOT closed_at like trades — signals have no close
+    semantics).
+    """
+    where_clause, where_args = _build_signals_where_clause(
+        source=source,
+        symbol=symbol,
+        action=action,
+        ingestion_status=ingestion_status,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    limit_placeholder = f"${len(where_args) + 1}"
+    offset_placeholder = f"${len(where_args) + 2}"
+    sql = (
+        f"SELECT {_SIGNALS_BASE_COLUMNS} FROM signals "  # noqa: S608  # nosec B608
+        f"{where_clause} "
+        "ORDER BY received_at DESC, id DESC "
+        f"LIMIT {limit_placeholder} OFFSET {offset_placeholder}"
+    )
+    rows = await conn.fetch(sql, *where_args, limit, offset)
+    return [_row_to_signal(row) for row in rows]
+
+
+async def count_signals(
+    conn: _DbExecutor,
+    *,
+    source: str | None,
+    symbol: str | None,
+    action: Action | None,
+    ingestion_status: IngestionStatus | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> int:
+    """Return total count of signals matching same filters as :func:`select_signals_paginated`.
+
+    Routes through :func:`_build_signals_where_clause` (no drift between
+    count and page query).
+    """
+    where_clause, where_args = _build_signals_where_clause(
+        source=source,
+        symbol=symbol,
+        action=action,
+        ingestion_status=ingestion_status,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    sql = f"SELECT COUNT(*) AS n FROM signals {where_clause}"  # noqa: S608  # nosec B608
+    row = await conn.fetchrow(sql, *where_args)
+    if row is None:
+        return 0
+    return int(row["n"])
+
+
+async def select_signal_by_id(
+    conn: _DbExecutor,
+    signal_id: int,
+) -> SignalRow | None:
+    """Return one signals row by id; ``None`` if missing.
+
+    NOTE: Hypertable PK is composite ``(received_at, id)`` — lookup by
+    id alone has no chunk pruning predicate, so it walks every chunk.
+    At MVP scale (10k-100k signals/month, 7-day chunks) acceptable;
+    F5+ may add a ``signals_id`` btree index if perf bottleneck surfaces.
+    """
+    row = await conn.fetchrow(_SELECT_SIGNAL_BY_ID_SQL, signal_id)
+    return _row_to_signal(row) if row is not None else None
+
+
+async def select_scoring_evaluations_by_signal_id(
+    conn: _DbExecutor,
+    signal_id: int,
+) -> list[ScoringEvaluationRow]:
+    """Return all scoring evaluations for one ``signal_id`` (one per bot).
+
+    NOTE: ``se_bot_signal (bot_id, signal_id)`` index per §7.2:1054 has
+    ``bot_id`` as leading column — PostgreSQL CANNOT efficiently use
+    this index for ``WHERE signal_id = $1`` (signal_id is non-leading).
+    This query walks every chunk of the hypertable, same as
+    :func:`select_signal_by_id`. At MVP scale acceptable; F5+ may add a
+    separate ``se_signal (signal_id)`` index if perf bottleneck surfaces.
+    ORDER BY ``bot_id ASC`` for deterministic UI ordering.
+    """
+    rows = await conn.fetch(_SELECT_SCORING_BY_SIGNAL_ID_SQL, signal_id)
+    return [_row_to_scoring_evaluation(row) for row in rows]
