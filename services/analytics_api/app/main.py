@@ -61,7 +61,9 @@ from packages.observability import (
 
 from .config import Settings
 from .health import router as health_router
+from .routers.audit import router as audit_router
 from .routers.bots import router as bots_router
+from .routers.configs import router as configs_router
 from .routers.features import router as features_router
 from .routers.positions import router as positions_router
 from .routers.scoring import router as scoring_router
@@ -154,5 +156,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(signals_router)
     app.include_router(scoring_router)
     app.include_router(features_router)
+    app.include_router(configs_router)
+    app.include_router(audit_router)
     app.mount("/metrics", make_metrics_asgi_app(registry_metrics))
     return app

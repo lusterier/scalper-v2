@@ -10,6 +10,7 @@ dependencies = [
     "scalper-v2-core",
     "scalper-v2-db",
     "scalper-v2-observability",
+    "scalper-v2-scoring",
     "uvicorn[standard]==0.45.0",
     "uvloop==0.22.1",
 ]
@@ -19,6 +20,7 @@ scalper-v2-bus = { workspace = true }
 scalper-v2-core = { workspace = true }
 scalper-v2-db = { workspace = true }
 scalper-v2-observability = { workspace = true }
+scalper-v2-scoring = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -33,6 +33,16 @@ per §7.2:914. Mirror T-403 dynamic builder pattern via
 distinct from ``feature_engine.LatestFeatureRow`` 4-field flat
 projection that resolver consumes for scoring (different ownership
 per T-401a precedent).
+T-405 extends: ``BotConfigRow`` + 7 functions
+(``select_bot_config_current`` + ``select_bot_config_versions`` +
+``count_bot_config_versions`` + ``select_bot_config_by_version`` +
+``select_max_bot_config_version`` + ``insert_bot_config`` +
+``update_bot_config_applied``) for `/api/configs/*` endpoints, plus
+3 audit-reader functions (``select_audit_events_paginated`` +
+``count_audit_events`` + ``select_audit_event_by_id``) for
+`/api/audit/*`. Audit reader uses :class:`packages.db.queries.audit.AuditEventRow`
+(T-401a). Dynamic helper ``_build_audit_where_clause`` mirror
+T-402/T-403/T-404 pattern.
 
 ``BotStatus`` / ``ExchangeMode`` / ``ExchangeSource`` / ``TradeStatus``
 enum narrowing uses canonical :mod:`packages.core.types` StrEnums; the
@@ -69,6 +79,7 @@ if TYPE_CHECKING:
     type _DbExecutor = asyncpg.Connection[asyncpg.Record] | PoolConnectionProxy[asyncpg.Record]
 
 __all__ = [
+    "BotConfigRow",
     "BotDetailRow",
     "FeatureRow",
     "OpenPositionRow",
@@ -76,17 +87,26 @@ __all__ = [
     "SignalRow",
     "SymbolMapRow",
     "TradeRow",
+    "count_audit_events",
+    "count_bot_config_versions",
     "count_features_history",
     "count_latest_features",
     "count_signals",
     "count_trades",
     "delete_symbol_map_entry",
+    "insert_bot_config",
     "insert_symbol_map_entry",
     "select_all_bots",
     "select_all_symbol_map_entries",
+    "select_audit_event_by_id",
+    "select_audit_events_paginated",
     "select_bot_by_id",
+    "select_bot_config_by_version",
+    "select_bot_config_current",
+    "select_bot_config_versions",
     "select_features_history",
     "select_latest_features",
+    "select_max_bot_config_version",
     "select_open_positions",
     "select_scoring_evaluations_by_signal_id",
     "select_signal_by_id",
@@ -94,6 +114,7 @@ __all__ = [
     "select_symbol_map_entry",
     "select_trade_by_id",
     "select_trades_paginated",
+    "update_bot_config_applied",
     "update_symbol_map_entry",
 ]
 
@@ -1066,3 +1087,367 @@ async def count_features_history(
     if row is None:
         return 0
     return int(row["n"])
+
+
+# ---------------------------------------------------------------------------
+# T-405 — /api/configs/* + /api/audit/* endpoints (§7.2:861-874 + §7.2:1108-1126)
+# ---------------------------------------------------------------------------
+
+from packages.db.queries.audit import (  # noqa: E402 — re-used by audit reader, T-405 inline import for module structure
+    AuditEventRow,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BotConfigRow:
+    """Full projection of ``bot_configs`` row (8 fields per §7.2:864-874)."""
+
+    id: int
+    bot_id: str
+    version: int
+    applied_at: datetime
+    applied_by: str
+    config_yaml: str
+    config_hash: str
+    notes: str | None
+
+
+_SELECT_BOT_CONFIG_CURRENT_SQL = """
+    SELECT id, bot_id, version, applied_at, applied_by,
+           config_yaml, config_hash, notes
+    FROM bot_configs
+    WHERE bot_id = $1
+    ORDER BY version DESC
+    LIMIT 1
+"""
+
+_SELECT_BOT_CONFIG_VERSIONS_SQL = """
+    SELECT id, bot_id, version, applied_at, applied_by,
+           config_yaml, config_hash, notes
+    FROM bot_configs
+    WHERE bot_id = $1
+    ORDER BY version DESC
+    LIMIT $2 OFFSET $3
+"""
+
+_COUNT_BOT_CONFIG_VERSIONS_SQL = """
+    SELECT COUNT(*) AS n FROM bot_configs WHERE bot_id = $1
+"""
+
+_SELECT_BOT_CONFIG_BY_VERSION_SQL = """
+    SELECT id, bot_id, version, applied_at, applied_by,
+           config_yaml, config_hash, notes
+    FROM bot_configs
+    WHERE bot_id = $1 AND version = $2
+"""
+
+_SELECT_MAX_BOT_CONFIG_VERSION_SQL = """
+    SELECT COALESCE(MAX(version), 0) AS max_version
+    FROM bot_configs
+    WHERE bot_id = $1
+"""
+
+_INSERT_BOT_CONFIG_SQL = """
+    INSERT INTO bot_configs (bot_id, version, applied_at, applied_by,
+                              config_yaml, config_hash, notes)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    RETURNING id, bot_id, version, applied_at, applied_by,
+              config_yaml, config_hash, notes
+"""
+
+_UPDATE_BOT_CONFIG_APPLIED_SQL = """
+    UPDATE bots
+    SET config_hash = $2, config_applied_at = $3
+    WHERE bot_id = $1
+"""
+
+
+def _row_to_bot_config(row: asyncpg.Record) -> BotConfigRow:
+    return BotConfigRow(
+        id=int(row["id"]),
+        bot_id=str(row["bot_id"]),
+        version=int(row["version"]),
+        applied_at=row["applied_at"],
+        applied_by=str(row["applied_by"]),
+        config_yaml=str(row["config_yaml"]),
+        config_hash=str(row["config_hash"]),
+        notes=str(row["notes"]) if row["notes"] is not None else None,
+    )
+
+
+async def select_bot_config_current(
+    conn: _DbExecutor,
+    bot_id: str,
+) -> BotConfigRow | None:
+    """Return the latest bot_config row for ``bot_id``; ``None`` if no versions yet."""
+    row = await conn.fetchrow(_SELECT_BOT_CONFIG_CURRENT_SQL, bot_id)
+    return _row_to_bot_config(row) if row is not None else None
+
+
+async def select_bot_config_versions(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    limit: int,
+    offset: int,
+) -> list[BotConfigRow]:
+    """Return paginated bot_config history for ``bot_id``; ORDER BY version DESC."""
+    rows = await conn.fetch(_SELECT_BOT_CONFIG_VERSIONS_SQL, bot_id, limit, offset)
+    return [_row_to_bot_config(row) for row in rows]
+
+
+async def count_bot_config_versions(conn: _DbExecutor, bot_id: str) -> int:
+    """Total count of bot_config versions for ``bot_id`` (pagination total)."""
+    row = await conn.fetchrow(_COUNT_BOT_CONFIG_VERSIONS_SQL, bot_id)
+    if row is None:
+        return 0
+    return int(row["n"])
+
+
+async def select_bot_config_by_version(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    version: int,
+) -> BotConfigRow | None:
+    """Return one bot_config row by ``(bot_id, version)``; ``None`` if missing."""
+    row = await conn.fetchrow(_SELECT_BOT_CONFIG_BY_VERSION_SQL, bot_id, version)
+    return _row_to_bot_config(row) if row is not None else None
+
+
+async def select_max_bot_config_version(
+    conn: _DbExecutor,
+    bot_id: str,
+) -> int:
+    """Return the current max version for ``bot_id``; ``0`` when no versions exist.
+
+    Caller computes ``next_version = max + 1`` inside the same tx as
+    ``insert_bot_config`` per T-405 WG#3 race policy (race detected via
+    UniqueViolation on (bot_id, version), NOT prevented).
+    """
+    row = await conn.fetchrow(_SELECT_MAX_BOT_CONFIG_VERSION_SQL, bot_id)
+    if row is None:
+        return 0
+    return int(row["max_version"])
+
+
+@non_idempotent
+async def insert_bot_config(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    version: int,
+    applied_at: datetime,
+    applied_by: str,
+    config_yaml: str,
+    config_hash: str,
+    notes: str | None,
+) -> BotConfigRow:
+    """INSERT new bot_configs row + return it.
+
+    Marked ``@non_idempotent`` per §N3. Raises
+    :class:`asyncpg.UniqueViolationError` on duplicate ``(bot_id, version)``
+    (concurrent apply race per WG#3) — caller (router) catches and
+    returns 409 Conflict.
+    """
+    row = await conn.fetchrow(
+        _INSERT_BOT_CONFIG_SQL,
+        bot_id,
+        version,
+        applied_at,
+        applied_by,
+        config_yaml,
+        config_hash,
+        notes,
+    )
+    if row is None:
+        msg = "INSERT ... RETURNING produced no row"
+        raise RuntimeError(msg)
+    return _row_to_bot_config(row)
+
+
+@non_idempotent
+async def update_bot_config_applied(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    config_hash: str,
+    config_applied_at: datetime,
+) -> bool:
+    """UPDATE ``bots`` SET ``config_hash`` + ``config_applied_at``; return True if 1 row affected.
+
+    Marked ``@non_idempotent`` per §N3. False return → caller (router)
+    raises ``RuntimeError`` to trigger tx rollback per WG#9 (bot row
+    missing during apply — race or FK gap).
+    """
+    status = await conn.execute(
+        _UPDATE_BOT_CONFIG_APPLIED_SQL,
+        bot_id,
+        config_hash,
+        config_applied_at,
+    )
+    return status.endswith(" 1")
+
+
+# ---------------------------------------------------------------------------
+# audit reader (T-401a's audit_events table; T-405 ships paginated reader)
+# ---------------------------------------------------------------------------
+
+
+_AUDIT_BASE_COLUMNS = (
+    "id, occurred_at, actor, action, entity_type, entity_id, "
+    "before_state, after_state, correlation_id, meta"
+)
+
+_SELECT_AUDIT_BY_PK_SQL = (
+    f"SELECT {_AUDIT_BASE_COLUMNS}"  # noqa: S608  # nosec B608
+    " FROM audit_events WHERE occurred_at = $1 AND id = $2"
+)
+
+
+def _row_to_audit_event(row: asyncpg.Record) -> AuditEventRow:
+    before = row["before_state"]
+    after = row["after_state"]
+    meta = row["meta"]
+    return AuditEventRow(
+        id=int(row["id"]),
+        occurred_at=row["occurred_at"],
+        actor=str(row["actor"]),
+        action=str(row["action"]),
+        entity_type=str(row["entity_type"]),
+        entity_id=str(row["entity_id"]),
+        before_state=before if isinstance(before, dict) else None,
+        after_state=after if isinstance(after, dict) else None,
+        correlation_id=(str(row["correlation_id"]) if row["correlation_id"] is not None else None),
+        meta=meta if isinstance(meta, dict) else {},
+    )
+
+
+def _build_audit_where_clause(
+    *,
+    entity_type: str | None,
+    entity_id: str | None,
+    actor: str | None,
+    action_prefix: str | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> tuple[str, list[Any]]:
+    """Compose dynamic WHERE clause for audit_events queries.
+
+    Mirror T-402/T-403/T-404 dynamic builder pattern — `$N` placeholders
+    only (NEVER string interpolation per L-008 + §5.10). 6 filter slots.
+    ``action_prefix`` does ``LIKE $N`` with caller-supplied raw prefix
+    appended ``%`` server-side (mirror T-404 select_latest_features
+    LIKE pattern).
+
+    Returns ``("", [])`` when all filters None.
+    """
+    predicates: list[str] = []
+    bind_args: list[Any] = []
+    if entity_type is not None:
+        bind_args.append(entity_type)
+        predicates.append(f"entity_type = ${len(bind_args)}")
+    if entity_id is not None:
+        bind_args.append(entity_id)
+        predicates.append(f"entity_id = ${len(bind_args)}")
+    if actor is not None:
+        bind_args.append(actor)
+        predicates.append(f"actor = ${len(bind_args)}")
+    if action_prefix is not None:
+        bind_args.append(f"{action_prefix}%")
+        predicates.append(f"action LIKE ${len(bind_args)}")
+    if from_at is not None:
+        bind_args.append(from_at)
+        predicates.append(f"occurred_at >= ${len(bind_args)}")
+    if to_at is not None:
+        bind_args.append(to_at)
+        predicates.append(f"occurred_at < ${len(bind_args)}")
+    if not predicates:
+        return ("", [])
+    return ("WHERE " + " AND ".join(predicates), bind_args)
+
+
+async def select_audit_events_paginated(
+    conn: _DbExecutor,
+    *,
+    entity_type: str | None,
+    entity_id: str | None,
+    actor: str | None,
+    action_prefix: str | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+    limit: int,
+    offset: int,
+) -> list[AuditEventRow]:
+    """Return one page of audit_events with optional filters.
+
+    ORDER BY ``occurred_at DESC, id DESC`` so most-recent first per
+    audit-log-viewer convention. ``from_at`` inclusive, ``to_at``
+    exclusive (half-open interval mirror T-402/T-403/T-404).
+    """
+    where_clause, where_args = _build_audit_where_clause(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        actor=actor,
+        action_prefix=action_prefix,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    limit_placeholder = f"${len(where_args) + 1}"
+    offset_placeholder = f"${len(where_args) + 2}"
+    sql = (
+        f"SELECT {_AUDIT_BASE_COLUMNS} FROM audit_events "  # noqa: S608  # nosec B608
+        f"{where_clause} "
+        "ORDER BY occurred_at DESC, id DESC "
+        f"LIMIT {limit_placeholder} OFFSET {offset_placeholder}"
+    )
+    rows = await conn.fetch(sql, *where_args, limit, offset)
+    return [_row_to_audit_event(row) for row in rows]
+
+
+async def count_audit_events(
+    conn: _DbExecutor,
+    *,
+    entity_type: str | None,
+    entity_id: str | None,
+    actor: str | None,
+    action_prefix: str | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> int:
+    """Total count of audit_events matching same filters as :func:`select_audit_events_paginated`.
+
+    Routes through :func:`_build_audit_where_clause` (no drift between
+    count and page query).
+    """
+    where_clause, where_args = _build_audit_where_clause(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        actor=actor,
+        action_prefix=action_prefix,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    sql = f"SELECT COUNT(*) AS n FROM audit_events {where_clause}"  # noqa: S608  # nosec B608
+    row = await conn.fetchrow(sql, *where_args)
+    if row is None:
+        return 0
+    return int(row["n"])
+
+
+async def select_audit_event_by_id(
+    conn: _DbExecutor,
+    *,
+    occurred_at: datetime,
+    event_id: int,
+) -> AuditEventRow | None:
+    """Return one audit_event row by composite PK ``(occurred_at, id)``; ``None`` if missing.
+
+    ``occurred_at`` is REQUIRED for hypertable chunk pruning per WG#5
+    (audit_events 30-day-chunk hypertable; UI always has occurred_at
+    from list response → no UX cost; F5+ retention growth makes chunk-
+    pruning structurally correct). Distinct from T-403 select_signal_by_id
+    walks-every-chunk pattern.
+    """
+    row = await conn.fetchrow(_SELECT_AUDIT_BY_PK_SQL, occurred_at, event_id)
+    return _row_to_audit_event(row) if row is not None else None

@@ -34,6 +34,7 @@ from packages.core.types import (
     TradeStatus,
 )
 from packages.db.queries.analytics import (
+    BotConfigRow,
     BotDetailRow,
     FeatureRow,
     OpenPositionRow,
@@ -41,20 +42,30 @@ from packages.db.queries.analytics import (
     SignalRow,
     SymbolMapRow,
     TradeRow,
+    _build_audit_where_clause,
     _build_features_history_where_clause,
     _build_signals_where_clause,
     _build_trades_where_clause,
+    count_audit_events,
+    count_bot_config_versions,
     count_features_history,
     count_latest_features,
     count_signals,
     count_trades,
     delete_symbol_map_entry,
+    insert_bot_config,
     insert_symbol_map_entry,
     select_all_bots,
     select_all_symbol_map_entries,
+    select_audit_event_by_id,
+    select_audit_events_paginated,
     select_bot_by_id,
+    select_bot_config_by_version,
+    select_bot_config_current,
+    select_bot_config_versions,
     select_features_history,
     select_latest_features,
+    select_max_bot_config_version,
     select_open_positions,
     select_scoring_evaluations_by_signal_id,
     select_signal_by_id,
@@ -62,6 +73,7 @@ from packages.db.queries.analytics import (
     select_symbol_map_entry,
     select_trade_by_id,
     select_trades_paginated,
+    update_bot_config_applied,
     update_symbol_map_entry,
 )
 
@@ -1478,3 +1490,344 @@ async def test_feature_value_polymorphism_3_columns_preserved() -> None:
     assert isinstance(rows[2].value_json, dict)
     assert rows[3].value_json == [1, 2, 3]
     assert isinstance(rows[3].value_json, list)
+
+
+# ---------------------------------------------------------------------------
+# T-405 — /api/configs/* + /api/audit/* read+write endpoint queries
+# ---------------------------------------------------------------------------
+
+_T_BC_APPLIED = datetime(2026, 5, 3, 12, 0, 0, tzinfo=UTC)
+_T_AUDIT_EVT = datetime(2026, 5, 3, 12, 0, 1, tzinfo=UTC)
+
+
+def _make_bc_row(
+    *,
+    config_id: int = 1,
+    bot_id: str = "alpha",
+    version: int = 1,
+    applied_by: str = "operator",
+    notes: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": config_id,
+        "bot_id": bot_id,
+        "version": version,
+        "applied_at": _T_BC_APPLIED,
+        "applied_by": applied_by,
+        "config_yaml": "bot_id: alpha\n",
+        "config_hash": "deadbeef" * 8,
+        "notes": notes,
+    }
+
+
+def _make_audit_row(
+    *,
+    event_id: int = 1,
+    actor: str = "lan:127.0.0.1",
+    action: str = "symbol_map.create",
+    entity_type: str = "symbol_map",
+    entity_id: str = "BTCUSDT.P",
+    before_state: dict[str, Any] | None = None,
+    after_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": event_id,
+        "occurred_at": _T_AUDIT_EVT,
+        "actor": actor,
+        "action": action,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "before_state": before_state,
+        "after_state": after_state,
+        "correlation_id": f"cid-{event_id}",
+        "meta": {},
+    }
+
+
+# ---- bot_config read helpers ----
+
+
+async def test_select_bot_config_current_returns_latest_version() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_bc_row(version=3))
+    row = await select_bot_config_current(conn, "alpha")
+    assert row is not None
+    assert isinstance(row, BotConfigRow)
+    assert row.version == 3
+
+
+async def test_select_bot_config_current_returns_none_when_no_versions() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    row = await select_bot_config_current(conn, "missing")
+    assert row is None
+
+
+async def test_select_bot_config_versions_orders_by_version_desc() -> None:
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_bot_config_versions(conn, bot_id="alpha", limit=50, offset=0)
+    assert "ORDER BY version DESC" in captured[0]
+
+
+async def test_select_bot_config_versions_paginated() -> None:
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[_make_bc_row(version=3), _make_bc_row(version=2)],
+    )
+    rows = await select_bot_config_versions(
+        conn,
+        bot_id="alpha",
+        limit=10,
+        offset=0,
+    )
+    assert len(rows) == 2
+    assert all(isinstance(r, BotConfigRow) for r in rows)
+
+
+async def test_count_bot_config_versions_returns_int() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"n": 5})
+    n = await count_bot_config_versions(conn, "alpha")
+    assert n == 5
+
+
+async def test_select_bot_config_by_version_hit() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_bc_row(version=2))
+    row = await select_bot_config_by_version(conn, bot_id="alpha", version=2)
+    assert row is not None
+    assert row.version == 2
+
+
+async def test_select_bot_config_by_version_miss() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    row = await select_bot_config_by_version(conn, bot_id="alpha", version=99)
+    assert row is None
+
+
+async def test_select_max_bot_config_version_returns_zero_when_no_versions() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"max_version": 0})
+    n = await select_max_bot_config_version(conn, "alpha")
+    assert n == 0
+
+
+async def test_select_max_bot_config_version_returns_max_int() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"max_version": 7})
+    n = await select_max_bot_config_version(conn, "alpha")
+    assert n == 7
+
+
+# ---- bot_config write helpers ----
+
+
+async def test_insert_bot_config_returns_inserted_row() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_bc_row(version=4))
+    row = await insert_bot_config(
+        conn,
+        bot_id="alpha",
+        version=4,
+        applied_at=_T_BC_APPLIED,
+        applied_by="operator",
+        config_yaml="bot_id: alpha\n",
+        config_hash="deadbeef" * 8,
+        notes="manual apply",
+    )
+    assert isinstance(row, BotConfigRow)
+    assert row.version == 4
+
+
+def test_insert_bot_config_marker_is_non_idempotent() -> None:
+    """WG#2 + §N3 — apply path is non-idempotent."""
+    assert is_non_idempotent(insert_bot_config)
+    assert insert_bot_config.__non_idempotent__ is True  # type: ignore[attr-defined]
+
+
+async def test_update_bot_config_applied_returns_true_on_match() -> None:
+    conn = MagicMock()
+    conn.execute = AsyncMock(return_value="UPDATE 1")
+    ok = await update_bot_config_applied(
+        conn,
+        bot_id="alpha",
+        config_hash="deadbeef" * 8,
+        config_applied_at=_T_BC_APPLIED,
+    )
+    assert ok is True
+
+
+async def test_update_bot_config_applied_returns_false_on_no_match() -> None:
+    conn = MagicMock()
+    conn.execute = AsyncMock(return_value="UPDATE 0")
+    ok = await update_bot_config_applied(
+        conn,
+        bot_id="missing",
+        config_hash="x",
+        config_applied_at=_T_BC_APPLIED,
+    )
+    assert ok is False
+
+
+def test_update_bot_config_applied_marker_is_non_idempotent() -> None:
+    assert is_non_idempotent(update_bot_config_applied)
+    assert update_bot_config_applied.__non_idempotent__ is True  # type: ignore[attr-defined]
+
+
+# ---- audit reader ----
+
+
+async def test_select_audit_events_paginated_returns_typed_list() -> None:
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _make_audit_row(event_id=1, action="symbol_map.create"),
+            _make_audit_row(event_id=2, action="bot_config.apply", entity_type="bot_config"),
+        ]
+    )
+    rows = await select_audit_events_paginated(
+        conn,
+        entity_type=None,
+        entity_id=None,
+        actor=None,
+        action_prefix=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert len(rows) == 2
+    # Returned via AuditEventRow (T-401a re-export)
+    assert rows[0].action == "symbol_map.create"
+    assert rows[1].action == "bot_config.apply"
+
+
+async def test_select_audit_events_orders_by_occurred_at_desc() -> None:
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_audit_events_paginated(
+        conn,
+        entity_type=None,
+        entity_id=None,
+        actor=None,
+        action_prefix=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert "ORDER BY occurred_at DESC" in captured[0]
+
+
+def test_build_audit_where_clause_action_prefix_appends_percent_for_LIKE() -> None:
+    """WG#5 mirror T-404 — `bot_config.` → `bot_config.%` LIKE bind."""
+    where, args = _build_audit_where_clause(
+        entity_type=None,
+        entity_id=None,
+        actor=None,
+        action_prefix="bot_config.",
+        from_at=None,
+        to_at=None,
+    )
+    assert where == "WHERE action LIKE $1"
+    assert args == ["bot_config.%"]
+
+
+def test_build_audit_where_clause_combines_all_6_filters_via_AND() -> None:
+    where, args = _build_audit_where_clause(
+        entity_type="symbol_map",
+        entity_id="BTCUSDT.P",
+        actor="lan:127.0.0.1",
+        action_prefix="symbol_map.",
+        from_at=_T_BC_APPLIED,
+        to_at=_T_AUDIT_EVT,
+    )
+    assert where == (
+        "WHERE entity_type = $1 AND entity_id = $2 AND actor = $3 "
+        "AND action LIKE $4 AND occurred_at >= $5 AND occurred_at < $6"
+    )
+    assert args == [
+        "symbol_map",
+        "BTCUSDT.P",
+        "lan:127.0.0.1",
+        "symbol_map.%",
+        _T_BC_APPLIED,
+        _T_AUDIT_EVT,
+    ]
+
+
+async def test_count_audit_events_uses_same_where_as_paginated() -> None:
+    """Both helpers route through `_build_audit_where_clause` (no drift)."""
+    conn = MagicMock()
+    captured_select: list[str] = []
+    captured_count: list[str] = []
+
+    async def _fetch(sql: str, *_args: Any) -> list[Any]:
+        captured_select.append(sql)
+        return []
+
+    async def _fetchrow(sql: str, *_args: Any) -> dict[str, int]:
+        captured_count.append(sql)
+        return {"n": 0}
+
+    conn.fetch = _fetch
+    conn.fetchrow = _fetchrow
+    common: dict[str, Any] = {
+        "entity_type": "symbol_map",
+        "entity_id": None,
+        "actor": None,
+        "action_prefix": None,
+        "from_at": None,
+        "to_at": None,
+    }
+    await select_audit_events_paginated(conn, **common, limit=50, offset=0)
+    await count_audit_events(conn, **common)
+    assert "WHERE entity_type = $1" in captured_select[0]
+    assert "WHERE entity_type = $1" in captured_count[0]
+
+
+async def test_select_audit_event_by_id_requires_composite_pk() -> None:
+    """WG#5 — composite PK lookup uses both occurred_at + id bind args."""
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> dict[str, Any] | None:
+        captured_args.append((sql, *args))
+        return _make_audit_row(event_id=42)
+
+    conn.fetchrow = _capture
+    row = await select_audit_event_by_id(
+        conn,
+        occurred_at=_T_AUDIT_EVT,
+        event_id=42,
+    )
+    assert row is not None
+    assert row.id == 42
+    sql, *bind_args = captured_args[0]
+    assert "WHERE occurred_at = $1 AND id = $2" in sql
+    assert bind_args == [_T_AUDIT_EVT, 42]
+
+
+async def test_select_audit_event_by_id_returns_none_on_miss() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    row = await select_audit_event_by_id(
+        conn,
+        occurred_at=_T_AUDIT_EVT,
+        event_id=999,
+    )
+    assert row is None

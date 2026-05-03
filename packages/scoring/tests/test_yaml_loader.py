@@ -27,7 +27,11 @@ from packages.scoring.conditions import (
     WhenThenElseCondition,
 )
 from packages.scoring.tests.fixtures.foo_plugin import FooRule
-from packages.scoring.yaml_loader import load_bot_config, parse_condition
+from packages.scoring.yaml_loader import (
+    load_bot_config,
+    load_bot_config_from_string,
+    parse_condition,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -781,3 +785,62 @@ scoring:
 """
     with pytest.raises(ValueError, match=r"weight must be a number; got True"):
         load_bot_config(_write_yaml(tmp_path, yaml_text))
+
+
+# ---------------------------------------------------------------------------
+# T-405 — load_bot_config_from_string refactor (yaml_loader extracted helper)
+# ---------------------------------------------------------------------------
+
+
+def test_load_bot_config_from_string_happy_path() -> None:
+    """Raw YAML text → BotConfig, no path/file involved (T-405 validate consumer)."""
+    yaml_text = (
+        """\
+bot_id: alpha
+trading: { universe: [BTCUSDT] }
+scoring:
+  mode: active
+  trigger_threshold: 0.5
+  rules:
+    - name: r1
+      weight: 1.0
+      condition:
+        type: gt
+        feature: ind.btcusdt.15m.rsi_14
+        value: "70"
+"""
+        + _DEFAULT_EXCHANGE_EXECUTION_YAML
+    )
+    cfg = load_bot_config_from_string(yaml_text)
+    assert cfg.bot_id == "alpha"
+    assert cfg.scoring.mode == "active"
+    assert cfg.scoring.trigger_threshold == 0.5
+    assert len(cfg.scoring.rules) == 1
+
+
+def test_load_bot_config_from_string_raises_value_error_on_non_dict_top_level() -> None:
+    """Top-level YAML must be mapping; list/scalar raises ValueError."""
+    with pytest.raises(ValueError, match="yaml top-level must be a mapping"):
+        load_bot_config_from_string("- just a list\n- not a mapping\n")
+
+
+def test_load_bot_config_delegates_to_from_string(tmp_path: Path) -> None:
+    """Existing path-based load_bot_config remains functional (regression pin)."""
+    yaml_text = (
+        """\
+bot_id: beta
+trading: { universe: [ETHUSDT] }
+scoring:
+  mode: passthrough
+  trigger_threshold: 0.0
+  rules: []
+"""
+        + _DEFAULT_EXCHANGE_EXECUTION_YAML
+    )
+    path = _write_yaml(tmp_path, yaml_text, inject_defaults=False)
+    cfg = load_bot_config(path)
+    assert cfg.bot_id == "beta"
+    # Delegated result identical to direct from-string call.
+    cfg_from_string = load_bot_config_from_string(yaml_text)
+    assert cfg_from_string.bot_id == cfg.bot_id
+    assert cfg_from_string.scoring.mode == cfg.scoring.mode

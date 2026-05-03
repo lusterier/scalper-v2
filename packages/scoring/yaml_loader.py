@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from .protocol import Rule
 
 
-__all__ = ["load_bot_config", "parse_condition"]
+__all__ = ["load_bot_config", "load_bot_config_from_string", "parse_condition"]
 
 
 def parse_condition(
@@ -377,18 +377,25 @@ def _parse_execution(spec: dict[str, Any]) -> ExecutionSection:
     return ExecutionSection(**coerced)
 
 
-def load_bot_config(
-    path: Path,
+def load_bot_config_from_string(
+    yaml_text: str,
     *,
     plugin_registry: Mapping[tuple[str, str], type[Rule]] | None = None,
 ) -> BotConfig:
-    """Parse + validate ``configs/bots/<bot_id>.yaml`` per BRIEF §B.1.
+    """Parse + validate raw YAML text per BRIEF §B.1.
 
-    Returns :class:`BotConfig` with discriminated `ConditionUnion` narrowed
-    via recursive ``parse_condition`` descent.
+    Body extracted from :func:`load_bot_config` per T-405 WG#1 — analytics-api
+    `/api/configs/validate` + `/api/configs/{bot_id}/apply` endpoints accept
+    raw YAML text in JSON request body and need to validate without writing
+    to a temp file. Existing path-based callers (T-309 strategy-engine +
+    T-310b consumer) continue to use :func:`load_bot_config` which delegates
+    here after :meth:`Path.read_text`.
+
+    Returns :class:`BotConfig` with discriminated ``ConditionUnion`` narrowed
+    via recursive ``parse_condition`` descent. Raises :class:`ValueError`
+    on YAML parse failure or schema violation.
     """
-    with path.open() as f:
-        data: Any = yaml.safe_load(f)
+    data: Any = yaml.safe_load(yaml_text)
     if not isinstance(data, dict):
         msg = f"yaml top-level must be a mapping; got {type(data).__name__}"
         raise ValueError(msg)
@@ -412,4 +419,21 @@ def load_bot_config(
         signals=_parse_signals(data.get("signals", {})),
         execution=_parse_execution(data.get("execution", {})),
         scoring=scoring,
+    )
+
+
+def load_bot_config(
+    path: Path,
+    *,
+    plugin_registry: Mapping[tuple[str, str], type[Rule]] | None = None,
+) -> BotConfig:
+    """Parse + validate ``configs/bots/<bot_id>.yaml`` per BRIEF §B.1.
+
+    Public API unchanged for existing callers (T-309 strategy-engine,
+    T-310b consumer); delegates to :func:`load_bot_config_from_string`
+    after :meth:`Path.read_text` per T-405 WG#1 refactor.
+    """
+    return load_bot_config_from_string(
+        path.read_text(),
+        plugin_registry=plugin_registry,
     )
