@@ -36,9 +36,11 @@ if TYPE_CHECKING:
 
     from packages.bus import NatsClient
 
+    from .analytics_cache import AnalyticsCache
     from .config import Settings
 
 __all__ = [
+    "get_analytics_cache",
     "get_bus",
     "get_logger_dep",
     "get_now_fn",
@@ -74,3 +76,12 @@ def get_now_fn(request: Request) -> Callable[[], datetime]:
     for deterministic timestamps in audit_events writes (T-401b WG#7).
     """
     return cast("Callable[[], datetime]", request.app.state.now_fn)
+
+
+def get_analytics_cache(request: Request) -> AnalyticsCache:
+    """Return the :class:`AnalyticsCache` attached to ``app.state`` in lifespan.
+
+    Used by ``/api/analytics/monte-carlo`` endpoint per BRIEF §9.6:1641
+    (5-min in-memory cache for CPU-heavy analytics; T-406).
+    """
+    return cast("AnalyticsCache", request.app.state.analytics_cache)

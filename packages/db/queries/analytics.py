@@ -86,6 +86,7 @@ __all__ = [
     "ScoringEvaluationRow",
     "SignalRow",
     "SymbolMapRow",
+    "TradeRealizedPnlRow",
     "TradeRow",
     "count_audit_events",
     "count_bot_config_versions",
@@ -113,6 +114,7 @@ __all__ = [
     "select_signals_paginated",
     "select_symbol_map_entry",
     "select_trade_by_id",
+    "select_trades_for_analytics",  # T-406
     "select_trades_paginated",
     "update_bot_config_applied",
     "update_symbol_map_entry",
@@ -1451,3 +1453,98 @@ async def select_audit_event_by_id(
     """
     row = await conn.fetchrow(_SELECT_AUDIT_BY_PK_SQL, occurred_at, event_id)
     return _row_to_audit_event(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
+# T-406 — /api/analytics/* aggregates query helper (§9.6:1628 + §14.3:2060)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TradeRealizedPnlRow:
+    """Minimal trades projection for analytics aggregation (3 fields).
+
+    Distinct from T-402 ``TradeRow`` 19-field full projection — analytics
+    aggregates only need ``realized_pnl`` + ``closed_at`` + ``bot_id``.
+    Smaller projection keeps PG round-trip lean for ~1k-100k rows window.
+    Feeds expectancy + heatmap + pnl-series + Monte-Carlo bootstrap.
+    """
+
+    realized_pnl: Decimal
+    closed_at: datetime
+    bot_id: str
+
+
+def _build_analytics_where_clause(
+    *,
+    bot_id: str | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> tuple[str, list[Any]]:
+    """Compose dynamic WHERE clause for analytics queries.
+
+    Mirror T-402/T-403/T-404 pattern — `$N` placeholders only (NEVER
+    string interpolation per L-008 + §5.10). 3 filter slots. Note: the
+    base predicate ``status = 'closed' AND realized_pnl IS NOT NULL`` is
+    inlined at call site (NOT a filter slot — it's the analytics charter
+    invariant per OQ semantics: only closed trades with finalized P&L
+    count for stats).
+
+    Returns ``("AND <predicates>", [bind args])`` when filters present;
+    ``("", [])`` when all filters None (caller appends nothing — base
+    WHERE clause is sufficient).
+    """
+    predicates: list[str] = []
+    bind_args: list[Any] = []
+    if bot_id is not None:
+        bind_args.append(bot_id)
+        predicates.append(f"bot_id = ${len(bind_args)}")
+    if from_at is not None:
+        bind_args.append(from_at)
+        predicates.append(f"closed_at >= ${len(bind_args)}")
+    if to_at is not None:
+        bind_args.append(to_at)
+        predicates.append(f"closed_at < ${len(bind_args)}")
+    if not predicates:
+        return ("", [])
+    return ("AND " + " AND ".join(predicates), bind_args)
+
+
+async def select_trades_for_analytics(
+    conn: _DbExecutor,
+    *,
+    bot_id: str | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> list[TradeRealizedPnlRow]:
+    """Return all closed trades with finalized P&L for the filter window.
+
+    Charter invariant: only ``status = 'closed' AND realized_pnl IS NOT NULL``
+    rows count for analytics (per T-406 OQ semantics + brief §9.6:1628 —
+    expectancy + heatmap + pnl-series + MC operate on closed P&L only).
+
+    ORDER BY ``closed_at`` ASC for deterministic pnl-series + MC bootstrap
+    + heatmap iteration. Limit-less: feeds in-memory aggregation; routers
+    enforce reasonable filter windows via UI ``?from=`` / ``?to=`` defaults
+    (e.g. /api/analytics/pnl-series pre-validates window per WG#7 cap).
+    """
+    where_extra, where_args = _build_analytics_where_clause(
+        bot_id=bot_id,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    sql = (
+        "SELECT realized_pnl, closed_at, bot_id FROM trades "  # noqa: S608  # nosec B608
+        "WHERE status = 'closed' AND realized_pnl IS NOT NULL "
+        f"{where_extra} "
+        "ORDER BY closed_at ASC"
+    )
+    rows = await conn.fetch(sql, *where_args)
+    return [
+        TradeRealizedPnlRow(
+            realized_pnl=row["realized_pnl"],
+            closed_at=row["closed_at"],
+            bot_id=str(row["bot_id"]),
+        )
+        for row in rows
+    ]

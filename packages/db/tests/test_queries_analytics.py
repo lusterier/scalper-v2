@@ -1831,3 +1831,107 @@ async def test_select_audit_event_by_id_returns_none_on_miss() -> None:
         event_id=999,
     )
     assert row is None
+
+
+# ---------------------------------------------------------------------------
+# T-406 — /api/analytics/* query helper (select_trades_for_analytics)
+# ---------------------------------------------------------------------------
+
+from packages.db.queries.analytics import (  # noqa: E402 — T-406 inline import for module structure
+    TradeRealizedPnlRow,
+    _build_analytics_where_clause,
+    select_trades_for_analytics,
+)
+
+_T_ANALYTICS_FROM = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
+_T_ANALYTICS_TO = datetime(2026, 5, 5, 0, 0, tzinfo=UTC)
+
+
+async def test_select_trades_for_analytics_filters_status_closed_and_pnl_not_null() -> None:
+    """SQL contains charter invariant: status='closed' AND realized_pnl IS NOT NULL."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_trades_for_analytics(
+        conn,
+        bot_id=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert "status = 'closed'" in captured[0]
+    assert "realized_pnl IS NOT NULL" in captured[0]
+
+
+async def test_select_trades_for_analytics_orders_by_closed_at_asc() -> None:
+    """Deterministic ordering for pnl-series + MC bootstrap + heatmap iteration."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_trades_for_analytics(
+        conn,
+        bot_id=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert "ORDER BY closed_at ASC" in captured[0]
+
+
+def test_build_analytics_where_clause_combines_3_filters_via_AND() -> None:
+    """Dynamic builder: bot_id + from_at + to_at via $N placeholders + AND join."""
+    where, args = _build_analytics_where_clause(
+        bot_id="alpha",
+        from_at=_T_ANALYTICS_FROM,
+        to_at=_T_ANALYTICS_TO,
+    )
+    assert where == "AND bot_id = $1 AND closed_at >= $2 AND closed_at < $3"
+    assert args == ["alpha", _T_ANALYTICS_FROM, _T_ANALYTICS_TO]
+
+
+def test_build_analytics_where_clause_returns_empty_when_all_none() -> None:
+    """No filters → empty string + empty args (caller's base WHERE clause sufficient)."""
+    where, args = _build_analytics_where_clause(
+        bot_id=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert where == ""
+    assert args == []
+
+
+async def test_select_trades_for_analytics_returns_typed_dataclass_list() -> None:
+    """asyncpg row → TradeRealizedPnlRow narrowing pin."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "realized_pnl": Decimal("12.34"),
+                "closed_at": _T_ANALYTICS_FROM,
+                "bot_id": "alpha",
+            },
+            {
+                "realized_pnl": Decimal("-5.00"),
+                "closed_at": _T_ANALYTICS_TO,
+                "bot_id": "beta",
+            },
+        ]
+    )
+    rows = await select_trades_for_analytics(
+        conn,
+        bot_id=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert len(rows) == 2
+    assert all(isinstance(r, TradeRealizedPnlRow) for r in rows)
+    assert rows[0].realized_pnl == Decimal("12.34")
+    assert rows[1].bot_id == "beta"

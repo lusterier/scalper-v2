@@ -59,8 +59,10 @@ from packages.observability import (
     make_registry,
 )
 
+from .analytics_cache import AnalyticsCache
 from .config import Settings
 from .health import router as health_router
+from .routers.analytics import router as analytics_router
 from .routers.audit import router as audit_router
 from .routers.bots import router as bots_router
 from .routers.configs import router as configs_router
@@ -129,6 +131,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # T-401b — now_fn injection point for audit-row timestamps;
         # tests monkey-patch via `client.app.state.now_fn = lambda: FIXED_NOW`.
         app.state.now_fn = lambda: datetime.now(UTC)
+        # T-406 — in-memory analytics cache (Monte-Carlo only per OQ-2 default A).
+        # Lifespan-owned per process; F4 single-process scope per §3.1.
+        app.state.analytics_cache = AnalyticsCache()
 
         logger.info(
             "service_started",
@@ -158,5 +163,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(features_router)
     app.include_router(configs_router)
     app.include_router(audit_router)
+    app.include_router(analytics_router)
     app.mount("/metrics", make_metrics_asgi_app(registry_metrics))
     return app
