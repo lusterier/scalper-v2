@@ -26,6 +26,7 @@ from .types import (
     ExchangeSource,
     Symbol,
     TraceId,
+    TradeStatus,
 )
 
 __all__ = [
@@ -38,6 +39,7 @@ __all__ = [
     "ScalperError",
     "Symbol",
     "TraceId",
+    "TradeStatus",
     "UnlabeledMethodError",
     "assert_all_methods_labeled",
     "idempotent",

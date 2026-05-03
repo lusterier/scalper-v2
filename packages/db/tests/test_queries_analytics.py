@@ -17,22 +17,35 @@ the public contract:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from packages.core import is_non_idempotent
-from packages.core.types import BotStatus, ExchangeMode, ExchangeSource
+from packages.core.types import (
+    BotStatus,
+    ExchangeMode,
+    ExchangeSource,
+    TradeStatus,
+)
 from packages.db.queries.analytics import (
     BotDetailRow,
+    OpenPositionRow,
     SymbolMapRow,
+    TradeRow,
+    _build_trades_where_clause,
+    count_trades,
     delete_symbol_map_entry,
     insert_symbol_map_entry,
     select_all_bots,
     select_all_symbol_map_entries,
     select_bot_by_id,
+    select_open_positions,
     select_symbol_map_entry,
+    select_trade_by_id,
+    select_trades_paginated,
     update_symbol_map_entry,
 )
 
@@ -350,3 +363,430 @@ async def test_select_symbol_map_raises_on_unknown_exchange_source() -> None:
     )
     with pytest.raises(ValueError, match="garbage_source"):
         await select_all_symbol_map_entries(conn)
+
+
+# ---------------------------------------------------------------------------
+# T-402 — /api/positions/* + /api/trades/* read endpoint queries
+# ---------------------------------------------------------------------------
+
+_T_OPENED = datetime(2026, 5, 1, 10, 0, 0, tzinfo=UTC)
+_T_CLOSED = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
+_T_UPDATED_POS = datetime(2026, 5, 3, 12, 0, 0, tzinfo=UTC)
+
+
+def _make_position_row(
+    *,
+    bot_id: str = "alpha",
+    symbol: str = "BTCUSDT",
+    sl_price: str | None = "45000.0",
+    sl_type: str | None = "protective",
+) -> dict[str, Any]:
+    return {
+        "bot_id": bot_id,
+        "symbol": symbol,
+        "trade_id": 1,
+        "side": "buy",
+        "entry_price": Decimal("50000.123456789012"),
+        "qty": Decimal("0.5"),
+        "remaining_qty": Decimal("0.5"),
+        "sl_price": Decimal(sl_price) if sl_price is not None else None,
+        "tp_price": Decimal("55000.0"),
+        "sl_type": sl_type,
+        "best_price": Decimal("50100.0"),
+        "tp_hit": False,
+        "trailing_active": False,
+        "running_pnl": Decimal("0.0"),
+        "mfe_price": Decimal("50100.0"),
+        "mae_price": Decimal("49900.0"),
+        "updated_at": _T_UPDATED_POS,
+    }
+
+
+def _make_trade_row(
+    *,
+    trade_id: int = 1,
+    bot_id: str = "alpha",
+    symbol: str = "BTCUSDT",
+    status_value: str = "closed",
+    realized_pnl: str | None = "12.34",
+    mfe_pct: float | None = 0.025,
+) -> dict[str, Any]:
+    return {
+        "id": trade_id,
+        "bot_id": bot_id,
+        "signal_id": 42,
+        "open_order_id": 100,
+        "close_order_id": 101 if status_value != "open" else None,
+        "symbol": symbol,
+        "side": "buy",
+        "entry_price": Decimal("50000.0"),
+        "exit_price": Decimal("50500.0") if status_value != "open" else None,
+        "qty": Decimal("0.5"),
+        "notional_usd": Decimal("25000.0000"),
+        "realized_pnl": Decimal(realized_pnl) if realized_pnl is not None else None,
+        "fees_paid": Decimal("0.5000"),
+        "close_reason": "tp" if status_value == "closed" else None,
+        "opened_at": _T_OPENED,
+        "closed_at": _T_CLOSED if status_value != "open" else None,
+        "status": status_value,
+        "mfe_pct": mfe_pct,
+        "mae_pct": -0.005,
+        "confidence_score": 0.75,
+        "meta": {},
+    }
+
+
+# ---- select_open_positions ----
+
+
+async def test_select_open_positions_returns_all_when_bot_id_none() -> None:
+    """Unfiltered → SELECT all + ORDER BY bot_id, symbol."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return [
+            _make_position_row(bot_id="alpha", symbol="BTCUSDT"),
+            _make_position_row(bot_id="beta", symbol="ETHUSDT"),
+        ]
+
+    conn.fetch = _capture
+    rows = await select_open_positions(conn)
+    assert len(rows) == 2
+    assert all(isinstance(r, OpenPositionRow) for r in rows)
+    assert "ORDER BY bot_id, symbol" in captured[0]
+    assert "WHERE" not in captured[0]
+
+
+async def test_select_open_positions_filters_by_bot_id() -> None:
+    """`bot_id='alpha'` → SQL contains `WHERE bot_id = $1`."""
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured_args.append((sql, *args))
+        return [_make_position_row(bot_id="alpha")]
+
+    conn.fetch = _capture
+    rows = await select_open_positions(conn, bot_id="alpha")
+    assert len(rows) == 1
+    assert rows[0].bot_id == "alpha"
+    sql, bind_arg = captured_args[0]
+    assert "WHERE bot_id = $1" in sql
+    assert bind_arg == "alpha"
+
+
+async def test_select_open_positions_returns_empty_list_when_no_rows() -> None:
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    rows = await select_open_positions(conn)
+    assert rows == []
+
+
+async def test_open_position_dataclass_carries_decimal_precision() -> None:
+    """NUMERIC columns round-trip as Decimal — no silent float cast per §N1 / §5.3."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[_make_position_row(sl_price="45000.123456789012")],
+    )
+    rows = await select_open_positions(conn)
+    assert isinstance(rows[0].entry_price, Decimal)
+    assert isinstance(rows[0].sl_price, Decimal)
+    assert rows[0].sl_price == Decimal("45000.123456789012")
+
+
+# ---- _build_trades_where_clause ----
+
+
+def test_build_where_returns_empty_string_when_all_filters_none() -> None:
+    """No filters → `("", [])` (no WHERE clause appended)."""
+    where, args = _build_trades_where_clause(
+        bot_id=None,
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert where == ""
+    assert args == []
+
+
+def test_build_where_combines_all_5_filters_via_AND() -> None:
+    """All 5 filters set → AND-combined WHERE clause + bind args in $N order."""
+    where, args = _build_trades_where_clause(
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        status=TradeStatus.CLOSED,
+        from_at=_T_OPENED,
+        to_at=_T_CLOSED,
+    )
+    assert where == (
+        "WHERE bot_id = $1 AND symbol = $2 AND status = $3 AND closed_at >= $4 AND closed_at < $5"
+    )
+    assert args == ["alpha", "BTCUSDT", "closed", _T_OPENED, _T_CLOSED]
+
+
+def test_build_where_solo_bot_id() -> None:
+    where, args = _build_trades_where_clause(
+        bot_id="alpha",
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert where == "WHERE bot_id = $1"
+    assert args == ["alpha"]
+
+
+def test_build_where_solo_symbol() -> None:
+    where, args = _build_trades_where_clause(
+        bot_id=None,
+        symbol="BTCUSDT",
+        status=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert where == "WHERE symbol = $1"
+    assert args == ["BTCUSDT"]
+
+
+def test_build_where_solo_status() -> None:
+    where, args = _build_trades_where_clause(
+        bot_id=None,
+        symbol=None,
+        status=TradeStatus.OPEN,
+        from_at=None,
+        to_at=None,
+    )
+    assert where == "WHERE status = $1"
+    assert args == ["open"]
+
+
+def test_build_where_solo_from_at() -> None:
+    where, args = _build_trades_where_clause(
+        bot_id=None,
+        symbol=None,
+        status=None,
+        from_at=_T_OPENED,
+        to_at=None,
+    )
+    assert where == "WHERE closed_at >= $1"
+    assert args == [_T_OPENED]
+
+
+def test_build_where_solo_to_at() -> None:
+    where, args = _build_trades_where_clause(
+        bot_id=None,
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=_T_CLOSED,
+    )
+    assert where == "WHERE closed_at < $1"
+    assert args == [_T_CLOSED]
+
+
+# ---- select_trades_paginated ----
+
+
+async def test_select_trades_paginated_uses_parameterized_placeholders() -> None:
+    """WG#2 — SQL must use $N placeholders only, never f-string interpolation of values."""
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured_args.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_trades_paginated(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        status=TradeStatus.CLOSED,
+        from_at=_T_OPENED,
+        to_at=_T_CLOSED,
+        limit=10,
+        offset=20,
+    )
+    sql, *bind_args = captured_args[0]
+    # No interpolated values present in SQL string (those go through $N).
+    assert "alpha" not in sql
+    assert "BTCUSDT" not in sql
+    assert "$1" in sql
+    assert "$5" in sql
+    # limit + offset come last as $6, $7.
+    assert "$6" in sql
+    assert "$7" in sql
+    assert bind_args == ["alpha", "BTCUSDT", "closed", _T_OPENED, _T_CLOSED, 10, 20]
+
+
+async def test_select_trades_paginated_orders_by_closed_at_desc_nulls_first() -> None:
+    """ORDER BY closed_at DESC NULLS FIRST per analytics.py contract."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_trades_paginated(
+        conn,
+        bot_id=None,
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert "ORDER BY closed_at DESC NULLS FIRST" in captured[0]
+
+
+async def test_select_trades_paginated_returns_typed_list() -> None:
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _make_trade_row(trade_id=1, status_value="closed"),
+            _make_trade_row(trade_id=2, status_value="open"),
+        ]
+    )
+    rows = await select_trades_paginated(
+        conn,
+        bot_id=None,
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert len(rows) == 2
+    assert all(isinstance(r, TradeRow) for r in rows)
+    assert rows[0].status is TradeStatus.CLOSED
+    assert rows[1].status is TradeStatus.OPEN
+    assert rows[1].closed_at is None
+    assert rows[1].realized_pnl == Decimal("12.34")
+
+
+async def test_trade_double_precision_fields_stay_as_float() -> None:
+    """mfe_pct / mae_pct / confidence_score are float (DOUBLE PRECISION domain), not Decimal."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[_make_trade_row(mfe_pct=0.025)])
+    rows = await select_trades_paginated(
+        conn,
+        bot_id=None,
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert isinstance(rows[0].mfe_pct, float)
+    assert isinstance(rows[0].mae_pct, float)
+    assert isinstance(rows[0].confidence_score, float)
+
+
+# ---- count_trades ----
+
+
+async def test_count_trades_returns_int_matching_filters() -> None:
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> dict[str, int]:
+        captured_args.append((sql, *args))
+        return {"n": 7}
+
+    conn.fetchrow = _capture
+    n = await count_trades(
+        conn,
+        bot_id="alpha",
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert n == 7
+    sql, bind_arg = captured_args[0]
+    assert "SELECT COUNT(*)" in sql
+    assert "FROM trades" in sql
+    assert "WHERE bot_id = $1" in sql
+    assert bind_arg == "alpha"
+
+
+async def test_count_trades_uses_same_where_clause_as_select_trades_paginated() -> None:
+    """WG#5 — both helpers route through `_build_trades_where_clause` (no drift)."""
+    conn = MagicMock()
+    captured_select: list[str] = []
+    captured_count: list[str] = []
+
+    async def _capture_fetch(sql: str, *_args: Any) -> list[Any]:
+        captured_select.append(sql)
+        return []
+
+    async def _capture_fetchrow(sql: str, *_args: Any) -> dict[str, int]:
+        captured_count.append(sql)
+        return {"n": 0}
+
+    conn.fetch = _capture_fetch
+    conn.fetchrow = _capture_fetchrow
+    common: dict[str, Any] = {
+        "bot_id": "alpha",
+        "symbol": "BTCUSDT",
+        "status": TradeStatus.CLOSED,
+        "from_at": _T_OPENED,
+        "to_at": _T_CLOSED,
+    }
+    await select_trades_paginated(conn, **common, limit=50, offset=0)
+    await count_trades(conn, **common)
+    # Both SQLs share the same WHERE clause shape.
+    where = (
+        "WHERE bot_id = $1 AND symbol = $2 AND status = $3 AND closed_at >= $4 AND closed_at < $5"
+    )
+    assert where in captured_select[0]
+    assert where in captured_count[0]
+
+
+async def test_count_trades_returns_zero_when_no_match() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"n": 0})
+    n = await count_trades(
+        conn,
+        bot_id="missing",
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert n == 0
+
+
+# ---- select_trade_by_id ----
+
+
+async def test_select_trade_by_id_returns_row_on_hit() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_trade_row(trade_id=42))
+    row = await select_trade_by_id(conn, 42)
+    assert row is not None
+    assert isinstance(row, TradeRow)
+    assert row.id == 42
+
+
+async def test_select_trade_by_id_returns_none_on_miss() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    row = await select_trade_by_id(conn, 999)
+    assert row is None
+
+
+async def test_select_trades_unknown_status_raises_value_error() -> None:
+    """TradeStatus(...) raises on unknown enum value (defensive at row narrowing)."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_trade_row(status_value="garbage"))
+    with pytest.raises(ValueError, match="garbage"):
+        await select_trade_by_id(conn, 1)

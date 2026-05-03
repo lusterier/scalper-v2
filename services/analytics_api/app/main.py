@@ -62,7 +62,9 @@ from packages.observability import (
 from .config import Settings
 from .health import router as health_router
 from .routers.bots import router as bots_router
+from .routers.positions import router as positions_router
 from .routers.symbol_map import router as symbol_map_router
+from .routers.trades import router as trades_router
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -144,5 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(bots_router)
     app.include_router(symbol_map_router)
+    app.include_router(positions_router)
+    app.include_router(trades_router)
     app.mount("/metrics", make_metrics_asgi_app(registry_metrics))
     return app

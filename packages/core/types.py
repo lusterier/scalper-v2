@@ -19,6 +19,7 @@ __all__ = [
     "ExchangeSource",
     "Symbol",
     "TraceId",
+    "TradeStatus",
 ]
 
 
@@ -67,3 +68,16 @@ class ExchangeSource(StrEnum):
     BINANCE = "binance"
     BYBIT = "bybit"
     CUSTOM = "custom"
+
+
+class TradeStatus(StrEnum):
+    """Trade lifecycle status (§7.2 trades DDL line 1003).
+
+    `open` while position is in-flight; `closed` after T-219 reconcile
+    finalises realized_pnl; `error` for orphan / partial-failure trades
+    flagged by T-221 reconciliation.
+    """
+
+    OPEN = "open"
+    CLOSED = "closed"
+    ERROR = "error"
