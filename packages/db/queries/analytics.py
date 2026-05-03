@@ -22,6 +22,17 @@ functions (``select_signals_paginated`` + ``count_signals`` +
 for `/api/signals/*` + `/api/scoring/*` dashboard endpoints. Mirror
 T-402 dynamic builder pattern via ``_build_signals_where_clause``
 (6 filters; `$N` placeholders only).
+T-404 extends: ``FeatureRow`` + 4 read functions
+(``select_latest_features`` + ``count_latest_features`` +
+``select_features_history`` + ``count_features_history``) for
+`/api/features/*` dashboard endpoints. DISTINCT ON via
+``features_latest (feature_name, symbol, computed_at DESC)`` index
+per §7.2:914. Mirror T-403 dynamic builder pattern via
+``_build_features_history_where_clause`` (`$N` placeholders only).
+``FeatureRow`` is full 7-field projection for analytics-api endpoints;
+distinct from ``feature_engine.LatestFeatureRow`` 4-field flat
+projection that resolver consumes for scoring (different ownership
+per T-401a precedent).
 
 ``BotStatus`` / ``ExchangeMode`` / ``ExchangeSource`` / ``TradeStatus``
 enum narrowing uses canonical :mod:`packages.core.types` StrEnums; the
@@ -59,11 +70,14 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BotDetailRow",
+    "FeatureRow",
     "OpenPositionRow",
     "ScoringEvaluationRow",
     "SignalRow",
     "SymbolMapRow",
     "TradeRow",
+    "count_features_history",
+    "count_latest_features",
     "count_signals",
     "count_trades",
     "delete_symbol_map_entry",
@@ -71,6 +85,8 @@ __all__ = [
     "select_all_bots",
     "select_all_symbol_map_entries",
     "select_bot_by_id",
+    "select_features_history",
+    "select_latest_features",
     "select_open_positions",
     "select_scoring_evaluations_by_signal_id",
     "select_signal_by_id",
@@ -828,3 +844,225 @@ async def select_scoring_evaluations_by_signal_id(
     """
     rows = await conn.fetch(_SELECT_SCORING_BY_SIGNAL_ID_SQL, signal_id)
     return [_row_to_scoring_evaluation(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# T-404 — /api/features/* read endpoints (§7.2:900-915, §9.6:1627)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureRow:
+    """Full projection of ``features`` row (7 fields per §7.2:903-911).
+
+    DOUBLE PRECISION ``value_num`` → float per §5.13 (statistical, not
+    money). ``value_json`` JSONB column round-trips as dict OR list via
+    T-401a's :func:`services.analytics_api.app.main._register_jsonb_codec`
+    — Pydantic v2 union ``dict | list | None`` preserves shape.
+
+    Distinct from :class:`packages.db.queries.feature_engine.LatestFeatureRow`
+    4-field flat projection that the resolver consumes for scoring.
+    Analytics-api needs the full 7-field projection for the Feature
+    inspector UI (BRIEF §14.3:2065).
+    """
+
+    feature_name: str
+    symbol: str
+    computed_at: datetime
+    value_num: float | None
+    value_bool: bool | None
+    value_json: dict[str, Any] | list[Any] | None
+    source_version: str
+
+
+_FEATURES_BASE_COLUMNS = (
+    "feature_name, symbol, computed_at, value_num, value_bool, value_json, source_version"
+)
+
+_LATEST_FEATURES_NO_FILTER_SQL = """
+    SELECT DISTINCT ON (feature_name, symbol)
+           feature_name, symbol, computed_at, value_num, value_bool,
+           value_json, source_version
+    FROM features
+    ORDER BY feature_name, symbol, computed_at DESC
+    LIMIT $1 OFFSET $2
+"""
+
+_LATEST_FEATURES_WITH_PREFIX_SQL = """
+    SELECT DISTINCT ON (feature_name, symbol)
+           feature_name, symbol, computed_at, value_num, value_bool,
+           value_json, source_version
+    FROM features
+    WHERE feature_name LIKE $1
+    ORDER BY feature_name, symbol, computed_at DESC
+    LIMIT $2 OFFSET $3
+"""
+
+_COUNT_LATEST_FEATURES_NO_FILTER_SQL = """
+    SELECT COUNT(*) AS n FROM (
+        SELECT DISTINCT feature_name, symbol FROM features
+    ) AS t
+"""
+
+_COUNT_LATEST_FEATURES_WITH_PREFIX_SQL = """
+    SELECT COUNT(*) AS n FROM (
+        SELECT DISTINCT feature_name, symbol FROM features WHERE feature_name LIKE $1
+    ) AS t
+"""
+
+
+def _row_to_feature(row: asyncpg.Record) -> FeatureRow:
+    value_json = row["value_json"]
+    if value_json is not None and not isinstance(value_json, (dict, list)):
+        # Defensive: JSONB codec absent → fall back to None so Pydantic
+        # union doesn't choke on raw string.
+        value_json = None
+    return FeatureRow(
+        feature_name=str(row["feature_name"]),
+        symbol=str(row["symbol"]),
+        computed_at=row["computed_at"],
+        value_num=(float(row["value_num"]) if row["value_num"] is not None else None),
+        value_bool=(bool(row["value_bool"]) if row["value_bool"] is not None else None),
+        value_json=value_json,
+        source_version=str(row["source_version"]),
+    )
+
+
+async def select_latest_features(
+    conn: _DbExecutor,
+    *,
+    prefix: str | None,
+    limit: int,
+    offset: int,
+) -> list[FeatureRow]:
+    """Return latest value per (feature_name, symbol), name-prefix filtered.
+
+    Uses ``features_latest (feature_name, symbol, computed_at DESC)``
+    index per §7.2:914 — DISTINCT ON walks the index in column order.
+    Caller passes raw prefix string; helper appends ``%`` server-side
+    for SQL LIKE via parameter binding (NEVER concatenated into SQL).
+    Empty / None prefix → no filter (return all latest pairs).
+
+    NOTE: Pagination is snapshot-deterministic within one query but
+    page contents may shift across calls if new (feature_name, symbol)
+    pairs appear in features. Acceptable for MVP UI scrolling per
+    OQ-3 default; cursor-based pagination deferred to F5+ if perf
+    bottleneck surfaces.
+    """
+    if prefix:
+        rows = await conn.fetch(
+            _LATEST_FEATURES_WITH_PREFIX_SQL,
+            f"{prefix}%",
+            limit,
+            offset,
+        )
+    else:
+        rows = await conn.fetch(_LATEST_FEATURES_NO_FILTER_SQL, limit, offset)
+    return [_row_to_feature(row) for row in rows]
+
+
+async def count_latest_features(
+    conn: _DbExecutor,
+    *,
+    prefix: str | None,
+) -> int:
+    """Total count of distinct (feature_name, symbol) pairs matching prefix."""
+    if prefix:
+        row = await conn.fetchrow(
+            _COUNT_LATEST_FEATURES_WITH_PREFIX_SQL,
+            f"{prefix}%",
+        )
+    else:
+        row = await conn.fetchrow(_COUNT_LATEST_FEATURES_NO_FILTER_SQL)
+    if row is None:
+        return 0
+    return int(row["n"])
+
+
+def _build_features_history_where_clause(
+    *,
+    feature_name: str,
+    symbol: str,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> tuple[str, list[Any]]:
+    """Compose WHERE clause for features-history queries.
+
+    Mandatory predicates: ``feature_name = $1 AND symbol = $2`` (UI
+    always selects one feature/symbol pair). Optional ``computed_at >=``
+    / ``computed_at <`` filters appended as additional `$N` placeholders
+    only (NEVER string interpolation per L-008 + §5.10).
+
+    Returns ``(where_clause, [feature_name, symbol, *optional_args])``.
+    """
+    bind_args: list[Any] = [feature_name, symbol]
+    predicates = ["feature_name = $1", "symbol = $2"]
+    if from_at is not None:
+        bind_args.append(from_at)
+        predicates.append(f"computed_at >= ${len(bind_args)}")
+    if to_at is not None:
+        bind_args.append(to_at)
+        predicates.append(f"computed_at < ${len(bind_args)}")
+    return ("WHERE " + " AND ".join(predicates), bind_args)
+
+
+async def select_features_history(
+    conn: _DbExecutor,
+    *,
+    feature_name: str,
+    symbol: str,
+    from_at: datetime | None,
+    to_at: datetime | None,
+    limit: int,
+    offset: int,
+) -> list[FeatureRow]:
+    """Return time-series of one (feature_name, symbol) pair.
+
+    ORDER BY ``computed_at DESC`` so most-recent points sort first;
+    chart UI reverses for left-to-right time axis. ``from_at`` is
+    inclusive, ``to_at`` is exclusive — half-open interval (mirror
+    trades.closed_at + signals.received_at convention from T-402/T-403).
+    """
+    where_clause, where_args = _build_features_history_where_clause(
+        feature_name=feature_name,
+        symbol=symbol,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    limit_placeholder = f"${len(where_args) + 1}"
+    offset_placeholder = f"${len(where_args) + 2}"
+    sql = (
+        f"SELECT {_FEATURES_BASE_COLUMNS} FROM features "  # noqa: S608  # nosec B608
+        f"{where_clause} "
+        "ORDER BY computed_at DESC "
+        f"LIMIT {limit_placeholder} OFFSET {offset_placeholder}"
+    )
+    rows = await conn.fetch(sql, *where_args, limit, offset)
+    return [_row_to_feature(row) for row in rows]
+
+
+async def count_features_history(
+    conn: _DbExecutor,
+    *,
+    feature_name: str,
+    symbol: str,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> int:
+    """Total count of features-history rows for one (feature_name, symbol).
+
+    Routes through :func:`_build_features_history_where_clause` so
+    filter semantics stay in sync with :func:`select_features_history`
+    (no drift between count and page query).
+    """
+    where_clause, where_args = _build_features_history_where_clause(
+        feature_name=feature_name,
+        symbol=symbol,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    sql = f"SELECT COUNT(*) AS n FROM features {where_clause}"  # noqa: S608  # nosec B608
+    row = await conn.fetchrow(sql, *where_args)
+    if row is None:
+        return 0
+    return int(row["n"])

@@ -35,13 +35,17 @@ from packages.core.types import (
 )
 from packages.db.queries.analytics import (
     BotDetailRow,
+    FeatureRow,
     OpenPositionRow,
     ScoringEvaluationRow,
     SignalRow,
     SymbolMapRow,
     TradeRow,
+    _build_features_history_where_clause,
     _build_signals_where_clause,
     _build_trades_where_clause,
+    count_features_history,
+    count_latest_features,
     count_signals,
     count_trades,
     delete_symbol_map_entry,
@@ -49,6 +53,8 @@ from packages.db.queries.analytics import (
     select_all_bots,
     select_all_symbol_map_entries,
     select_bot_by_id,
+    select_features_history,
+    select_latest_features,
     select_open_positions,
     select_scoring_evaluations_by_signal_id,
     select_signal_by_id,
@@ -1154,3 +1160,321 @@ async def test_scoring_evaluation_double_precision_fields_stay_as_float() -> Non
     rows = await select_scoring_evaluations_by_signal_id(conn, 1)
     assert isinstance(rows[0].trigger_threshold, float)
     assert isinstance(rows[0].total_score, float)
+
+
+# ---------------------------------------------------------------------------
+# T-404 — /api/features/* read endpoint queries
+# ---------------------------------------------------------------------------
+
+_T_FEATURE_NOW = datetime(2026, 5, 3, 12, 0, 0, tzinfo=UTC)
+_T_FEATURE_FROM = datetime(2026, 5, 1, 0, 0, 0, tzinfo=UTC)
+_T_FEATURE_TO = datetime(2026, 5, 5, 0, 0, 0, tzinfo=UTC)
+
+
+def _make_feature_row(
+    *,
+    feature_name: str = "ind.btcusdt.15m.ema_20",
+    symbol: str = "BTCUSDT",
+    value_num: float | None = 50000.0,
+    value_bool: bool | None = None,
+    value_json: dict[str, Any] | list[Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "feature_name": feature_name,
+        "symbol": symbol,
+        "computed_at": _T_FEATURE_NOW,
+        "value_num": value_num,
+        "value_bool": value_bool,
+        "value_json": value_json,
+        "source_version": "builtin.ema.v1",
+    }
+
+
+# ---- select_latest_features ----
+
+
+async def test_select_latest_features_returns_typed_list_no_filter() -> None:
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _make_feature_row(feature_name="ind.btcusdt.15m.ema_20"),
+            _make_feature_row(feature_name="ind.ethusdt.15m.ema_20", symbol="ETHUSDT"),
+        ]
+    )
+    rows = await select_latest_features(conn, prefix=None, limit=100, offset=0)
+    assert len(rows) == 2
+    assert all(isinstance(r, FeatureRow) for r in rows)
+
+
+async def test_select_latest_features_uses_distinct_on_via_features_latest_index() -> None:
+    """SQL contains DISTINCT ON + ORDER BY (feature_name, symbol, computed_at DESC)."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_latest_features(conn, prefix=None, limit=100, offset=0)
+    assert "DISTINCT ON (feature_name, symbol)" in captured[0]
+    assert "ORDER BY feature_name, symbol, computed_at DESC" in captured[0]
+
+
+async def test_select_latest_features_appends_percent_for_like() -> None:
+    """WG#7 — caller passes raw prefix; helper binds `${prefix}%` server-side."""
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured_args.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_latest_features(conn, prefix="ind.btcusdt", limit=100, offset=0)
+    sql, *bind_args = captured_args[0]
+    assert "WHERE feature_name LIKE $1" in sql
+    assert bind_args[0] == "ind.btcusdt%"
+    # Caller does NOT receive raw prefix in SQL — only via bind:
+    assert "ind.btcusdt" not in sql
+
+
+async def test_select_latest_features_empty_prefix_treated_as_no_filter() -> None:
+    """WG#3 — both `prefix=None` and `prefix=""` route to no-filter SQL."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_latest_features(conn, prefix=None, limit=100, offset=0)
+    await select_latest_features(conn, prefix="", limit=100, offset=0)
+    assert len(captured) == 2
+    # Both queries use the no-WHERE-clause variant.
+    assert "WHERE feature_name LIKE" not in captured[0]
+    assert "WHERE feature_name LIKE" not in captured[1]
+
+
+async def test_select_latest_features_applies_limit_and_offset() -> None:
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured_args.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_latest_features(conn, prefix=None, limit=25, offset=50)
+    _sql, limit_arg, offset_arg = captured_args[0]
+    assert limit_arg == 25
+    assert offset_arg == 50
+
+
+# ---- count_latest_features ----
+
+
+async def test_count_latest_features_returns_int_no_filter() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"n": 7})
+    n = await count_latest_features(conn, prefix=None)
+    assert n == 7
+
+
+async def test_count_latest_features_returns_int_for_prefix_filter() -> None:
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> dict[str, int]:
+        captured_args.append((sql, *args))
+        return {"n": 3}
+
+    conn.fetchrow = _capture
+    n = await count_latest_features(conn, prefix="ind.btcusdt")
+    assert n == 3
+    sql, bind_arg = captured_args[0]
+    assert "SELECT COUNT(*)" in sql
+    assert "WHERE feature_name LIKE $1" in sql
+    assert bind_arg == "ind.btcusdt%"
+
+
+# ---- _build_features_history_where_clause ----
+
+
+def test_build_features_history_where_mandatory_predicates() -> None:
+    where, args = _build_features_history_where_clause(
+        feature_name="ind.btcusdt.15m.ema_20",
+        symbol="BTCUSDT",
+        from_at=None,
+        to_at=None,
+    )
+    assert where == "WHERE feature_name = $1 AND symbol = $2"
+    assert args == ["ind.btcusdt.15m.ema_20", "BTCUSDT"]
+
+
+def test_build_features_history_where_with_from_to_range() -> None:
+    """WG#5 — half-open interval (from inclusive `>=`, to exclusive `<`)."""
+    where, args = _build_features_history_where_clause(
+        feature_name="ind.btcusdt.15m.ema_20",
+        symbol="BTCUSDT",
+        from_at=_T_FEATURE_FROM,
+        to_at=_T_FEATURE_TO,
+    )
+    assert where == (
+        "WHERE feature_name = $1 AND symbol = $2 AND computed_at >= $3 AND computed_at < $4"
+    )
+    assert args == [
+        "ind.btcusdt.15m.ema_20",
+        "BTCUSDT",
+        _T_FEATURE_FROM,
+        _T_FEATURE_TO,
+    ]
+
+
+# ---- select_features_history ----
+
+
+async def test_select_features_history_returns_typed_list() -> None:
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _make_feature_row(value_num=50000.0),
+            _make_feature_row(value_num=50100.0),
+        ]
+    )
+    rows = await select_features_history(
+        conn,
+        feature_name="ind.btcusdt.15m.ema_20",
+        symbol="BTCUSDT",
+        from_at=None,
+        to_at=None,
+        limit=1000,
+        offset=0,
+    )
+    assert len(rows) == 2
+    assert all(isinstance(r, FeatureRow) for r in rows)
+    assert rows[0].value_num == 50000.0
+
+
+async def test_select_features_history_orders_by_computed_at_desc() -> None:
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_features_history(
+        conn,
+        feature_name="x",
+        symbol="y",
+        from_at=None,
+        to_at=None,
+        limit=1000,
+        offset=0,
+    )
+    assert "ORDER BY computed_at DESC" in captured[0]
+
+
+async def test_select_features_history_uses_parameterized_placeholders() -> None:
+    """WG#7 — `$N` placeholders only, never f-string interpolation of values."""
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured_args.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_features_history(
+        conn,
+        feature_name="ind.btcusdt.15m.ema_20",
+        symbol="BTCUSDT",
+        from_at=_T_FEATURE_FROM,
+        to_at=_T_FEATURE_TO,
+        limit=10,
+        offset=20,
+    )
+    sql, *bind_args = captured_args[0]
+    # No interpolated values present in SQL string.
+    assert "ind.btcusdt.15m.ema_20" not in sql
+    assert "BTCUSDT" not in sql
+    assert "$1" in sql
+    assert "$4" in sql
+    assert "$5" in sql
+    assert "$6" in sql
+    assert bind_args == [
+        "ind.btcusdt.15m.ema_20",
+        "BTCUSDT",
+        _T_FEATURE_FROM,
+        _T_FEATURE_TO,
+        10,
+        20,
+    ]
+
+
+# ---- count_features_history ----
+
+
+async def test_count_features_history_uses_same_where_as_select_features_history() -> None:
+    """WG#5 — both helpers route through `_build_features_history_where_clause`."""
+    conn = MagicMock()
+    captured_select: list[str] = []
+    captured_count: list[str] = []
+
+    async def _capture_fetch(sql: str, *_args: Any) -> list[Any]:
+        captured_select.append(sql)
+        return []
+
+    async def _capture_fetchrow(sql: str, *_args: Any) -> dict[str, int]:
+        captured_count.append(sql)
+        return {"n": 0}
+
+    conn.fetch = _capture_fetch
+    conn.fetchrow = _capture_fetchrow
+    common: dict[str, Any] = {
+        "feature_name": "ind.btcusdt.15m.ema_20",
+        "symbol": "BTCUSDT",
+        "from_at": _T_FEATURE_FROM,
+        "to_at": _T_FEATURE_TO,
+    }
+    await select_features_history(conn, **common, limit=1000, offset=0)
+    await count_features_history(conn, **common)
+    where = "WHERE feature_name = $1 AND symbol = $2 AND computed_at >= $3 AND computed_at < $4"
+    assert where in captured_select[0]
+    assert where in captured_count[0]
+
+
+# ---- value polymorphism ----
+
+
+async def test_feature_value_polymorphism_3_columns_preserved() -> None:
+    """value_num / value_bool / value_json are independently nullable."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _make_feature_row(value_num=42.0, value_bool=None, value_json=None),
+            _make_feature_row(value_num=None, value_bool=True, value_json=None),
+            _make_feature_row(value_num=None, value_bool=None, value_json={"k": "v"}),
+            _make_feature_row(value_num=None, value_bool=None, value_json=[1, 2, 3]),
+        ]
+    )
+    rows = await select_features_history(
+        conn,
+        feature_name="x",
+        symbol="y",
+        from_at=None,
+        to_at=None,
+        limit=1000,
+        offset=0,
+    )
+    assert rows[0].value_num == 42.0
+    assert rows[0].value_bool is None
+    assert rows[1].value_bool is True
+    assert rows[1].value_num is None
+    assert rows[2].value_json == {"k": "v"}
+    assert isinstance(rows[2].value_json, dict)
+    assert rows[3].value_json == [1, 2, 3]
+    assert isinstance(rows[3].value_json, list)
