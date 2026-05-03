@@ -112,7 +112,9 @@ F4 numbered (operator-approved 24-task plan 2026-05-02; total est ~2-3 týždne;
 
 ### F4 — Backend (analytics-api + alerting-svc)
 
-- [ ] T-401: `/api/bots/*` + `/api/symbol-map/*` endpoint groups — bot registry list/detail (read) + symbol-map CRUD (admin write). Per BRIEF §9.6:1622+1632. Adds Pydantic response models (`BotResponse`, `SymbolMapEntry`); SQL via `packages/db/queries/`. Blocked by T-400. Est: ~180 LOC src + ~150 LOC tests.
+- [ ] T-401a: migration 0011 `audit_events` hypertable + `insert_audit_event` helper (`packages/db/queries/audit.py`) + `/api/bots/*` read endpoints (list + detail). Per BRIEF §7.2:1108-1126 + §9.6:1622 + §16.8. Adds `BotResponse` + `BotListResponse` Pydantic models + `select_all_bots`/`select_bot_by_id` (`packages/db/queries/analytics.py`). Foundation for T-401b + T-405. Blocked by T-400 (shipped). Est: ~268 LOC src + ~250 LOC tests.
+
+- [ ] T-401b: `/api/symbol-map/*` CRUD endpoints (5 endpoints — list + get + post + put + delete) with audit row writes via T-401a's `insert_audit_event` helper (in same `conn.transaction()` per H-022 + §16.8). Adds `SymbolMapEntryResponse`/`Create`/`Update`/`ListResponse` Pydantic models + 5 symbol_map query functions in `packages/db/queries/analytics.py` + `app.state.now_fn` attach + `correlation_id` header propagation. Per BRIEF §9.6:1632 + §16.8:2227. Blocked by T-401a (audit helper). Est: ~225 LOC src + ~250 LOC tests. **Split rationale**: original T-401 (~505 LOC src) over §0.3 cap once OQ-1=A added migration 0011 + writes; operator approved split per L-006 active control 2026-05-03.
 
 - [ ] T-402: `/api/positions/*` + `/api/trades/*` endpoint groups — open positions across bots (read-heavy from `position_state` table) + trade history paginated/filtered/drill-down (from `trades` + joined `executions` + `orders`). Per BRIEF §9.6:1623-1624 + §14.3:2061-2062. Blocked by T-400. Est: ~250 LOC src + ~200 LOC tests.
 
@@ -164,7 +166,8 @@ F4 numbered (operator-approved 24-task plan 2026-05-02; total est ~2-3 týždne;
 
 ### F4 dependencies graph
 
-- T-400 unblocks: T-401, T-402, T-403, T-404, T-405, T-407, T-408
+- T-400 unblocks: T-401a, T-402, T-403, T-404, T-405, T-407, T-408
+- T-401a unblocks: T-401b (symbol-map CRUD consumes audit helper) + T-405 (audit viewer reads audit_events table)
 - T-402 unblocks: T-406
 - T-410 unblocks: T-411
 - T-411 unblocks: T-412..T-420

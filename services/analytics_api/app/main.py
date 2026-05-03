@@ -43,6 +43,7 @@ Shutdown order (reverse, load-bearing):
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -59,11 +60,32 @@ from packages.observability import (
 
 from .config import Settings
 from .health import router as health_router
+from .routers.bots import router as bots_router
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    import asyncpg
+
 __all__ = ["create_app"]
+
+
+async def _register_jsonb_codec(conn: asyncpg.Connection) -> None:
+    """Register the JSONB codec on a freshly-acquired asyncpg connection.
+
+    Mirrors feature-engine T-110d pattern. T-401a queries (`select_all_bots`
+    + `select_bot_by_id`) read the ``meta JSONB`` column on ``bots``;
+    without this codec asyncpg returns JSONB as a raw string and the
+    dict round-trip in :func:`packages.db.queries.analytics._row_to_bot_detail`
+    falls back to ``{}``. Same default needed for T-401b symbol_map +
+    T-405 audit_events readers.
+    """
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -78,10 +100,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Composition root for async resources. See module docstring."""
-        # 1. asyncpg pool.
+        # 1. asyncpg pool with JSONB codec init for `meta` round-trip.
         pool = await create_pool(
             settings.database_url,
             application_name=settings.service_name,
+            init=_register_jsonb_codec,
         )
         # 2. NATS bus.
         bus = NatsClient(
@@ -114,5 +137,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.logger = logger
 
     app.include_router(health_router)
+    app.include_router(bots_router)
     app.mount("/metrics", make_metrics_asgi_app(registry_metrics))
     return app
