@@ -425,6 +425,47 @@ services:
       retries: 5
       start_period: 15s
 
+  # analytics-api — read-heavy REST + SSE backing the dashboard UI
+  # (brief §9.6, §18.1, §19 F4 milestone). T-400 ships the skeleton:
+  # lifespan wires asyncpg.Pool + NatsClient; /health, /ready (bus +
+  # db checks), /metrics. T-401..T-408 will extend with /api/* read
+  # endpoint groups + /events/stream SSE. Single-instance singleton
+  # per BRIEF §2.2:234 (unlike per-bot strategy-engine) — no BOT_ID
+  # env. Internal-only per §16.6 — analytics-api is upstream for nginx
+  # public exposure (planned F5+ via nginx route + cloudflared); T-400
+  # ships the internal half only, no `ports:` publish.
+  analytics-api:
+    build:
+      context: .
+      dockerfile: services/analytics_api/Dockerfile
+    image: scalper-v2/analytics-api:dev
+    restart: unless-stopped
+    networks: [backend]
+    env_file:
+      # Shared cross-service secrets.env — DATABASE_URL + NATS_URL come
+      # from prod host. Dev hosts drop this reference via compose.dev.yaml
+      # `env_file: !reset null` and supply DATABASE_URL via `environment:`
+      # overrides expanded from the project-root .env.
+      - path: /etc/scalper-v2/secrets.env
+        required: false
+    environment:
+      SERVICE_NAME: analytics-api
+      LOG_LEVEL: INFO
+      NATS_URL: nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      nats-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2); sys.exit(0)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
   # nginx reverse proxy (brief §2.1, §16.3, §16.6, §18.1). Terminal
   # backend for cloudflared; single server block with path-based
   # dispatch. /webhook, /health, /ready proxy to signal-gateway

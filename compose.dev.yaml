@@ -138,6 +138,18 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
 
+  # analytics-api dev overlay. Mirror execution-service / strategy-engine
+  # pattern — env_file !reset null avoids EACCES on /etc/scalper-v2/,
+  # DATABASE_URL injected from project-root .env. No host port publish:
+  # analytics-api is internal-only per §16.6 (public exposure deferred to
+  # F5+ via nginx + cloudflared route). Operator runs
+  # `docker exec scalper-v2-analytics-api-1 python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health').read())"`
+  # for dev smoke if needed.
+  analytics-api:
+    env_file: !reset null
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+
   cloudflared:
     env_file: !reset null
 
