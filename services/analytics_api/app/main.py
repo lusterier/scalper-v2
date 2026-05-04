@@ -67,12 +67,14 @@ from .routers.audit import router as audit_router
 from .routers.backtests import router as backtests_router
 from .routers.bots import router as bots_router
 from .routers.configs import router as configs_router
+from .routers.events import router as events_router
 from .routers.features import router as features_router
 from .routers.positions import router as positions_router
 from .routers.scoring import router as scoring_router
 from .routers.signals import router as signals_router
 from .routers.symbol_map import router as symbol_map_router
 from .routers.trades import router as trades_router
+from .sse import SSEMultiplexer
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -135,6 +137,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # T-406 — in-memory analytics cache (Monte-Carlo only per OQ-2 default A).
         # Lifespan-owned per process; F4 single-process scope per §3.1.
         app.state.analytics_cache = AnalyticsCache()
+        # T-408 — SSE multiplexer for /events/stream. 4 tuning knobs flow
+        # through DI from settings per L-001 (operator-tunable env vars).
+        app.state.sse_multiplexer = SSEMultiplexer(
+            bus=bus,
+            logger=logger,
+            heartbeat_interval_s=settings.sse_heartbeat_interval_s,
+            client_queue_maxsize=settings.sse_client_queue_maxsize,
+            max_connections=settings.sse_max_connections,
+            overflow_log_interval_s=settings.sse_overflow_log_interval_s,
+        )
 
         logger.info(
             "service_started",
@@ -143,6 +155,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            # T-408 WG#6 — SSE shutdown BEFORE bus.close so per-client subs
+            # drain cleanly without racing bus's own subscription drain.
+            await app.state.sse_multiplexer.shutdown()
             # Reverse shutdown: bus first (drain in-flight publishes),
             # pool second (publish-after-persist per T-200 Q2).
             await bus.close()
@@ -166,5 +181,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(audit_router)
     app.include_router(analytics_router)
     app.include_router(backtests_router)
+    app.include_router(events_router)
     app.mount("/metrics", make_metrics_asgi_app(registry_metrics))
     return app

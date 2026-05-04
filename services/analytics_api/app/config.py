@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = ["LogLevel", "Settings"]
@@ -51,3 +52,32 @@ class Settings(BaseSettings):
 
     # asyncpg DSN; scheme-validated by packages.db.create_pool at pool init.
     database_url: str
+
+    # T-408 SSE tuning (per §N9 + L-001 — operational knobs, not mathematically
+    # fixed). Defaults chosen for F4 single-operator LAN scale; tunable without
+    # redeploy via env vars (SSE_HEARTBEAT_INTERVAL_S etc.) for incident-time
+    # adjustments.
+    sse_heartbeat_interval_s: int = Field(
+        default=15,
+        ge=1,
+        le=300,
+        description="Send `: heartbeat\\n\\n` SSE comment after this many idle seconds (OQ-4=A).",
+    )
+    sse_client_queue_maxsize: int = Field(
+        default=1000,
+        ge=10,
+        le=100_000,
+        description="Per-client asyncio.Queue maxsize before drop-oldest fires (OQ-3=A).",
+    )
+    sse_max_connections: int = Field(
+        default=50,
+        ge=1,
+        le=10_000,
+        description="Global cap on concurrent SSE clients (OQ-7=A; F4 single-operator scale).",
+    )
+    sse_overflow_log_interval_s: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+        description="Rate-limit `sse_client_buffer_overflow` warnings to 1/N seconds per client.",
+    )

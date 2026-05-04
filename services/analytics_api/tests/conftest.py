@@ -15,7 +15,7 @@ the ``/ready`` coverage matrix.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -26,7 +26,7 @@ from services.analytics_api.app.config import Settings
 from services.analytics_api.app.main import create_app
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Iterator
 
     from fastapi import FastAPI
 
@@ -96,3 +96,24 @@ def client(app_with_mocks: FastAPI) -> Iterator[TestClient]:
     """TestClient that runs the lifespan on entry, teardown on exit."""
     with TestClient(app_with_mocks) as c:
         yield c
+
+
+@pytest.fixture
+async def async_client(app_with_mocks: FastAPI) -> AsyncIterator[Any]:
+    """httpx.AsyncClient with proper Starlette lifespan execution (T-408).
+
+    Required for SSE tests: ``TestClient`` is sync and doesn't support
+    concurrent streaming reads (it exhausts the response on .text/.iter_lines
+    rather than chunk-by-chunk read alongside server-side queue.put). httpx
+    with ``ASGITransport`` consumes chunks lazily; ``LifespanManager`` runs
+    the FastAPI lifespan exactly as Starlette does at server boot. Per WG#9
+    the imports live INSIDE the fixture body so non-streaming tests don't pay
+    the import cost and missing-dev-dep failures surface only when used.
+    """
+    import httpx
+    from asgi_lifespan import LifespanManager
+
+    async with LifespanManager(app_with_mocks):
+        transport = httpx.ASGITransport(app=app_with_mocks)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            yield c

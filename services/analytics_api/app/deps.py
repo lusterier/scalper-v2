@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
     from .analytics_cache import AnalyticsCache
     from .config import Settings
+    from .sse import SSEMultiplexer
 
 __all__ = [
     "get_analytics_cache",
@@ -46,6 +47,7 @@ __all__ = [
     "get_now_fn",
     "get_pool",
     "get_settings",
+    "get_sse_multiplexer",
 ]
 
 
@@ -85,3 +87,13 @@ def get_analytics_cache(request: Request) -> AnalyticsCache:
     (5-min in-memory cache for CPU-heavy analytics; T-406).
     """
     return cast("AnalyticsCache", request.app.state.analytics_cache)
+
+
+def get_sse_multiplexer(request: Request) -> SSEMultiplexer:
+    """Return the :class:`SSEMultiplexer` attached to ``app.state`` in lifespan.
+
+    Used by ``/events/stream`` endpoint per BRIEF §9.6:1633-1638 (T-408).
+    Lifecycle: created in lifespan with 4 Settings tuning knobs as DI;
+    drained in reverse-shutdown BEFORE ``bus.close()``.
+    """
+    return cast("SSEMultiplexer", request.app.state.sse_multiplexer)
