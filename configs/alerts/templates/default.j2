@@ -1,0 +1,4 @@
+<b>[{{ severity | upper }}]</b> {{ event }}
+{% if correlation_id %}<i>correlation_id:</i> <code>{{ correlation_id }}</code>{% endif %}
+{% if published_at %}<i>at:</i> {{ published_at }} CEST{% endif %}
+{% if payload %}<pre>{{ payload | tojson(indent=2) | truncate(3500, end='... [truncated]') }}</pre>{% endif %}

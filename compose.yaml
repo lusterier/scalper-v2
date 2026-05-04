@@ -466,6 +466,45 @@ services:
       retries: 5
       start_period: 15s
 
+  # alerting-svc (T-409, brief §9.7, §16.6). NATS consumer that
+  # subscribes to system.alerts + renders Jinja2 templates + delivers
+  # to Telegram with rate-limit dedup + critical retry. LAN-only:
+  # NO ports: host publish — outbound api.telegram.org is the only
+  # external network egress.
+  alerting:
+    build:
+      context: .
+      dockerfile: services/alerting/Dockerfile
+    image: scalper-v2/alerting:dev
+    restart: unless-stopped
+    networks: [backend]
+    env_file:
+      # Shared cross-service secrets.env — TELEGRAM_BOT_TOKEN +
+      # TELEGRAM_CHAT_* come from prod host. Dev hosts drop this
+      # reference via compose.dev.yaml `env_file: !reset null` and
+      # supply via `environment:` overrides expanded from .env.
+      - path: /etc/scalper-v2/secrets.env
+        required: false
+    environment:
+      SERVICE_NAME: alerting
+      LOG_LEVEL: INFO
+      NATS_URL: nats://nats:4222
+      ALERTS_YAML_PATH: /app/configs/alerts.yaml
+    volumes:
+      - ./configs/alerts.yaml:/app/configs/alerts.yaml:ro
+      - ./configs/alerts:/app/configs/alerts:ro
+    depends_on:
+      nats:
+        condition: service_healthy
+      nats-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2); sys.exit(0)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
   # nginx reverse proxy (brief §2.1, §16.3, §16.6, §18.1). Terminal
   # backend for cloudflared; single server block with path-based
   # dispatch. /webhook, /health, /ready proxy to signal-gateway

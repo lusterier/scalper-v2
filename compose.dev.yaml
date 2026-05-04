@@ -150,6 +150,17 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
 
+  alerting:
+    env_file: !reset null
+    environment:
+      # Telegram credentials sourced from project-root .env in dev.
+      # Production uses /etc/scalper-v2/secrets.env via the base envelope.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_SYSTEM: ${TELEGRAM_CHAT_SYSTEM:-}
+      TELEGRAM_CHAT_TRADING: ${TELEGRAM_CHAT_TRADING:-}
+      TELEGRAM_CHAT_PNL: ${TELEGRAM_CHAT_PNL:-}
+      TELEGRAM_CHAT_SECURITY: ${TELEGRAM_CHAT_SECURITY:-}
+
   cloudflared:
     env_file: !reset null
 

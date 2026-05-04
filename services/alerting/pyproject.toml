@@ -1,5 +1,37 @@
 [project]
 name = "scalper-v2-alerting"
 version = "0.1.0"
-description = "Consumes NATS events and forwards formatted alerts to Telegram. Scaffold stub; implementation lands in F5."
+description = "NATS consumer service: subscribes to system.alerts + renders Jinja2 templates + delivers to Telegram with rate-limit dedup + critical retry. T-409 ships skeleton + 1 catch-all template; per-event templates added per operator demand."
 requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.136.0",
+    "pydantic-settings==2.13.1",
+    "uvicorn[standard]==0.45.0",
+    "uvloop==0.22.1",
+    "jinja2==3.1.4",
+    "PyYAML==6.0.3",
+    "scalper-v2-bus",
+    "scalper-v2-core",
+    "scalper-v2-observability",
+]
+
+[tool.uv.sources]
+scalper-v2-bus = { workspace = true }
+scalper-v2-core = { workspace = true }
+scalper-v2-observability = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Hatch scaffold per ADR-0002 (services/ analogue of the packages/ pattern):
+# flat-layout source files live directly in services/alerting/; sources
+# remap adds the `services/alerting/` wheel prefix so imports resolve as
+# `from services.alerting import ...`. Mirror analytics-api convention.
+[tool.hatch.build.targets.wheel]
+include = ["*.py", "py.typed"]
+exclude = ["tests/**", "**/__pycache__/**"]
+dev-mode-dirs = ["."]
+
+[tool.hatch.build.targets.wheel.sources]
+"" = "services/alerting"

@@ -1,0 +1,32 @@
+# T-409 alerting-svc configuration per BRIEF §B.5.
+#
+# 4 channels mapping to per-channel Telegram chat_ids resolved from env
+# vars at lifespan startup (fail-fast on missing env). Single bot token
+# in TELEGRAM_BOT_TOKEN posts to all 4 chats.
+#
+# F4 ships 1 catch-all wildcard rule (per OQ-5=A) so any system.alerts
+# event reaches Telegram via the default template. Per-event templates
+# (heartbeat_stale / ws_disconnected / sl_set_exhausted / pnl_audit_correction
+# / lan_admin_write per §B.5 example) are added as publishers begin emitting
+# those events — F5+ scope per §0.8 anti-hypothetical.
+
+channels:
+  system:
+    telegram_chat_id_env: TELEGRAM_CHAT_SYSTEM
+  trading:
+    telegram_chat_id_env: TELEGRAM_CHAT_TRADING
+  pnl:
+    telegram_chat_id_env: TELEGRAM_CHAT_PNL
+  security:
+    telegram_chat_id_env: TELEGRAM_CHAT_SECURITY
+
+rate_limit:
+  dedup_window_seconds: 300
+
+rules:
+  # F4 catch-all per OQ-5=A. Operator opens specific rules per BRIEF §B.5
+  # example as publishers begin emitting events.
+  - event: "*"
+    channel: system
+    severity: info
+    template: templates/default.j2
