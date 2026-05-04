@@ -29,9 +29,12 @@ describe("UI scaffold smoke tests", () => {
     expect(await screen.findByText("scalper-v2")).toBeInTheDocument();
   });
 
-  it("displays the placeholder index route message", async () => {
+  it("displays the component showcase heading (T-411 rewrite)", async () => {
     renderApp();
-    expect(await screen.findByText("UI scaffold ready")).toBeInTheDocument();
+    // T-411 rewrote routes/index.tsx as component showcase. T-410's
+    // "UI scaffold ready" placeholder text removed; new heading is
+    // "Component showcase" per WG#4.
+    expect(await screen.findByText("Component showcase")).toBeInTheDocument();
   });
 
   it("cn utility merges Tailwind classes (last-wins on conflict)", () => {

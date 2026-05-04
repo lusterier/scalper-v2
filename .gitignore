@@ -70,3 +70,6 @@ secrets/
 *.log
 logs/
 /var/log/scalper/
+
+# Claude Code session state (sandbox-internal artifacts)
+.claude/
