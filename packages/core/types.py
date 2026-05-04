@@ -12,6 +12,7 @@ from typing import NewType
 
 __all__ = [
     "Action",
+    "BacktestStatus",
     "BotId",
     "BotStatus",
     "CorrelationId",
@@ -42,6 +43,25 @@ class Action(StrEnum):
     SHORT = "SHORT"
     CLOSE = "CLOSE"
     CUSTOM = "CUSTOM"
+
+
+class BacktestStatus(StrEnum):
+    """backtest_runs.status enum (BRIEF §7.2:1151).
+
+    F4 (T-407): only ``QUEUED`` is ever written by the trigger endpoint.
+    F5+ worker transitions ``QUEUED → RUNNING → (COMPLETED|FAILED)``.
+
+    All four values are defined here so the row-narrowing path
+    (``BacktestStatus(value)`` in :func:`_row_to_backtest_run`) does NOT
+    raise on rows written by a future F5+ worker. Forward-compat is the
+    explicit reason every value lives in F4 enum even when only one value
+    is ever written today.
+    """
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class BotStatus(StrEnum):

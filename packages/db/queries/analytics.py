@@ -44,13 +44,22 @@ T-405 extends: ``BotConfigRow`` + 7 functions
 (T-401a). Dynamic helper ``_build_audit_where_clause`` mirror
 T-402/T-403/T-404 pattern.
 
+T-407 extends: ``BacktestRunRow`` + 4 functions
+(``select_backtest_runs_paginated`` + ``count_backtest_runs`` +
+``select_backtest_run_by_id`` + ``insert_backtest_run``) for
+`/api/backtests/*` endpoints. `_build_backtests_where_clause` mirror
+T-402..T-405 dynamic builder pattern (4 filters; `$N` placeholders only
+per L-008). UUID PK from ``gen_random_uuid()`` (migration 0012 enables
+``pgcrypto`` extension).
+
 ``BotStatus`` / ``ExchangeMode`` / ``ExchangeSource`` / ``TradeStatus``
-enum narrowing uses canonical :mod:`packages.core.types` StrEnums; the
-StrEnum constructor itself raises :class:`ValueError` on unknown
-values, so no hand-rolled validator is needed (cleaner than promoting
-the private ``_validate_exchange_mode`` from
-:mod:`packages.db.queries.execution` per T-401a WG#2 plan-reviewer
-alternative + T-401b WG#1 + T-402 WG#1 consistency).
+/ ``BacktestStatus`` enum narrowing uses canonical
+:mod:`packages.core.types` StrEnums; the StrEnum constructor itself
+raises :class:`ValueError` on unknown values, so no hand-rolled
+validator is needed (cleaner than promoting the private
+``_validate_exchange_mode`` from :mod:`packages.db.queries.execution`
+per T-401a WG#2 plan-reviewer alternative + T-401b WG#1 + T-402 WG#1
+consistency).
 """
 
 from __future__ import annotations
@@ -61,6 +70,7 @@ from typing import TYPE_CHECKING, Any
 from packages.core import non_idempotent
 from packages.core.types import (
     Action,
+    BacktestStatus,
     BotStatus,
     ExchangeMode,
     ExchangeSource,
@@ -72,6 +82,7 @@ from packages.core.types import (
 if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
+    from uuid import UUID
 
     import asyncpg
     from asyncpg.pool import PoolConnectionProxy
@@ -79,6 +90,7 @@ if TYPE_CHECKING:
     type _DbExecutor = asyncpg.Connection[asyncpg.Record] | PoolConnectionProxy[asyncpg.Record]
 
 __all__ = [
+    "BacktestRunRow",
     "BotConfigRow",
     "BotDetailRow",
     "FeatureRow",
@@ -89,18 +101,22 @@ __all__ = [
     "TradeRealizedPnlRow",
     "TradeRow",
     "count_audit_events",
+    "count_backtest_runs",
     "count_bot_config_versions",
     "count_features_history",
     "count_latest_features",
     "count_signals",
     "count_trades",
     "delete_symbol_map_entry",
+    "insert_backtest_run",
     "insert_bot_config",
     "insert_symbol_map_entry",
     "select_all_bots",
     "select_all_symbol_map_entries",
     "select_audit_event_by_id",
     "select_audit_events_paginated",
+    "select_backtest_run_by_id",
+    "select_backtest_runs_paginated",
     "select_bot_by_id",
     "select_bot_config_by_version",
     "select_bot_config_current",
@@ -1548,3 +1564,223 @@ async def select_trades_for_analytics(
         )
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# T-407 — /api/backtests/* trigger + read (§9.6:1629 + §14.3:2063)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestRunRow:
+    """Full projection of ``backtest_runs`` row (12 columns per migration 0012).
+
+    Matches §7.2:1144-1156 11-column verbatim plus ``bot_id`` 12th column
+    added in migration 0012 for T-415 per-bot historic-runs UI filter.
+    ``status`` narrowed via :class:`BacktestStatus` StrEnum (4 values;
+    F4 only writes ``QUEUED``, F5+ worker writes the rest — forward-compat
+    per T-407 plan).
+    """
+
+    id: UUID
+    name: str
+    bot_id: str
+    config_yaml: str
+    config_hash: str
+    date_range_start: datetime
+    date_range_end: datetime
+    status: BacktestStatus
+    started_at: datetime
+    finished_at: datetime | None
+    summary: dict[str, Any] | None
+    notes: str | None
+
+
+_BACKTEST_BASE_COLUMNS = (
+    "id, name, bot_id, config_yaml, config_hash, "
+    "date_range_start, date_range_end, status, "
+    "started_at, finished_at, summary, notes"
+)
+
+_SELECT_BACKTEST_BY_ID_SQL = (
+    f"SELECT {_BACKTEST_BASE_COLUMNS}"  # noqa: S608 — column whitelist constant, no user input  # nosec B608
+    " FROM backtest_runs WHERE id = $1"
+)
+
+_INSERT_BACKTEST_RUN_SQL = """
+    INSERT INTO backtest_runs (name, bot_id, config_yaml, config_hash,
+                               date_range_start, date_range_end, status,
+                               started_at, finished_at, summary, notes)
+    VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, NULL, NULL, $8)
+    RETURNING id, name, bot_id, config_yaml, config_hash,
+              date_range_start, date_range_end, status,
+              started_at, finished_at, summary, notes
+"""
+
+
+def _row_to_backtest_run(row: asyncpg.Record) -> BacktestRunRow:
+    """Narrow asyncpg row to typed dataclass; BacktestStatus ctor validates enum.
+
+    ``summary`` JSONB is dict-or-None; defensive narrowing ensures non-dict
+    values fall back to None (would be a schema violation upstream but
+    defensive is cheap).
+    """
+    summary_value = row["summary"]
+    return BacktestRunRow(
+        id=row["id"],
+        name=str(row["name"]),
+        bot_id=str(row["bot_id"]),
+        config_yaml=str(row["config_yaml"]),
+        config_hash=str(row["config_hash"]),
+        date_range_start=row["date_range_start"],
+        date_range_end=row["date_range_end"],
+        status=BacktestStatus(str(row["status"])),
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        summary=summary_value if isinstance(summary_value, dict) else None,
+        notes=str(row["notes"]) if row["notes"] is not None else None,
+    )
+
+
+def _build_backtests_where_clause(
+    *,
+    bot_id: str | None,
+    status: BacktestStatus | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> tuple[str, list[Any]]:
+    """Compose dynamic WHERE clause for backtest_runs queries.
+
+    Mirror T-402/T-403/T-404/T-405 dynamic builder pattern — `$N`
+    placeholders only (NEVER string interpolation per L-008 + §5.10).
+    4 filter slots. ``from_at`` inclusive, ``to_at`` exclusive (half-open
+    interval mirror) on ``started_at``.
+
+    Returns ``("", [])`` when all filters None.
+    """
+    predicates: list[str] = []
+    bind_args: list[Any] = []
+    if bot_id is not None:
+        bind_args.append(bot_id)
+        predicates.append(f"bot_id = ${len(bind_args)}")
+    if status is not None:
+        bind_args.append(str(status))
+        predicates.append(f"status = ${len(bind_args)}")
+    if from_at is not None:
+        bind_args.append(from_at)
+        predicates.append(f"started_at >= ${len(bind_args)}")
+    if to_at is not None:
+        bind_args.append(to_at)
+        predicates.append(f"started_at < ${len(bind_args)}")
+    if not predicates:
+        return ("", [])
+    return ("WHERE " + " AND ".join(predicates), bind_args)
+
+
+async def select_backtest_runs_paginated(
+    conn: _DbExecutor,
+    *,
+    bot_id: str | None,
+    status: BacktestStatus | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+    limit: int,
+    offset: int,
+) -> list[BacktestRunRow]:
+    """Return one page of backtest_runs with optional filters.
+
+    ORDER BY ``started_at DESC`` so newest runs appear first per T-415
+    Backtest lab UI convention. ``from_at`` inclusive, ``to_at`` exclusive.
+    """
+    where_clause, where_args = _build_backtests_where_clause(
+        bot_id=bot_id,
+        status=status,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    limit_placeholder = f"${len(where_args) + 1}"
+    offset_placeholder = f"${len(where_args) + 2}"
+    sql = (
+        f"SELECT {_BACKTEST_BASE_COLUMNS} FROM backtest_runs "  # noqa: S608  # nosec B608
+        f"{where_clause} "
+        "ORDER BY started_at DESC "
+        f"LIMIT {limit_placeholder} OFFSET {offset_placeholder}"
+    )
+    rows = await conn.fetch(sql, *where_args, limit, offset)
+    return [_row_to_backtest_run(row) for row in rows]
+
+
+async def count_backtest_runs(
+    conn: _DbExecutor,
+    *,
+    bot_id: str | None,
+    status: BacktestStatus | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> int:
+    """Total count of backtest_runs matching same filters as :func:`select_backtest_runs_paginated`.
+
+    Routes through :func:`_build_backtests_where_clause` (no drift
+    between count and page query — helper-sharing pin per T-402 WG#5).
+    """
+    where_clause, where_args = _build_backtests_where_clause(
+        bot_id=bot_id,
+        status=status,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    sql = f"SELECT COUNT(*) AS n FROM backtest_runs {where_clause}"  # noqa: S608  # nosec B608
+    row = await conn.fetchrow(sql, *where_args)
+    if row is None:
+        return 0
+    return int(row["n"])
+
+
+async def select_backtest_run_by_id(
+    conn: _DbExecutor,
+    run_id: UUID,
+) -> BacktestRunRow | None:
+    """Return one backtest_runs row by UUID PK; ``None`` if missing.
+
+    Simple PK lookup — backtest_runs is NOT a hypertable (low-volume
+    per T-407 OQ-1=A), so no chunk-pruning concern.
+    """
+    row = await conn.fetchrow(_SELECT_BACKTEST_BY_ID_SQL, run_id)
+    return _row_to_backtest_run(row) if row is not None else None
+
+
+@non_idempotent
+async def insert_backtest_run(
+    conn: _DbExecutor,
+    *,
+    name: str,
+    bot_id: str,
+    config_yaml: str,
+    config_hash: str,
+    date_range_start: datetime,
+    date_range_end: datetime,
+    started_at: datetime,
+    notes: str | None,
+) -> BacktestRunRow:
+    """INSERT one row into ``backtest_runs`` (status='queued') and RETURN it.
+
+    Marked ``@non_idempotent`` per §N3. F4 always writes ``status='queued'``
+    (F5+ worker transitions); ``finished_at`` and ``summary`` are NULL at
+    insert time. ``id`` populated by ``gen_random_uuid()`` server default
+    (pgcrypto extension enabled in migration 0012).
+    """
+    row = await conn.fetchrow(
+        _INSERT_BACKTEST_RUN_SQL,
+        name,
+        bot_id,
+        config_yaml,
+        config_hash,
+        date_range_start,
+        date_range_end,
+        started_at,
+        notes,
+    )
+    if row is None:
+        msg = "INSERT ... RETURNING produced no row"
+        raise RuntimeError(msg)
+    return _row_to_backtest_run(row)

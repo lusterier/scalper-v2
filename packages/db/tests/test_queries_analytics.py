@@ -1935,3 +1935,325 @@ async def test_select_trades_for_analytics_returns_typed_dataclass_list() -> Non
     assert all(isinstance(r, TradeRealizedPnlRow) for r in rows)
     assert rows[0].realized_pnl == Decimal("12.34")
     assert rows[1].bot_id == "beta"
+
+
+# ---------------------------------------------------------------------------
+# T-407 — /api/backtests/* query helpers
+# ---------------------------------------------------------------------------
+
+import re  # noqa: E402 — T-407 inline import for module structure
+from uuid import UUID, uuid4  # noqa: E402
+
+from packages.core.types import BacktestStatus  # noqa: E402
+from packages.db.queries.analytics import (  # noqa: E402
+    BacktestRunRow,
+    _build_backtests_where_clause,
+    count_backtest_runs,
+    insert_backtest_run,
+    select_backtest_run_by_id,
+    select_backtest_runs_paginated,
+)
+
+_T_BT_STARTED = datetime(2026, 5, 4, 10, 0, 0, tzinfo=UTC)
+_T_BT_RANGE_START = datetime(2026, 4, 1, 0, 0, 0, tzinfo=UTC)
+_T_BT_RANGE_END = datetime(2026, 5, 1, 0, 0, 0, tzinfo=UTC)
+_BT_UUID = UUID("12345678-1234-5678-1234-567812345678")
+
+
+def _make_backtest_row(
+    *,
+    run_id: UUID = _BT_UUID,
+    name: str = "alpha apr backtest",
+    bot_id: str = "alpha",
+    status: str = "queued",
+    finished_at: datetime | None = None,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": run_id,
+        "name": name,
+        "bot_id": bot_id,
+        "config_yaml": "bot_id: alpha\n",
+        "config_hash": "deadbeef" * 8,
+        "date_range_start": _T_BT_RANGE_START,
+        "date_range_end": _T_BT_RANGE_END,
+        "status": status,
+        "started_at": _T_BT_STARTED,
+        "finished_at": finished_at,
+        "summary": summary,
+        "notes": None,
+    }
+
+
+async def test_select_backtest_runs_paginated_default_returns_typed_list() -> None:
+    """Empty filters → returns typed BacktestRunRow list; ORDER BY started_at DESC pin."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return [_make_backtest_row(name="run-1"), _make_backtest_row(name="run-2")]
+
+    conn.fetch = _capture
+    rows = await select_backtest_runs_paginated(
+        conn,
+        bot_id=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert len(rows) == 2
+    assert all(isinstance(r, BacktestRunRow) for r in rows)
+    assert rows[0].name == "run-1"
+    assert "ORDER BY started_at DESC" in captured[0]
+
+
+async def test_select_backtest_runs_filter_by_bot_id() -> None:
+    """`bot_id` filter binds via $N + appears in WHERE clause."""
+    conn = MagicMock()
+    captured: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, args))
+        return []
+
+    conn.fetch = _capture
+    await select_backtest_runs_paginated(
+        conn,
+        bot_id="alpha",
+        status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    sql, bind_args = captured[0]
+    assert "WHERE bot_id = $1" in sql
+    assert bind_args[0] == "alpha"
+
+
+async def test_select_backtest_runs_filter_by_status_enum() -> None:
+    """`status` filter accepts BacktestStatus enum + binds string value."""
+    conn = MagicMock()
+    captured: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, args))
+        return []
+
+    conn.fetch = _capture
+    await select_backtest_runs_paginated(
+        conn,
+        bot_id=None,
+        status=BacktestStatus.QUEUED,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    sql, bind_args = captured[0]
+    assert "WHERE status = $1" in sql
+    assert bind_args[0] == "queued"
+
+
+async def test_select_backtest_runs_filter_by_from_at_inclusive() -> None:
+    """`from_at` binds as `started_at >= $N`."""
+    conn = MagicMock()
+    captured: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, args))
+        return []
+
+    conn.fetch = _capture
+    await select_backtest_runs_paginated(
+        conn,
+        bot_id=None,
+        status=None,
+        from_at=_T_BT_RANGE_START,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    sql, _bind_args = captured[0]
+    assert "WHERE started_at >= $1" in sql
+
+
+async def test_select_backtest_runs_filter_by_to_at_exclusive() -> None:
+    """`to_at` binds as `started_at < $N` (half-open)."""
+    conn = MagicMock()
+    captured: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, args))
+        return []
+
+    conn.fetch = _capture
+    await select_backtest_runs_paginated(
+        conn,
+        bot_id=None,
+        status=None,
+        from_at=None,
+        to_at=_T_BT_RANGE_END,
+        limit=50,
+        offset=0,
+    )
+    sql, _bind_args = captured[0]
+    assert "WHERE started_at < $1" in sql
+
+
+def test_build_backtests_where_clause_combines_4_filters_via_AND() -> None:
+    """All 4 filters AND-joined with sequential $N placeholders."""
+    where, args = _build_backtests_where_clause(
+        bot_id="alpha",
+        status=BacktestStatus.QUEUED,
+        from_at=_T_BT_RANGE_START,
+        to_at=_T_BT_RANGE_END,
+    )
+    assert where == ("WHERE bot_id = $1 AND status = $2 AND started_at >= $3 AND started_at < $4")
+    assert args == ["alpha", "queued", _T_BT_RANGE_START, _T_BT_RANGE_END]
+
+
+def test_build_backtests_where_clause_empty_returns_no_clause() -> None:
+    """All filters None → empty WHERE + empty args."""
+    where, args = _build_backtests_where_clause(
+        bot_id=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert where == ""
+    assert args == []
+
+
+def test_build_backtests_where_clause_placeholders_only() -> None:
+    """L-008 active control: scan generated SQL for $N-only; no string-interpolated values."""
+    where, _args = _build_backtests_where_clause(
+        bot_id="alpha",
+        status=BacktestStatus.RUNNING,
+        from_at=_T_BT_RANGE_START,
+        to_at=_T_BT_RANGE_END,
+    )
+    placeholder_matches = re.findall(r"\$\d+", where)
+    assert len(placeholder_matches) == 4
+    # No literal value should appear in the WHERE clause itself.
+    assert "alpha" not in where
+    assert "queued" not in where
+    assert "running" not in where
+    assert "2026" not in where
+
+
+async def test_count_backtest_runs_uses_same_where_as_paginated() -> None:
+    """Both helpers route through `_build_backtests_where_clause` (no drift)."""
+    conn = MagicMock()
+    captured_select: list[str] = []
+    captured_count: list[str] = []
+
+    async def _fetch(sql: str, *_args: Any) -> list[Any]:
+        captured_select.append(sql)
+        return []
+
+    async def _fetchrow(sql: str, *_args: Any) -> dict[str, int]:
+        captured_count.append(sql)
+        return {"n": 0}
+
+    conn.fetch = _fetch
+    conn.fetchrow = _fetchrow
+    common: dict[str, Any] = {
+        "bot_id": "alpha",
+        "status": None,
+        "from_at": None,
+        "to_at": None,
+    }
+    await select_backtest_runs_paginated(conn, **common, limit=50, offset=0)
+    await count_backtest_runs(conn, **common)
+    assert "WHERE bot_id = $1" in captured_select[0]
+    assert "WHERE bot_id = $1" in captured_count[0]
+
+
+async def test_select_backtest_run_by_id_hit_returns_typed_row() -> None:
+    """UUID PK lookup returns BacktestRunRow."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_backtest_row(run_id=_BT_UUID))
+    row = await select_backtest_run_by_id(conn, _BT_UUID)
+    assert row is not None
+    assert isinstance(row, BacktestRunRow)
+    assert row.id == _BT_UUID
+    assert row.status == BacktestStatus.QUEUED
+
+
+async def test_select_backtest_run_by_id_miss_returns_none() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    row = await select_backtest_run_by_id(conn, uuid4())
+    assert row is None
+
+
+async def test_select_backtest_runs_status_enum_narrowing_raises_on_unknown() -> None:
+    """Defensive narrowing: unknown enum value → ValueError on row-narrowing."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[_make_backtest_row(status="bogus")])
+    with pytest.raises(ValueError, match="bogus"):
+        await select_backtest_runs_paginated(
+            conn,
+            bot_id=None,
+            status=None,
+            from_at=None,
+            to_at=None,
+            limit=50,
+            offset=0,
+        )
+
+
+async def test_insert_backtest_run_returns_full_typed_row() -> None:
+    """INSERT ... RETURNING produces BacktestRunRow with all fields populated."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_backtest_row())
+    row = await insert_backtest_run(
+        conn,
+        name="alpha apr backtest",
+        bot_id="alpha",
+        config_yaml="bot_id: alpha\n",
+        config_hash="deadbeef" * 8,
+        date_range_start=_T_BT_RANGE_START,
+        date_range_end=_T_BT_RANGE_END,
+        started_at=_T_BT_STARTED,
+        notes=None,
+    )
+    assert isinstance(row, BacktestRunRow)
+    assert row.id == _BT_UUID
+    assert row.bot_id == "alpha"
+    assert row.status == BacktestStatus.QUEUED
+
+
+def test_insert_backtest_run_marker_is_non_idempotent() -> None:
+    """§N3 — backtest run insert is non-idempotent."""
+    assert is_non_idempotent(insert_backtest_run)
+    assert insert_backtest_run.__non_idempotent__ is True  # type: ignore[attr-defined]
+
+
+async def test_select_backtest_runs_empty_table_returns_empty_list() -> None:
+    """Empty DB → empty list + count 0."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    conn.fetchrow = AsyncMock(return_value={"n": 0})
+    rows = await select_backtest_runs_paginated(
+        conn,
+        bot_id=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    total = await count_backtest_runs(
+        conn,
+        bot_id=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert rows == []
+    assert total == 0

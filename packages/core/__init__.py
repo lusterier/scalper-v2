@@ -19,6 +19,7 @@ from .markers import (
 from .time import now_utc
 from .types import (
     Action,
+    BacktestStatus,
     BotId,
     BotStatus,
     CorrelationId,
@@ -33,6 +34,7 @@ from .types import (
 
 __all__ = [
     "Action",
+    "BacktestStatus",
     "BotId",
     "BotStatus",
     "CorrelationId",
