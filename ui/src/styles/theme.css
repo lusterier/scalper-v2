@@ -1,0 +1,50 @@
+/*
+ * scalper-v2 dashboard theme — CSS variables per BRIEF §14.5.
+ *
+ * "All colors via CSS variables in ui/src/styles/theme.css. Changing the
+ * palette is a one-file edit." This file is the canonical palette source;
+ * tailwind.config.ts maps each Tailwind color token to one of these vars.
+ *
+ * Dark mode first per BRIEF §14.2:2055; light theme deferred F4+ per §0.8.
+ *
+ * NOTE (per WG#1): timestamp formatting (UTC default + CEST toggle per
+ * §14.2:2054) is a CONSUMER-ROUTE responsibility (T-411+ component
+ * library + section routes), NOT a theme-layer concern. This file owns
+ * COLORS only — palette changes don't affect time-rendering logic.
+ *
+ * Variable convention follows shadcn/ui (HSL triplets without `hsl(...)`
+ * wrapper so Tailwind utilities can compose alpha modifiers like
+ * `bg-primary/50`). Reference: https://ui.shadcn.com/themes
+ */
+
+:root.dark {
+  --background: 222 47% 11%;
+  --foreground: 210 40% 98%;
+
+  --card: 222 47% 13%;
+  --card-foreground: 210 40% 98%;
+
+  --popover: 222 47% 13%;
+  --popover-foreground: 210 40% 98%;
+
+  --primary: 210 100% 56%;
+  --primary-foreground: 222 47% 11%;
+
+  --secondary: 217 33% 18%;
+  --secondary-foreground: 210 40% 98%;
+
+  --muted: 217 33% 18%;
+  --muted-foreground: 215 20% 65%;
+
+  --accent: 217 33% 18%;
+  --accent-foreground: 210 40% 98%;
+
+  --destructive: 0 63% 50%;
+  --destructive-foreground: 210 40% 98%;
+
+  --border: 217 33% 22%;
+  --input: 217 33% 22%;
+  --ring: 210 100% 56%;
+
+  --radius: 0.5rem;
+}
