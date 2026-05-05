@@ -55,6 +55,14 @@ function RootLayout() {
           >
             Trade explorer
           </Link>
+          <Link
+            to="/backtests"
+            className="block rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            activeProps={{ className: "block rounded-md px-2 py-1.5 bg-accent text-foreground" }}
+            data-testid="nav-backtests"
+          >
+            Backtest lab
+          </Link>
         </nav>
       </aside>
       <main className="flex-1 p-6">

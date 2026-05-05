@@ -11,8 +11,10 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TradesIndexRouteImport } from './routes/trades.index'
+import { Route as BacktestsIndexRouteImport } from './routes/backtests.index'
 import { Route as TradesTradeIdRouteImport } from './routes/trades.$tradeId'
 import { Route as BotBotIdRouteImport } from './routes/bot.$botId'
+import { Route as BacktestsRunIdRouteImport } from './routes/backtests.$runId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,6 +24,11 @@ const IndexRoute = IndexRouteImport.update({
 const TradesIndexRoute = TradesIndexRouteImport.update({
   id: '/trades/',
   path: '/trades/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BacktestsIndexRoute = BacktestsIndexRouteImport.update({
+  id: '/backtests/',
+  path: '/backtests/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TradesTradeIdRoute = TradesTradeIdRouteImport.update({
@@ -34,38 +41,70 @@ const BotBotIdRoute = BotBotIdRouteImport.update({
   path: '/bot/$botId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BacktestsRunIdRoute = BacktestsRunIdRouteImport.update({
+  id: '/backtests/$runId',
+  path: '/backtests/$runId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
+  '/backtests/': typeof BacktestsIndexRoute
   '/trades/': typeof TradesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
+  '/backtests': typeof BacktestsIndexRoute
   '/trades': typeof TradesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
+  '/backtests/': typeof BacktestsIndexRoute
   '/trades/': typeof TradesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/bot/$botId' | '/trades/$tradeId' | '/trades/'
+  fullPaths:
+    | '/'
+    | '/backtests/$runId'
+    | '/bot/$botId'
+    | '/trades/$tradeId'
+    | '/backtests/'
+    | '/trades/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/bot/$botId' | '/trades/$tradeId' | '/trades'
-  id: '__root__' | '/' | '/bot/$botId' | '/trades/$tradeId' | '/trades/'
+  to:
+    | '/'
+    | '/backtests/$runId'
+    | '/bot/$botId'
+    | '/trades/$tradeId'
+    | '/backtests'
+    | '/trades'
+  id:
+    | '__root__'
+    | '/'
+    | '/backtests/$runId'
+    | '/bot/$botId'
+    | '/trades/$tradeId'
+    | '/backtests/'
+    | '/trades/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  BacktestsRunIdRoute: typeof BacktestsRunIdRoute
   BotBotIdRoute: typeof BotBotIdRoute
   TradesTradeIdRoute: typeof TradesTradeIdRoute
+  BacktestsIndexRoute: typeof BacktestsIndexRoute
   TradesIndexRoute: typeof TradesIndexRoute
 }
 
@@ -85,6 +124,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TradesIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/backtests/': {
+      id: '/backtests/'
+      path: '/backtests'
+      fullPath: '/backtests/'
+      preLoaderRoute: typeof BacktestsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/trades/$tradeId': {
       id: '/trades/$tradeId'
       path: '/trades/$tradeId'
@@ -99,13 +145,22 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BotBotIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/backtests/$runId': {
+      id: '/backtests/$runId'
+      path: '/backtests/$runId'
+      fullPath: '/backtests/$runId'
+      preLoaderRoute: typeof BacktestsRunIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  BacktestsRunIdRoute: BacktestsRunIdRoute,
   BotBotIdRoute: BotBotIdRoute,
   TradesTradeIdRoute: TradesTradeIdRoute,
+  BacktestsIndexRoute: BacktestsIndexRoute,
   TradesIndexRoute: TradesIndexRoute,
 }
 export const routeTree = rootRouteImport

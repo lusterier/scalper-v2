@@ -15,6 +15,7 @@ const statusBadgeVariants = cva(
         bot: "",
         signal: "",
         trade: "",
+        backtest: "",
       },
       tone: {
         green: "bg-green-500/15 text-green-400 ring-1 ring-green-500/30",
@@ -28,7 +29,7 @@ const statusBadgeVariants = cva(
   },
 );
 
-export type BadgeKind = "bot" | "signal" | "trade";
+export type BadgeKind = "bot" | "signal" | "trade" | "backtest";
 
 interface StatusBadgeProps
   extends React.HTMLAttributes<HTMLSpanElement>,
@@ -54,6 +55,12 @@ function toneFor(kind: BadgeKind, status: string): VariantProps<typeof statusBad
     if (status === "open") return "blue";
     if (status === "closed") return "gray";
     if (status === "error") return "red";
+  }
+  if (kind === "backtest") {
+    if (status === "queued") return "yellow";
+    if (status === "running") return "blue";
+    if (status === "completed") return "green";
+    if (status === "failed") return "red";
   }
   return "gray";
 }

@@ -17,4 +17,19 @@ describe("StatusBadge", () => {
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain("text-muted-foreground");
   });
+
+  it("kind=backtest renders correct tone for queued/running/completed/failed (T-415 WG#4)", () => {
+    const cases: Array<{ status: string; tone: string }> = [
+      { status: "queued", tone: "text-yellow-400" },
+      { status: "running", tone: "text-blue-400" },
+      { status: "completed", tone: "text-green-400" },
+      { status: "failed", tone: "text-red-400" },
+    ];
+    for (const c of cases) {
+      const { unmount } = render(<StatusBadge kind="backtest" status={c.status} />);
+      const badge = screen.getByText(c.status);
+      expect(badge.className).toContain(c.tone);
+      unmount();
+    }
+  });
 });

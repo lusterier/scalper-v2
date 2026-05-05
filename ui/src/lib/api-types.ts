@@ -199,3 +199,42 @@ export interface ScoringEvaluation {
 export interface ScoringEvaluationListResponse {
   evaluations: ScoringEvaluation[];
 }
+
+// T-415 — BacktestRun mirror of services/analytics_api/app/models/
+// backtests.py:BacktestRunResponse (12 fields). UUID `id` serialised as
+// string. NUMERIC fields are absent in this table; all timestamps are
+// ISO-8601; `summary` is JSONB (always null in F4 — F5+ worker
+// populates).
+export interface BacktestRun {
+  id: string;
+  name: string;
+  bot_id: string;
+  config_yaml: string;
+  config_hash: string;
+  date_range_start: string;
+  date_range_end: string;
+  status: "queued" | "running" | "completed" | "failed";
+  started_at: string;
+  finished_at: string | null;
+  summary: Record<string, unknown> | null;
+  notes: string | null;
+}
+
+export interface BacktestRunListResponse {
+  runs: BacktestRun[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// T-415 — POST /api/backtests/ request body. Mirrors backend
+// BacktestRunCreateRequest 6 fields. date_range_start / date_range_end
+// MUST be ISO-8601 with .toISOString() Z-suffix per §N1.
+export interface BacktestRunCreateRequest {
+  name: string;
+  bot_id: string;
+  config_yaml: string;
+  date_range_start: string;
+  date_range_end: string;
+  notes: string | null;
+}
