@@ -29,12 +29,12 @@ describe("UI scaffold smoke tests", () => {
     expect(await screen.findByText("scalper-v2")).toBeInTheDocument();
   });
 
-  it("displays the component showcase heading (T-411 rewrite)", async () => {
+  it("displays the Overview route heading (T-412 rewrite)", async () => {
     renderApp();
-    // T-411 rewrote routes/index.tsx as component showcase. T-410's
-    // "UI scaffold ready" placeholder text removed; new heading is
-    // "Component showcase" per WG#4.
-    expect(await screen.findByText("Component showcase")).toBeInTheDocument();
+    // T-412 rewrote routes/index.tsx as Section 1 Overview cross-bot
+    // dashboard. T-411 "Component showcase" text replaced; first
+    // observable heading is the "Open positions" tile title.
+    expect(await screen.findByText("Open positions")).toBeInTheDocument();
   });
 
   it("cn utility merges Tailwind classes (last-wins on conflict)", () => {

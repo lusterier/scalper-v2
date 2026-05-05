@@ -31,3 +31,60 @@ export interface Bot {
 export interface BotListResponse {
   bots: Bot[];
 }
+
+// T-412 — mirror of services/analytics_api/app/models/positions.py
+// (OpenPositionResponse). NUMERIC columns serialised as JSON string
+// per §5.3 to preserve Decimal precision; T-412 OverviewPage only
+// reads `.length` of positions array, but downstream T-413 will
+// consume row fields (entry_price, running_pnl etc.) verbatim.
+export interface OpenPosition {
+  bot_id: string;
+  symbol: string;
+  trade_id: number;
+  side: string;
+  entry_price: string;
+  qty: string;
+  remaining_qty: string;
+  sl_price: string | null;
+  tp_price: string | null;
+  sl_type: string | null;
+  best_price: string | null;
+  tp_hit: boolean;
+  trailing_active: boolean;
+  running_pnl: string;
+  mfe_price: string | null;
+  mae_price: string | null;
+  updated_at: string;
+}
+
+export interface OpenPositionListResponse {
+  positions: OpenPosition[];
+}
+
+// T-412 — mirror of services/analytics_api/app/models/analytics.py
+// (PnlSeriesPointResponse + PnlSeriesResponse). bucket_pnl /
+// cumulative_pnl are §5.3 Decimal-as-string.
+export interface PnlSeriesPoint {
+  bucket_at: string;
+  bucket_pnl: string;
+  cumulative_pnl: string;
+}
+
+export interface PnlSeriesResponse {
+  points: PnlSeriesPoint[];
+  bot_id: string | null;
+  from_at: string | null;
+  to_at: string | null;
+  bucket: "hour" | "day";
+}
+
+// T-412 — mirror of services/analytics_api/app/models/signals.py
+// (SignalListResponse). T-412 OverviewPage only reads `.total` count
+// for the 24h-window tile; full Signal row interface lands in T-413
+// (per-bot live signals feed) / T-414 (trade explorer drill-down).
+export interface SignalListResponse {
+  signals: unknown[];
+  total: number;
+  limit: number;
+  offset: number;
+}
