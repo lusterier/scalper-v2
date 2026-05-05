@@ -39,6 +39,26 @@ with last-scrape timestamp) over the Prometheus `up` metric.
 datasource treatment: UI is read-only, committed file is source
 of truth.
 
+## Dashboards (T-421 ops dashboards inventory)
+
+T-421 ships 4 ops dashboards alongside the F0 `overview.json`. Each
+JSON file lives under `dashboards/` and provisions automatically via
+the file provider (10s rescan; hot-reload). PromQL is validated in CI
+by `tests/grafana/test_dashboard_queries.py` against zero-data
+Prometheus — empty-metric placeholders are syntactically valid (status
+"success") even when their exporter has not yet landed.
+
+| Dashboard | UID | Exporter dep | Status today |
+| --- | --- | --- | --- |
+| Overview | `scalper-v2-overview` | none (F0 stub) | functional |
+| Service Health | `scalper-v2-service-health` | none for default panels; spec'd metrics need service emission | functional for `up` / `process_*` panels; `open_positions` / `virtual_balance` / `ws_connected` / `db_pool_saturation` empty until services emit per BRIEF §15.3 |
+| NATS | `scalper-v2-nats` | prometheus-nats-exporter (F5+ sidecar) | empty until sidecar lands |
+| PostgreSQL | `scalper-v2-pg` | partial: `db_pool_saturation` from services (functional when emitted); `pg_stat_*` from postgres_exporter (F5+) | partial functional |
+| Host | `scalper-v2-host` | node-exporter (F5+ sidecar) | empty until sidecar lands |
+
+Operator search: `grep -l "F5+" infra/grafana/dashboards/*.json` lists
+panels with deferred exporter dependencies.
+
 ## Auth posture
 
 Anonymous `Viewer` role is enabled; the login form is kept

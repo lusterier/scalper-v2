@@ -1,0 +1,219 @@
+{
+  "schemaVersion": 41,
+  "uid": "scalper-v2-service-health",
+  "title": "scalper-v2 Service Health",
+  "tags": ["scalper-v2", "ops"],
+  "timezone": "browser",
+  "time": {"from": "now-15m", "to": "now"},
+  "refresh": "15s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Targets up",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "sum(up)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Per-service up status",
+      "description": "Instant snapshot of all scrape targets; 0=DOWN, 1=UP.",
+      "gridPos": {"h": 8, "w": 18, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "up",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"__name__": true},
+            "indexByName": {"job": 0, "instance": 1, "Value": 2, "Time": 3},
+            "renameByName": {"job": "Job", "instance": "Instance", "Value": "Status", "Time": "Last scrape"}
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Status"},
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red", "index": 0}, "1": {"text": "UP", "color": "green", "index": 1}}}]
+              },
+              {"id": "custom.cellOptions", "value": {"type": "color-text"}}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Last scrape"},
+            "properties": [{"id": "unit", "value": "dateTimeAsIso"}]
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Service CPU usage (rate, last 1m)",
+      "description": "Python prometheus_client default — process_cpu_seconds_total rate per scrape instance.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "rate(process_cpu_seconds_total[1m])",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 4}, "overrides": []}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Service memory (resident)",
+      "description": "Python prometheus_client default — process_resident_memory_bytes per scrape instance.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "process_resident_memory_bytes",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Service open file descriptors",
+      "description": "Python prometheus_client default — process_open_fds per scrape instance.",
+      "gridPos": {"h": 7, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "process_open_fds",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Open positions (total)",
+      "description": "Empty until services emit per BRIEF §15.3 (open_positions{bot_id} not yet wired).",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 23},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "sum(open_positions)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Aggregate virtual balance",
+      "description": "Empty until services emit per BRIEF §15.3 (virtual_balance{bot_id} not yet wired).",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 23},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "sum(virtual_balance)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2}, "overrides": []}
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "WS connected streams",
+      "description": "Empty until services emit per BRIEF §15.3 (ws_connected{stream} not yet wired).",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 23},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "sum(ws_connected)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "DB pool saturation (max)",
+      "description": "Empty until services emit per BRIEF §15.3 (db_pool_saturation{service} not yet wired).",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 23},
+      "datasource": {"type": "prometheus", "uid": "ds_prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "ds_prom"},
+          "expr": "max(db_pool_saturation)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": 0},
+              {"color": "yellow", "value": 0.7},
+              {"color": "red", "value": 0.9}
+            ]
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
