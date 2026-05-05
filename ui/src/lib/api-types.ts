@@ -115,3 +115,87 @@ export interface PaginatedSignalListResponse {
   limit: number;
   offset: number;
 }
+
+// T-414 — Trade interface, exact 21-field mirror of services/
+// analytics_api/app/models/trades.py:TradeResponse (verified 2026-05-05).
+// NUMERIC fields → string per §5.3; DOUBLE PRECISION → number per §5.13;
+// JSONB → Record<string, unknown>; datetime → ISO-8601 string.
+export interface Trade {
+  id: number;
+  bot_id: string;
+  signal_id: number | null;
+  open_order_id: number;
+  close_order_id: number | null;
+  symbol: string;
+  side: string;
+  entry_price: string;
+  exit_price: string | null;
+  qty: string;
+  notional_usd: string;
+  realized_pnl: string | null;
+  fees_paid: string | null;
+  close_reason: string | null;
+  opened_at: string;
+  closed_at: string | null;
+  status: "open" | "closed" | "error";
+  mfe_pct: number | null;
+  mae_pct: number | null;
+  confidence_score: number | null;
+  meta: Record<string, unknown>;
+}
+
+export interface TradeListResponse {
+  trades: Trade[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// T-414 — full SignalDetail mirror of SignalResponse (11 fields). T-413
+// `Signal` is the 6-field SignalFeed subset; T-414 drill-down wants the
+// 5 OMITTED fields (schema_version + source + idempotency_key +
+// original_symbol + payload).
+export interface SignalDetail {
+  id: number;
+  received_at: string;
+  schema_version: string;
+  source: string;
+  idempotency_key: string;
+  symbol: string;
+  original_symbol: string | null;
+  action: string;
+  payload: Record<string, unknown>;
+  ingestion_status: "validated" | "duplicate" | "invalid";
+  correlation_id: string;
+}
+
+// T-414 — ScoringRuleResult mirrors packages/scoring/types.py:RuleResult
+// exactly. `result` is loose `str` per backend (evaluator.py:286
+// `result=str(outcome)`); possible values: "True" / "False" / "n/a" /
+// "skipped" / "error_skipped" / "data_missing" / "data_stale". `error`
+// is JSONB dict (e.g. `{"error": "<repr exc>"}`) or null. Plan WG#1.
+export interface ScoringRuleResult {
+  name: string;
+  weight: number;
+  applied_weight: number;
+  result: string;
+  error: Record<string, unknown> | null;
+}
+
+export interface ScoringEvaluation {
+  id: number;
+  bot_id: string;
+  signal_id: number;
+  evaluated_at: string;
+  trigger_threshold: number;
+  total_score: number;
+  decision: "execute" | "reject" | "passthrough";
+  config_version: number;
+  rule_results: ScoringRuleResult[];
+  feature_snapshot: Record<string, unknown>;
+  correlation_id: string;
+}
+
+export interface ScoringEvaluationListResponse {
+  evaluations: ScoringEvaluation[];
+}

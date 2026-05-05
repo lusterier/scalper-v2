@@ -47,6 +47,14 @@ function RootLayout() {
               Per-bot live view
             </Link>
           )}
+          <Link
+            to="/trades"
+            className="block rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            activeProps={{ className: "block rounded-md px-2 py-1.5 bg-accent text-foreground" }}
+            data-testid="nav-trades"
+          >
+            Trade explorer
+          </Link>
         </nav>
       </aside>
       <main className="flex-1 p-6">

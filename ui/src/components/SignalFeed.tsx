@@ -9,19 +9,10 @@ import * as React from "react";
 import { CorrelationIdChip } from "@/components/CorrelationIdChip";
 import { StatusBadge } from "@/components/StatusBadge";
 import type { Signal } from "@/lib/api-types";
+import { formatUtcTimeOnly } from "@/lib/format-time";
 
 interface SignalFeedProps {
   signals: Signal[];
-}
-
-function formatReceivedAt(iso: string): string {
-  // §N1 — render received_at in explicit UTC with " UTC" suffix per
-  // BRIEF §14.2 dashboard convention; F5+ CEST/UTC toggle adds toggle.
-  const d = new Date(iso);
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  const ss = String(d.getUTCSeconds()).padStart(2, "0");
-  return `${hh}:${mm}:${ss} UTC`;
 }
 
 export function SignalFeed({ signals }: SignalFeedProps): React.JSX.Element {
@@ -46,7 +37,7 @@ export function SignalFeed({ signals }: SignalFeedProps): React.JSX.Element {
               className="flex items-center gap-3 px-3 py-2 text-sm"
             >
               <span className="font-mono text-xs text-muted-foreground">
-                {formatReceivedAt(s.received_at)}
+                {formatUtcTimeOnly(s.received_at)}
               </span>
               <span className="font-medium">{s.symbol}</span>
               <span className="text-muted-foreground">{s.action}</span>
