@@ -1,0 +1,45 @@
+name: e2e
+
+# T-422 — Playwright E2E critical journeys per BRIEF §14.6:2089 +
+# §19:2571. Triggered ONLY on master push (per OQ-3=A; BRIEF "main
+# branch merges"). NOT pull_request — Playwright cost (~5-10min)
+# too high for every PR. F5+ may add PR trigger.
+
+on:
+  push:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  playwright:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20.19.6"
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.33.2"
+      - name: Install ui dependencies
+        working-directory: ui
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright chromium browser
+        working-directory: ui
+        # --with-deps installs Ubuntu apt packages required by Chromium
+        # (libnss3, libxss1, libasound2 etc.); chromium-only per OQ-5=A.
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run E2E
+        working-directory: ui
+        run: pnpm exec playwright test
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report
+          path: ui/playwright-report/
+          retention-days: 7

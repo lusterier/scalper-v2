@@ -47,7 +47,22 @@ pnpm test:ci      # Vitest single run (CI-friendly)
 pnpm build        # Production bundle (sanity check; not deployed in F4)
 pnpm preview      # Serve `dist/` locally for build verification
 pnpm format       # Prettier with Tailwind class ordering
+pnpm e2e          # T-422 Playwright E2E (mocked /api/*; no backend)
+pnpm e2e:ui       # Playwright interactive UI mode
 ```
+
+## E2E tests (T-422)
+
+Playwright runs 3 critical-path scenarios per BRIEF §14.6:2089:
+1. Overview renders 5 tiles + top-bar
+2. Per-bot navigation: `/bot/$botId` route
+3. Trade explorer drill-down: list → click row → 8 sections
+
+Per OQ-2=B — `/api/*` requests are intercepted via Playwright `page.route()` + fixture responses (`ui/e2e/fixtures/api-mocks.ts`). No backend startup needed; tests focus on UI behavior + user-flow integrity. Backend correctness covered separately by 1789 pytest suite.
+
+CI integration: `.github/workflows/e2e.yml` triggers on `push: branches: [master]` (per BRIEF "main branch merges"); installs chromium browser; uploads `playwright-report/` artifact on failure.
+
+**Dep audit baseline (T-422 plan-stage 2026-05-05)**: `@playwright/test@1.59.1` adds **0 new CVEs vs baseline** (`pnpm audit --prod=false` reports 14 pre-existing vulnerabilities all from T-410 deps — esbuild / vite / vitest / postcss / eslint-plugin-kit; identical advisory paths before/after Playwright add). Critical vulnerability `vitest` Remote Code Execution (GHSA-9crc-q9x8-hgqq) predates T-422 — separate fix task scope. Renovate / dep-bump PRs MUST re-audit per L-009 active control.
 
 ## Layout
 
