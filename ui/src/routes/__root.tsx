@@ -108,6 +108,14 @@ function RootLayout() {
           >
             Audit log
           </Link>
+          <Link
+            to="/settings"
+            className="block rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            activeProps={{ className: "block rounded-md px-2 py-1.5 bg-accent text-foreground" }}
+            data-testid="nav-settings"
+          >
+            Settings
+          </Link>
         </nav>
       </aside>
       <main className="flex-1 p-6">

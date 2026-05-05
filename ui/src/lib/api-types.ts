@@ -333,3 +333,34 @@ export interface AuditEventListResponse {
   limit: number;
   offset: number;
 }
+
+// T-420 — SymbolMapEntry exact 6-field mirror of services/analytics_api/
+// app/models/symbol_map.py:SymbolMapEntryResponse. exchange_source per
+// packages/core/types.py:83-92 ExchangeSource StrEnum (binance/bybit/
+// custom).
+export interface SymbolMapEntry {
+  input_symbol: string;
+  canonical_symbol: string;
+  exchange_source: "binance" | "bybit" | "custom";
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SymbolMapListResponse {
+  entries: SymbolMapEntry[];
+}
+
+export interface SymbolMapEntryCreateRequest {
+  input_symbol: string;
+  canonical_symbol: string;
+  exchange_source: "binance" | "bybit" | "custom";
+  notes: string | null;
+}
+
+// PUT body excludes input_symbol per backend WG#10 (URL path is the PK).
+export interface SymbolMapEntryUpdateRequest {
+  canonical_symbol: string;
+  exchange_source: "binance" | "bybit" | "custom";
+  notes: string | null;
+}

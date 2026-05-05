@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as FeaturesRouteImport } from './routes/features'
 import { Route as AuditRouteImport } from './routes/audit'
 import { Route as IndexRouteImport } from './routes/index'
@@ -21,6 +22,11 @@ import { Route as ScoringSignalIdRouteImport } from './routes/scoring.$signalId'
 import { Route as BotBotIdRouteImport } from './routes/bot.$botId'
 import { Route as BacktestsRunIdRouteImport } from './routes/backtests.$runId'
 
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const FeaturesRoute = FeaturesRouteImport.update({
   id: '/features',
   path: '/features',
@@ -81,6 +87,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/audit': typeof AuditRoute
   '/features': typeof FeaturesRoute
+  '/settings': typeof SettingsRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
   '/scoring/$signalId': typeof ScoringSignalIdRoute
@@ -94,6 +101,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/audit': typeof AuditRoute
   '/features': typeof FeaturesRoute
+  '/settings': typeof SettingsRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
   '/scoring/$signalId': typeof ScoringSignalIdRoute
@@ -108,6 +116,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/audit': typeof AuditRoute
   '/features': typeof FeaturesRoute
+  '/settings': typeof SettingsRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
   '/scoring/$signalId': typeof ScoringSignalIdRoute
@@ -123,6 +132,7 @@ export interface FileRouteTypes {
     | '/'
     | '/audit'
     | '/features'
+    | '/settings'
     | '/backtests/$runId'
     | '/bot/$botId'
     | '/scoring/$signalId'
@@ -136,6 +146,7 @@ export interface FileRouteTypes {
     | '/'
     | '/audit'
     | '/features'
+    | '/settings'
     | '/backtests/$runId'
     | '/bot/$botId'
     | '/scoring/$signalId'
@@ -149,6 +160,7 @@ export interface FileRouteTypes {
     | '/'
     | '/audit'
     | '/features'
+    | '/settings'
     | '/backtests/$runId'
     | '/bot/$botId'
     | '/scoring/$signalId'
@@ -163,6 +175,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuditRoute: typeof AuditRoute
   FeaturesRoute: typeof FeaturesRoute
+  SettingsRoute: typeof SettingsRoute
   BacktestsRunIdRoute: typeof BacktestsRunIdRoute
   BotBotIdRoute: typeof BotBotIdRoute
   ScoringSignalIdRoute: typeof ScoringSignalIdRoute
@@ -175,6 +188,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/features': {
       id: '/features'
       path: '/features'
@@ -259,6 +279,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuditRoute: AuditRoute,
   FeaturesRoute: FeaturesRoute,
+  SettingsRoute: SettingsRoute,
   BacktestsRunIdRoute: BacktestsRunIdRoute,
   BotBotIdRoute: BotBotIdRoute,
   ScoringSignalIdRoute: ScoringSignalIdRoute,
