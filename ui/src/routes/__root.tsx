@@ -63,6 +63,27 @@ function RootLayout() {
           >
             Backtest lab
           </Link>
+          {lastBotId === null ? (
+            <span
+              className="block cursor-not-allowed rounded-md px-2 py-1.5 text-muted-foreground opacity-50"
+              title="Select a bot first"
+              data-testid="nav-strategy-disabled"
+            >
+              Strategy editor
+            </span>
+          ) : (
+            <Link
+              to="/strategy/$botId"
+              params={{ botId: lastBotId }}
+              className="block rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              activeProps={{
+                className: "block rounded-md px-2 py-1.5 bg-accent text-foreground",
+              }}
+              data-testid="nav-strategy"
+            >
+              Strategy editor
+            </Link>
+          )}
         </nav>
       </aside>
       <main className="flex-1 p-6">

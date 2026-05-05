@@ -6,7 +6,10 @@
 // Vite dev server proxies /api/* to http://127.0.0.1:8000 (analytics-api).
 // In production (F5+), nginx routes /api/* to the backend service.
 
-type FetchOptions = Omit<RequestInit, "body"> & { body?: unknown };
+type FetchOptions = Omit<RequestInit, "body" | "signal"> & {
+  body?: unknown;
+  signal?: AbortSignal;
+};
 
 export async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T> {
   const { body, headers, ...rest } = options;

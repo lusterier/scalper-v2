@@ -238,3 +238,44 @@ export interface BacktestRunCreateRequest {
   date_range_end: string;
   notes: string | null;
 }
+
+// T-416 — Mirrors `services/analytics_api/app/models/configs.py`
+// exactly. Drift = compile-time error or 422 round-trip; manually
+// reconcile when backend schema evolves. WG#2 enforces 8/4/2/4/3
+// field counts.
+
+export interface BotConfig {
+  id: number;
+  bot_id: string;
+  version: number;
+  applied_at: string;
+  applied_by: string;
+  config_yaml: string;
+  config_hash: string;
+  notes: string | null;
+}
+
+export interface BotConfigVersionsListResponse {
+  versions: BotConfig[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ConfigValidateRequest {
+  bot_id: string;
+  yaml_text: string;
+}
+
+export interface ConfigValidateResponse {
+  valid: boolean;
+  bot_id: string;
+  parsed_version: number | null;
+  errors: string[];
+}
+
+export interface ConfigApplyRequest {
+  yaml_text: string;
+  applied_by: string;
+  notes: string | null;
+}

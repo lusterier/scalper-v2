@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as TradesIndexRouteImport } from './routes/trades.index'
 import { Route as BacktestsIndexRouteImport } from './routes/backtests.index'
 import { Route as TradesTradeIdRouteImport } from './routes/trades.$tradeId'
+import { Route as StrategyBotIdRouteImport } from './routes/strategy.$botId'
 import { Route as BotBotIdRouteImport } from './routes/bot.$botId'
 import { Route as BacktestsRunIdRouteImport } from './routes/backtests.$runId'
 
@@ -36,6 +37,11 @@ const TradesTradeIdRoute = TradesTradeIdRouteImport.update({
   path: '/trades/$tradeId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const StrategyBotIdRoute = StrategyBotIdRouteImport.update({
+  id: '/strategy/$botId',
+  path: '/strategy/$botId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BotBotIdRoute = BotBotIdRouteImport.update({
   id: '/bot/$botId',
   path: '/bot/$botId',
@@ -51,6 +57,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
+  '/strategy/$botId': typeof StrategyBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
   '/backtests/': typeof BacktestsIndexRoute
   '/trades/': typeof TradesIndexRoute
@@ -59,6 +66,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
+  '/strategy/$botId': typeof StrategyBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
   '/backtests': typeof BacktestsIndexRoute
   '/trades': typeof TradesIndexRoute
@@ -68,6 +76,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
+  '/strategy/$botId': typeof StrategyBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
   '/backtests/': typeof BacktestsIndexRoute
   '/trades/': typeof TradesIndexRoute
@@ -78,6 +87,7 @@ export interface FileRouteTypes {
     | '/'
     | '/backtests/$runId'
     | '/bot/$botId'
+    | '/strategy/$botId'
     | '/trades/$tradeId'
     | '/backtests/'
     | '/trades/'
@@ -86,6 +96,7 @@ export interface FileRouteTypes {
     | '/'
     | '/backtests/$runId'
     | '/bot/$botId'
+    | '/strategy/$botId'
     | '/trades/$tradeId'
     | '/backtests'
     | '/trades'
@@ -94,6 +105,7 @@ export interface FileRouteTypes {
     | '/'
     | '/backtests/$runId'
     | '/bot/$botId'
+    | '/strategy/$botId'
     | '/trades/$tradeId'
     | '/backtests/'
     | '/trades/'
@@ -103,6 +115,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BacktestsRunIdRoute: typeof BacktestsRunIdRoute
   BotBotIdRoute: typeof BotBotIdRoute
+  StrategyBotIdRoute: typeof StrategyBotIdRoute
   TradesTradeIdRoute: typeof TradesTradeIdRoute
   BacktestsIndexRoute: typeof BacktestsIndexRoute
   TradesIndexRoute: typeof TradesIndexRoute
@@ -138,6 +151,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TradesTradeIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/strategy/$botId': {
+      id: '/strategy/$botId'
+      path: '/strategy/$botId'
+      fullPath: '/strategy/$botId'
+      preLoaderRoute: typeof StrategyBotIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/bot/$botId': {
       id: '/bot/$botId'
       path: '/bot/$botId'
@@ -159,6 +179,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BacktestsRunIdRoute: BacktestsRunIdRoute,
   BotBotIdRoute: BotBotIdRoute,
+  StrategyBotIdRoute: StrategyBotIdRoute,
   TradesTradeIdRoute: TradesTradeIdRoute,
   BacktestsIndexRoute: BacktestsIndexRoute,
   TradesIndexRoute: TradesIndexRoute,
