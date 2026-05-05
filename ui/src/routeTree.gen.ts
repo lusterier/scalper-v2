@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as FeaturesRouteImport } from './routes/features'
+import { Route as AuditRouteImport } from './routes/audit'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TradesIndexRouteImport } from './routes/trades.index'
 import { Route as ScoringIndexRouteImport } from './routes/scoring.index'
@@ -23,6 +24,11 @@ import { Route as BacktestsRunIdRouteImport } from './routes/backtests.$runId'
 const FeaturesRoute = FeaturesRouteImport.update({
   id: '/features',
   path: '/features',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuditRoute = AuditRouteImport.update({
+  id: '/audit',
+  path: '/audit',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -73,6 +79,7 @@ const BacktestsRunIdRoute = BacktestsRunIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/audit': typeof AuditRoute
   '/features': typeof FeaturesRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
@@ -85,6 +92,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/audit': typeof AuditRoute
   '/features': typeof FeaturesRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
@@ -98,6 +106,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/audit': typeof AuditRoute
   '/features': typeof FeaturesRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
@@ -112,6 +121,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/audit'
     | '/features'
     | '/backtests/$runId'
     | '/bot/$botId'
@@ -124,6 +134,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/audit'
     | '/features'
     | '/backtests/$runId'
     | '/bot/$botId'
@@ -136,6 +147,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/audit'
     | '/features'
     | '/backtests/$runId'
     | '/bot/$botId'
@@ -149,6 +161,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuditRoute: typeof AuditRoute
   FeaturesRoute: typeof FeaturesRoute
   BacktestsRunIdRoute: typeof BacktestsRunIdRoute
   BotBotIdRoute: typeof BotBotIdRoute
@@ -167,6 +180,13 @@ declare module '@tanstack/react-router' {
       path: '/features'
       fullPath: '/features'
       preLoaderRoute: typeof FeaturesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/audit': {
+      id: '/audit'
+      path: '/audit'
+      fullPath: '/audit'
+      preLoaderRoute: typeof AuditRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -237,6 +257,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuditRoute: AuditRoute,
   FeaturesRoute: FeaturesRoute,
   BacktestsRunIdRoute: BacktestsRunIdRoute,
   BotBotIdRoute: BotBotIdRoute,

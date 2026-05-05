@@ -85,12 +85,12 @@ function NavigatingChip({
   const isEmpty = correlationId.length === 0;
   const handleClick = (): void => {
     if (isEmpty) return;
-    // T-419 audit log viewer route does not yet exist in routeTree.gen.
-    // Cast `to` to bypass TanStack Router's typed-route check until T-419
-    // adds /audit. T-419 will retire this `as never` cast.
+    // T-419 retired the `as never` cast per WG#3 — `/audit` route now
+    // exists in routeTree.gen with `validateSearch` accepting
+    // `correlation_id` URL search param.
     void navigate({
-      to: "/audit" as never,
-      search: { correlation_id: correlationId } as never,
+      to: "/audit",
+      search: { correlation_id: correlationId },
     });
   };
   return (

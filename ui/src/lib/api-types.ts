@@ -310,3 +310,26 @@ export interface FeatureHistoryListResponse {
   limit: number;
   offset: number;
 }
+
+// T-419 — AuditEvent exact 10-field mirror of services/analytics_api/
+// app/models/audit.py:AuditEventResponse per WG#4. JSONB fields typed
+// as Record<string, unknown> | null; meta is non-null per backend.
+export interface AuditEvent {
+  id: number;
+  occurred_at: string;
+  actor: string;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  before_state: Record<string, unknown> | null;
+  after_state: Record<string, unknown> | null;
+  correlation_id: string | null;
+  meta: Record<string, unknown>;
+}
+
+export interface AuditEventListResponse {
+  events: AuditEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+}
