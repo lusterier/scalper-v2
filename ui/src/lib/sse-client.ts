@@ -40,3 +40,12 @@ export function subscribeSSE(
     source.close();
   };
 }
+
+// T-413 — URL builder for `/events/stream?types=...`. Backend rejects
+// empty / unknown types with 422 (per services/analytics_api/app/
+// routers/events.py + models/events.py:parse_types). Caller is
+// responsible for passing valid types from the EventType whitelist.
+export function buildSSEUrl(types: ReadonlyArray<string>): string {
+  const csv = types.join(",");
+  return `/events/stream?types=${encodeURIComponent(csv)}`;
+}

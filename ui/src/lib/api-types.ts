@@ -88,3 +88,30 @@ export interface SignalListResponse {
   limit: number;
   offset: number;
 }
+
+// T-413 — typed Signal subset for the per-bot live signals feed. Per
+// WG#7: this interface OMITS 5 backend fields from SignalResponse
+// (`schema_version`, `source`, `idempotency_key`, `original_symbol`,
+// `payload`) — T-413 SignalFeed renders only the 6 fields below. T-414
+// trade drill-down may extend with `payload` for full timeline view;
+// no eager-typing speculative fields per §0.8 anti-hypothetical.
+export interface Signal {
+  id: number;
+  received_at: string;
+  symbol: string;
+  action: string;
+  ingestion_status: "validated" | "duplicate" | "invalid";
+  correlation_id: string;
+}
+
+// Typed alternative to T-412's SignalListResponse (which uses
+// `unknown[]` because Section 1 Overview only consumes `.total`). T-413
+// PerBotPage actively renders signals[] so it needs the typed form.
+// Both interfaces coexist; T-414 may deprecate one in favour of the
+// other once consumer demand crystallises.
+export interface PaginatedSignalListResponse {
+  signals: Signal[];
+  total: number;
+  limit: number;
+  offset: number;
+}

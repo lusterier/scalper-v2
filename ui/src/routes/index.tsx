@@ -20,6 +20,7 @@ import type {
   PnlSeriesResponse,
   SignalListResponse,
 } from "@/lib/api-types";
+import { useSSEStore } from "@/store/sse";
 
 export const Route = createFileRoute("/")({
   component: OverviewPage,
@@ -142,10 +143,8 @@ function OverviewPage(): React.JSX.Element {
         <div className="flex flex-1 justify-center">
           <TimeRangePicker value={pickerRange} onChange={setPickerRange} />
         </div>
-        <div className="flex flex-shrink-0 items-center gap-2 text-xs text-muted-foreground">
-          <ConnectionDot status="unknown" />
-          <span>SSE</span>
-        </div>
+        <OverviewConnectionIndicator />
+
       </header>
 
       <div className="grid grid-cols-5 gap-4 p-6">
@@ -193,6 +192,21 @@ function OverviewPage(): React.JSX.Element {
         />
         <OverviewTile title="Alerts (24h)" placeholder />
       </div>
+    </div>
+  );
+}
+
+// T-413 per WG#5 / OQ-5=A — Overview ConnectionDot now reads
+// useSSEStore status (was hardcoded "unknown" in T-412 placeholder).
+// Indicator surfaces real EventSource lifecycle when /bot/$botId is
+// mounted; on Overview alone the status stays "unknown" because no
+// route here calls useSSEStream.
+function OverviewConnectionIndicator(): React.JSX.Element {
+  const status = useSSEStore((s) => s.status);
+  return (
+    <div className="flex flex-shrink-0 items-center gap-2 text-xs text-muted-foreground">
+      <ConnectionDot status={status} />
+      <span>SSE</span>
     </div>
   );
 }
