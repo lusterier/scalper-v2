@@ -279,3 +279,34 @@ export interface ConfigApplyRequest {
   applied_by: string;
   notes: string | null;
 }
+
+// T-417 — FeatureRow exact 7-field mirror of services/analytics_api/
+// app/models/features.py:FeatureResponse. value_num is float per §5.13
+// (statistical metric, NOT money — Decimal-as-string preservation does
+// not apply). value_bool / value_json mutually exclusive null pattern
+// (only one populated per feature definition; backend returns the other
+// 2 as null). value_json Pydantic union accepts dict OR list — TS
+// mirrors as discriminated union.
+export interface FeatureRow {
+  feature_name: string;
+  symbol: string;
+  computed_at: string;
+  value_num: number | null;
+  value_bool: boolean | null;
+  value_json: Record<string, unknown> | unknown[] | null;
+  source_version: string;
+}
+
+export interface FeatureLatestListResponse {
+  features: FeatureRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface FeatureHistoryListResponse {
+  features: FeatureRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
