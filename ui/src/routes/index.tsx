@@ -20,6 +20,7 @@ import type {
   PnlSeriesResponse,
   SignalListResponse,
 } from "@/lib/api-types";
+import { useNavStore } from "@/store/nav";
 import { useSSEStore } from "@/store/sse";
 
 export const Route = createFileRoute("/")({
@@ -71,6 +72,7 @@ function OverviewPage(): React.JSX.Element {
     return { from: new Date(now.getTime() - WINDOW_24H_MS), to: now, preset: "24h" };
   });
   const [selectedBots, setSelectedBots] = React.useState<string[]>([]);
+  const setLastSelectedBotId = useNavStore((s) => s.setLastSelectedBotId);
 
   // Query window pinned to last 24 h — recomputed once per OverviewPage
   // mount + each refetch tick (memoized so URL strings stay stable across
@@ -136,7 +138,11 @@ function OverviewPage(): React.JSX.Element {
           <BotSelector
             multi
             value={selectedBots}
-            onChange={(v) => setSelectedBots(Array.isArray(v) ? v : [v])}
+            onChange={(v) => {
+              const next = Array.isArray(v) ? v : [v];
+              setSelectedBots(next);
+              if (next.length > 0) setLastSelectedBotId(next[0]!);
+            }}
             placeholder="All bots"
           />
         </div>
