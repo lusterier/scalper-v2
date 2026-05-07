@@ -2257,3 +2257,180 @@ async def test_select_backtest_runs_empty_table_returns_empty_list() -> None:
     )
     assert rows == []
     assert total == 0
+
+
+# ---------------------------------------------------------------------------
+# T-501 — backtest_trades query helpers (§12.2:1969-1971)
+# ---------------------------------------------------------------------------
+
+from datetime import timedelta  # noqa: E402
+
+from packages.db.queries.analytics import (  # noqa: E402
+    BacktestTradeRow,
+    select_trades_by_run,
+)
+
+_T_BT_TRADE_OPENED = datetime(2026, 4, 15, 12, 0, 0, tzinfo=UTC)
+_T_BT_TRADE_CLOSED = datetime(2026, 4, 15, 13, 0, 0, tzinfo=UTC)
+
+
+def _make_backtest_trade_row(
+    *,
+    row_id: int = 1,
+    run_id: UUID = _BT_UUID,
+    bot_id: str = "alpha",
+    signal_id: int | None = 42,
+    open_order_id: int | None = 100,
+    close_order_id: int | None = 101,
+    symbol: str = "BTCUSDT",
+    side: str = "buy",
+    entry_price: Decimal = Decimal("65000.000000000000"),
+    exit_price: Decimal | None = Decimal("65500.000000000000"),
+    qty: Decimal = Decimal("0.001000000000"),
+    notional_usd: Decimal = Decimal("65.0000"),
+    realized_pnl: Decimal | None = Decimal("0.5000"),
+    fees_paid: Decimal | None = Decimal("0.0700"),
+    close_reason: str | None = "tp",
+    opened_at: datetime = _T_BT_TRADE_OPENED,
+    closed_at: datetime | None = _T_BT_TRADE_CLOSED,
+    status: str = "closed",
+    mfe_pct: float | None = 0.012,
+    mae_pct: float | None = -0.003,
+    confidence_score: float | None = 0.85,
+    meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": row_id,
+        "run_id": run_id,
+        "bot_id": bot_id,
+        "signal_id": signal_id,
+        "open_order_id": open_order_id,
+        "close_order_id": close_order_id,
+        "symbol": symbol,
+        "side": side,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "qty": qty,
+        "notional_usd": notional_usd,
+        "realized_pnl": realized_pnl,
+        "fees_paid": fees_paid,
+        "close_reason": close_reason,
+        "opened_at": opened_at,
+        "closed_at": closed_at,
+        "status": status,
+        "mfe_pct": mfe_pct,
+        "mae_pct": mae_pct,
+        "confidence_score": confidence_score,
+        "meta": meta if meta is not None else {},
+    }
+
+
+async def test_select_trades_by_run_returns_dataclass_rows() -> None:
+    """2 mock rows → list[BacktestTradeRow] preserving order."""
+    conn = MagicMock()
+    row_a = _make_backtest_trade_row(row_id=1, opened_at=_T_BT_TRADE_OPENED)
+    row_b = _make_backtest_trade_row(row_id=2, opened_at=_T_BT_TRADE_OPENED + timedelta(minutes=30))
+    conn.fetch = AsyncMock(return_value=[row_a, row_b])
+    rows = await select_trades_by_run(conn, run_id=_BT_UUID)
+    assert len(rows) == 2
+    assert isinstance(rows[0], BacktestTradeRow)
+    assert rows[0].id == 1
+    assert rows[1].id == 2
+    assert rows[0].run_id == _BT_UUID
+    assert rows[0].symbol == "BTCUSDT"
+    assert rows[0].side == "buy"
+
+
+async def test_select_trades_by_run_handles_null_optional_fields() -> None:
+    """Open trade with null exit_price/realized_pnl/closed_at decodes to None."""
+    conn = MagicMock()
+    row = _make_backtest_trade_row(
+        exit_price=None,
+        realized_pnl=None,
+        fees_paid=None,
+        close_reason=None,
+        closed_at=None,
+        status="open",
+        mfe_pct=None,
+        mae_pct=None,
+        confidence_score=None,
+        signal_id=None,
+        open_order_id=None,
+        close_order_id=None,
+    )
+    conn.fetch = AsyncMock(return_value=[row])
+    rows = await select_trades_by_run(conn, run_id=_BT_UUID)
+    assert rows[0].exit_price is None
+    assert rows[0].realized_pnl is None
+    assert rows[0].fees_paid is None
+    assert rows[0].close_reason is None
+    assert rows[0].closed_at is None
+    assert rows[0].status == "open"
+    assert rows[0].mfe_pct is None
+    assert rows[0].mae_pct is None
+    assert rows[0].confidence_score is None
+    assert rows[0].signal_id is None
+    assert rows[0].open_order_id is None
+    assert rows[0].close_order_id is None
+
+
+async def test_select_trades_by_run_decimal_uuid_roundtrip() -> None:
+    """§5.3 Decimal precision + UUID type preserved through decoder (no float cast)."""
+    conn = MagicMock()
+    precise_price = Decimal("65000.123456789012")
+    precise_qty = Decimal("0.123456789012")
+    precise_pnl = Decimal("12.3456")
+    row = _make_backtest_trade_row(
+        entry_price=precise_price,
+        qty=precise_qty,
+        realized_pnl=precise_pnl,
+    )
+    conn.fetch = AsyncMock(return_value=[row])
+    rows = await select_trades_by_run(conn, run_id=_BT_UUID)
+    # Exact Decimal equality (no float tolerance per WG#5).
+    assert rows[0].entry_price == precise_price
+    assert isinstance(rows[0].entry_price, Decimal)
+    assert rows[0].qty == precise_qty
+    assert isinstance(rows[0].qty, Decimal)
+    assert rows[0].realized_pnl == precise_pnl
+    assert isinstance(rows[0].realized_pnl, Decimal)
+    # UUID type preserved.
+    assert rows[0].run_id == _BT_UUID
+    assert isinstance(rows[0].run_id, UUID)
+
+
+async def test_select_trades_by_run_default_limit_offset() -> None:
+    """Defaults to limit=100, offset=0; bind to $2/$3 in declared order."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(_sql: str, *args: Any) -> list[Any]:
+        captured.append(args)
+        return []
+
+    conn.fetch = _capture
+    await select_trades_by_run(conn, run_id=_BT_UUID)
+    assert captured == [(_BT_UUID, 100, 0)]
+
+
+async def test_select_trades_by_run_passes_pagination_params() -> None:
+    """Explicit limit + offset bind to $2/$3 (verify args order)."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(_sql: str, *args: Any) -> list[Any]:
+        captured.append(args)
+        return []
+
+    conn.fetch = _capture
+    await select_trades_by_run(conn, run_id=_BT_UUID, limit=25, offset=50)
+    assert captured == [(_BT_UUID, 25, 50)]
+
+
+async def test_select_trades_by_run_empty_result_returns_empty_list() -> None:
+    """No matching rows → empty list (not None)."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    rows = await select_trades_by_run(conn, run_id=uuid4())
+    assert rows == []
+    assert isinstance(rows, list)

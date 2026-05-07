@@ -91,6 +91,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BacktestRunRow",
+    "BacktestTradeRow",
     "BotConfigRow",
     "BotDetailRow",
     "FeatureRow",
@@ -130,6 +131,7 @@ __all__ = [
     "select_signals_paginated",
     "select_symbol_map_entry",
     "select_trade_by_id",
+    "select_trades_by_run",
     "select_trades_for_analytics",  # T-406
     "select_trades_paginated",
     "update_bot_config_applied",
@@ -1784,3 +1786,127 @@ async def insert_backtest_run(
         msg = "INSERT ... RETURNING produced no row"
         raise RuntimeError(msg)
     return _row_to_backtest_run(row)
+
+
+# ---------------------------------------------------------------------------
+# T-501 — backtest_trades read helper (§12.2:1969-1971, §7.2:983-1009)
+# ---------------------------------------------------------------------------
+#
+# Read-only helper feeds T-516 per-trade variants drill-down. Write helpers
+# (insert_backtest_trade / update_backtest_trade_close) are owned by T-507
+# (CLI persists per-trade) + T-509 (worker writes summary aggregates) per
+# T-501 plan-doc §Out-of-scope. L-011 forward-pointer there: T-507/T-509
+# write helpers MUST pass dicts directly to asyncpg (no json.dumps at call
+# site) because analytics-api lifespan registers _register_jsonb_codec.
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestTradeRow:
+    """Full projection of ``backtest_trades`` row (22 columns per migration 0013).
+
+    Mirrors live :class:`TradeRow` shape with backtest adaptations:
+
+    * ``run_id`` UUID FK to ``backtest_runs.id`` (cascade-delete per OQ-3).
+    * ``open_order_id`` / ``close_order_id`` nullable, no FK (paper backtest
+      doesn't write live ``orders`` table).
+    * ``status`` is plain ``str`` (not :class:`TradeStatus` StrEnum) — backtest
+      domain may add ``'replay-error'`` etc. without touching the live enum.
+
+    Decimal preserved for monetary precision (§5.3); float for stats fields
+    (mfe/mae/confidence_score) per live precedent.
+    """
+
+    id: int
+    run_id: UUID
+    bot_id: str
+    signal_id: int | None
+    open_order_id: int | None
+    close_order_id: int | None
+    symbol: str
+    side: str
+    entry_price: Decimal
+    exit_price: Decimal | None
+    qty: Decimal
+    notional_usd: Decimal
+    realized_pnl: Decimal | None
+    fees_paid: Decimal | None
+    close_reason: str | None
+    opened_at: datetime
+    closed_at: datetime | None
+    status: str
+    mfe_pct: float | None
+    mae_pct: float | None
+    confidence_score: float | None
+    meta: dict[str, Any]
+
+
+_BACKTEST_TRADE_COLUMNS = (
+    "id, run_id, bot_id, signal_id, open_order_id, close_order_id, "
+    "symbol, side, entry_price, exit_price, qty, notional_usd, "
+    "realized_pnl, fees_paid, close_reason, opened_at, closed_at, "
+    "status, mfe_pct, mae_pct, confidence_score, meta"
+)
+
+_SELECT_TRADES_BY_RUN_SQL = (
+    f"SELECT {_BACKTEST_TRADE_COLUMNS}"  # noqa: S608 — column whitelist constant, no user input  # nosec B608
+    " FROM backtest_trades WHERE run_id = $1 ORDER BY opened_at ASC LIMIT $2 OFFSET $3"
+)
+
+
+def _row_to_backtest_trade(row: asyncpg.Record) -> BacktestTradeRow:
+    """Narrow asyncpg row to typed dataclass.
+
+    NUMERIC stĺpce (entry_price/exit_price/qty/notional_usd/realized_pnl/
+    fees_paid) sa pass-through ako Decimal — asyncpg NUMERIC codec
+    natívne vracia ``decimal.Decimal`` (mirror :func:`_row_to_trade`
+    precedent line 489-494). DOUBLE PRECISION stĺpce sa cast-ujú cez
+    ``float()`` pre type-narrow (mirror :func:`_row_to_trade`).
+    ``meta`` JSONB defensive-narrow: dict-or-empty (asyncpg s
+    registered codec vracia dict; mock-based test fixtures môžu vrátiť
+    raw dict literal).
+    """
+    meta_value = row["meta"]
+    return BacktestTradeRow(
+        id=int(row["id"]),
+        run_id=row["run_id"],
+        bot_id=str(row["bot_id"]),
+        signal_id=int(row["signal_id"]) if row["signal_id"] is not None else None,
+        open_order_id=int(row["open_order_id"]) if row["open_order_id"] is not None else None,
+        close_order_id=int(row["close_order_id"]) if row["close_order_id"] is not None else None,
+        symbol=str(row["symbol"]),
+        side=str(row["side"]),
+        entry_price=row["entry_price"],
+        exit_price=row["exit_price"],
+        qty=row["qty"],
+        notional_usd=row["notional_usd"],
+        realized_pnl=row["realized_pnl"],
+        fees_paid=row["fees_paid"],
+        close_reason=str(row["close_reason"]) if row["close_reason"] is not None else None,
+        opened_at=row["opened_at"],
+        closed_at=row["closed_at"],
+        status=str(row["status"]),
+        mfe_pct=float(row["mfe_pct"]) if row["mfe_pct"] is not None else None,
+        mae_pct=float(row["mae_pct"]) if row["mae_pct"] is not None else None,
+        confidence_score=(
+            float(row["confidence_score"]) if row["confidence_score"] is not None else None
+        ),
+        meta=meta_value if isinstance(meta_value, dict) else {},
+    )
+
+
+async def select_trades_by_run(
+    conn: _DbExecutor,
+    *,
+    run_id: UUID,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[BacktestTradeRow]:
+    """Return paginated trades for a backtest run (ORDER BY opened_at ASC).
+
+    Default ``limit=100`` covers typical backtest output (<500 trades per
+    run); T-516 UI may paginate further. ASC ordering matches
+    chronological replay sequence — operator scrolling through a backtest
+    sees trades in the order they were generated by the strategy.
+    """
+    rows = await conn.fetch(_SELECT_TRADES_BY_RUN_SQL, run_id, limit, offset)
+    return [_row_to_backtest_trade(row) for row in rows]
