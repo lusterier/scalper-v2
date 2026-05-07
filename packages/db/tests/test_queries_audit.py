@@ -6,9 +6,11 @@ contract:
 * SQL shape: ``INSERT ... RETURNING id`` with 8 placeholders matching
   migration 0011 column order (occurred_at, actor, action, entity_type,
   entity_id, before_state, after_state, correlation_id).
-* JSONB serialisation: dict ``before_state`` / ``after_state`` go
-  through :func:`json.dumps` (mirror :func:`packages.db.queries.signal_gateway.insert_signal`
-  pattern; default asyncpg codec doesn't auto-convert dicts to jsonb).
+* JSONB serialisation: dict ``before_state`` / ``after_state`` are
+  passed directly to asyncpg as Python dicts — the registered JSONB
+  codec handles ``json.dumps`` once. UUID / datetime / Decimal in the
+  state dict are pre-converted to strings by :func:`_to_jsonable`
+  (so the codec encoder never sees a non-JSON-native type).
 * ``None`` for ``before_state`` (create) / ``after_state`` (delete)
   passes through as SQL ``NULL``.
 * :func:`packages.core.is_non_idempotent` returns True for the helper
@@ -18,10 +20,11 @@ contract:
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
 
@@ -73,7 +76,9 @@ async def test_insert_audit_event_serialises_state_dicts_to_json() -> None:
         after_state=after,
         correlation_id="cid-update",
     )
-    # Args 6/7 (1-indexed: $6/$7) are JSON-serialised dicts.
+    # Args 6/7 (1-indexed: $6/$7) are dicts passed directly to asyncpg —
+    # registered JSONB codec serialises once. Pre-fix this used to be
+    # ``json.dumps(before/after)`` which double-encoded under the codec.
     sql, *bind_args = captured_args[0]
     assert "INSERT INTO audit_events" in sql
     assert "RETURNING id" in sql
@@ -82,8 +87,8 @@ async def test_insert_audit_event_serialises_state_dicts_to_json() -> None:
     assert bind_args[2] == "symbol_map.update"
     assert bind_args[3] == "symbol_map"
     assert bind_args[4] == "BTCUSDT.P"
-    assert json.loads(bind_args[5]) == before
-    assert json.loads(bind_args[6]) == after
+    assert bind_args[5] == before
+    assert bind_args[6] == after
     assert bind_args[7] == "cid-update"
 
 
@@ -140,20 +145,25 @@ async def test_insert_audit_event_raises_when_returning_row_is_none() -> None:
         )
 
 
-async def test_insert_audit_event_serialises_uuid_datetime_decimal_via_default_str() -> None:
-    """Regression (F4 E1 smoke 500 fix): UUID/datetime/Decimal in state dicts must serialise.
+async def test_insert_audit_event_pre_converts_uuid_datetime_decimal_for_jsonb_codec() -> None:
+    """Regression (F4 E1 smoke double-encode fix): UUID/datetime/Decimal pre-stringified in dict.
 
-    Dataclass row projections (BacktestRunRow / PositionRow / …) carry
+    Dataclass row projections (BacktestRunRow / BotConfigRow / …) carry
     ``UUID`` ids + ``TIMESTAMPTZ`` datetimes + ``NUMERIC`` Decimals.
-    Without ``default=str`` on :func:`json.dumps`, these raise
-    :class:`TypeError` and the audit_events INSERT fails — surfaced live
-    during F4 E1 smoke when ``POST /api/backtests/`` returned 500. Test
-    exercises the real ``json.dumps`` path (no mock on json), so any
-    future regression that drops ``default=str`` re-fails here.
-    """
-    from decimal import Decimal
-    from uuid import UUID
+    The helper now passes a Python dict (with these types
+    pre-converted to strings via :func:`_to_jsonable`) directly to
+    asyncpg; the registered JSONB codec serialises once.
 
+    Pre-fix path was ``json.dumps(state, default=str)`` which under
+    analytics-api's registered codec
+    (``conn.set_type_codec("jsonb", encoder=json.dumps, decoder=json.loads)``)
+    encoded the resulting string a SECOND time, storing a JSON string
+    scalar (escaped ``"{\\"id\\":1,...}"``) instead of a JSONB object.
+    Surfaced live during F4 E1 smoke when ``POST /api/backtests/`` 500-d
+    initially (UUID encode fail) then read-back of bot_config.apply
+    audit row returned ``after_state: null`` (Pydantic dict-coercion
+    fail on the string scalar).
+    """
     conn = MagicMock()
     captured_args: list[tuple[Any, ...]] = []
 
@@ -169,6 +179,7 @@ async def test_insert_audit_event_serialises_uuid_datetime_decimal_via_default_s
         "started_at": started_at,
         "qty": Decimal("0.001"),
         "name": "smoke E1 trigger",
+        "nested": {"sub_id": run_id, "sub_qty": Decimal("1.5")},
     }
     await insert_audit_event(
         conn,
@@ -181,11 +192,19 @@ async def test_insert_audit_event_serialises_uuid_datetime_decimal_via_default_s
         after_state=after_state,
         correlation_id=None,
     )
-    after_json = captured_args[0][6]
-    assert isinstance(after_json, str)  # default=str succeeded; no TypeError
-    parsed = json.loads(after_json)
-    assert parsed["id"] == "00000000-0000-0000-0000-000000000001"
-    assert parsed["started_at"].startswith("2026-05-07")
-    assert parsed["started_at"].endswith("+00:00")  # §N1 explicit offset preserved
-    assert parsed["qty"] == "0.001"  # §5.3 Decimal precision preserved as str
-    assert parsed["name"] == "smoke E1 trigger"
+    after_arg = captured_args[0][6]
+    # Passed as dict (NOT pre-serialised string) → codec serialises once.
+    assert isinstance(after_arg, dict)
+    assert after_arg["id"] == "00000000-0000-0000-0000-000000000001"
+    assert after_arg["started_at"].startswith("2026-05-07")
+    assert after_arg["started_at"].endswith("+00:00")  # §N1 explicit offset preserved
+    assert after_arg["qty"] == "0.001"  # §5.3 Decimal precision preserved as str
+    assert after_arg["name"] == "smoke E1 trigger"
+    # Nested dict / Decimal also recursively converted.
+    assert after_arg["nested"]["sub_id"] == "00000000-0000-0000-0000-000000000001"
+    assert after_arg["nested"]["sub_qty"] == "1.5"
+    # Final guarantee: asyncpg's JSONB codec encoder (json.dumps) must
+    # succeed on the converted dict — emulate the codec call here.
+    import json as _json
+
+    assert _json.dumps(after_arg)  # no TypeError
