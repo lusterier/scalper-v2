@@ -3,6 +3,21 @@
 Owned by ``services/signal_gateway``; imported by the T-015b2 handler for
 symbol-map lookup and signals-table insert. Raw asyncpg per brief §5.10
 ("all queries in hot paths are raw SQL via asyncpg, parameterized").
+
+L-011 pre-emptive convention (T-520 cherry-pick 2026-05-07): ``payload``
+JSONB serialised via ``json.dumps(_to_jsonable(payload))`` text-mode.
+``_to_jsonable`` recursively pre-stringifies any UUID/datetime/Decimal
+in the dict, so the outer ``json.dumps`` cannot ``TypeError`` even if
+upstream caller paths inject those types. Today's signal-gateway service
+does NOT register ``_register_jsonb_codec`` on its asyncpg pool —
+plain ``json.dumps`` text-mode + ``$N::jsonb`` cast is the working path.
+**Switch trigger when codec registers** (F5+ if signal-gateway needs
+analytics-api-style codec for downstream readers): drop the outer
+``json.dumps`` wrapper — pass ``_to_jsonable(payload)`` dict directly to
+asyncpg; codec encoder serialises via its own ``json.dumps`` (single-encoded).
+This eliminates the F4 E1 ``Object of type UUID is not JSON serializable``
+regression class regardless of codec state. Mirrors T-510b shadow.py
+L-011 B-mode + plan-reviewer's L-011 forward-pointer convention.
 """
 
 from __future__ import annotations
@@ -11,6 +26,12 @@ import json
 from typing import TYPE_CHECKING
 
 from packages.core import idempotent, non_idempotent
+
+# L-011 pre-emptive convention helper. ``_to_jsonable`` is intentionally
+# private (not in audit.py __all__) but is the canonical UUID/datetime/Decimal
+# pre-stringifier across all packages.db.queries JSONB writers. T-510b
+# precedent established option (c) explicit private-import via # noqa: PLC2701.
+from packages.db.queries.audit import _to_jsonable
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -79,9 +100,13 @@ async def insert_signal(
     safety and must not be relied on for that purpose.
 
     Column order + types match migration 0002 (§7.2 signals DDL). The
-    ``payload`` dict is serialised via :func:`json.dumps` and cast to
-    ``jsonb`` server-side; the default asyncpg codec map does not
-    auto-convert Python dicts to ``jsonb``.
+    ``payload`` dict is serialised via ``json.dumps(_to_jsonable(payload))``
+    text-mode and cast to ``jsonb`` server-side. ``_to_jsonable`` pre-
+    stringifies any UUID/datetime/Decimal (defensive — webhook payloads
+    are typically JSON-native dicts, but the wrapper is L-011 pre-emptive
+    in case upstream caller paths inject typed values). See module
+    docstring for switch trigger if signal-gateway later registers a
+    JSONB codec on its asyncpg pool.
 
     ``ingestion_status`` is one of ``{"validated", "invalid", "duplicate"}``;
     caller owns the choice per the §9.1 pipeline outcome. A repeat
@@ -107,7 +132,7 @@ async def insert_signal(
         symbol,
         original_symbol,
         action,
-        json.dumps(payload),
+        json.dumps(_to_jsonable(payload)),
         ingestion_status,
         correlation_id,
     )
