@@ -20,6 +20,8 @@ __all__ = [
     "ExchangeSource",
     "IngestionStatus",
     "ScoringDecision",
+    "ShadowRejectedTerminal",
+    "ShadowVariantTerminal",
     "Symbol",
     "TraceId",
     "TradeStatus",
@@ -70,6 +72,39 @@ class BotStatus(StrEnum):
     ACTIVE = "active"
     PAUSED = "paused"
     ARCHIVED = "archived"
+
+
+class ShadowVariantTerminal(StrEnum):
+    """shadow_variants.terminal_outcome enum (BRIEF §13.3).
+
+    F5 (T-511 shadow-worker FSM) writes one of these 5 values when a
+    parallel-simulation variant terminates. Mirror BacktestStatus
+    forward-compat pattern — all values defined at row-narrowing site so
+    future ``replay-error`` / ``shutdown-mid-replay`` (T-512 restart
+    recovery edge cases) only need a value addition here, no DB
+    migration (T-510a OQ-4=A: terminal_outcome stored as plain TEXT
+    with no CHECK constraint).
+    """
+
+    SL_HIT = "sl_hit"
+    BE_HIT = "be_hit"
+    TP_TRAIL = "tp_trail"
+    TP_FULL = "tp_full"
+    TIMEOUT = "timeout"
+
+
+class ShadowRejectedTerminal(StrEnum):
+    """shadow_rejected.terminal_outcome enum (BRIEF §13.5).
+
+    F5 (T-513 rejected-signal observation) writes one of these 4 values
+    when the 60-min observation window closes. Mirror
+    :class:`ShadowVariantTerminal` forward-compat pattern.
+    """
+
+    WOULD_TP = "would_tp"
+    WOULD_SL = "would_sl"
+    WOULD_BE = "would_be"
+    NO_TRIGGER = "no_trigger"
 
 
 class ExchangeMode(StrEnum):
