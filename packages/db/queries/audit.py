@@ -74,9 +74,13 @@ async def insert_audit_event(
 
     Column order + types match migration 0011 (§7.2:1110-1122). The
     ``before_state`` / ``after_state`` dicts are serialised via
-    :func:`json.dumps` and cast to ``jsonb`` server-side; the default
-    asyncpg codec map does not auto-convert Python dicts to ``jsonb``.
-    Same pattern as :func:`packages.db.queries.signal_gateway.insert_signal`.
+    :func:`json.dumps` (``default=str``: UUID/datetime/Decimal stringify
+    safely — §5.3 Decimal precision preserved as ``str(Decimal)``;
+    datetime as ``str(dt)`` with explicit ``+00:00`` from the
+    ``TIMESTAMPTZ`` source) and cast to ``jsonb`` server-side; the
+    default asyncpg codec map does not auto-convert Python dicts to
+    ``jsonb``. Mirrors :func:`packages.db.queries.execution.insert_position`
+    ``meta`` kwarg convention.
 
     ``before_state`` is ``None`` for create actions; ``after_state`` is
     ``None`` for delete actions; both non-``None`` for update actions.
@@ -97,8 +101,8 @@ async def insert_audit_event(
         action,
         entity_type,
         entity_id,
-        json.dumps(before_state) if before_state is not None else None,
-        json.dumps(after_state) if after_state is not None else None,
+        json.dumps(before_state, default=str) if before_state is not None else None,
+        json.dumps(after_state, default=str) if after_state is not None else None,
         correlation_id,
     )
     if row is None:

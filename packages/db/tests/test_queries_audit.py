@@ -138,3 +138,54 @@ async def test_insert_audit_event_raises_when_returning_row_is_none() -> None:
             after_state=None,
             correlation_id=None,
         )
+
+
+async def test_insert_audit_event_serialises_uuid_datetime_decimal_via_default_str() -> None:
+    """Regression (F4 E1 smoke 500 fix): UUID/datetime/Decimal in state dicts must serialise.
+
+    Dataclass row projections (BacktestRunRow / PositionRow / …) carry
+    ``UUID`` ids + ``TIMESTAMPTZ`` datetimes + ``NUMERIC`` Decimals.
+    Without ``default=str`` on :func:`json.dumps`, these raise
+    :class:`TypeError` and the audit_events INSERT fails — surfaced live
+    during F4 E1 smoke when ``POST /api/backtests/`` returned 500. Test
+    exercises the real ``json.dumps`` path (no mock on json), so any
+    future regression that drops ``default=str`` re-fails here.
+    """
+    from decimal import Decimal
+    from uuid import UUID
+
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(_sql: str, *args: Any, **_kwargs: Any) -> dict[str, int]:
+        captured_args.append(args)
+        return {"id": 1}
+
+    conn.fetchrow = _capture
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    started_at = datetime(2026, 5, 7, 14, 13, 10, tzinfo=UTC)
+    after_state: dict[str, Any] = {
+        "id": run_id,
+        "started_at": started_at,
+        "qty": Decimal("0.001"),
+        "name": "smoke E1 trigger",
+    }
+    await insert_audit_event(
+        conn,
+        occurred_at=_FIXED_NOW,
+        actor="lan:192.168.100.100",
+        action="backtest.queued",
+        entity_type="backtest_run",
+        entity_id=str(run_id),
+        before_state=None,
+        after_state=after_state,
+        correlation_id=None,
+    )
+    after_json = captured_args[0][6]
+    assert isinstance(after_json, str)  # default=str succeeded; no TypeError
+    parsed = json.loads(after_json)
+    assert parsed["id"] == "00000000-0000-0000-0000-000000000001"
+    assert parsed["started_at"].startswith("2026-05-07")
+    assert parsed["started_at"].endswith("+00:00")  # §N1 explicit offset preserved
+    assert parsed["qty"] == "0.001"  # §5.3 Decimal precision preserved as str
+    assert parsed["name"] == "smoke E1 trigger"
