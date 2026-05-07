@@ -10,6 +10,7 @@ import { Link, createFileRoute } from "@tanstack/react-router";
 import * as React from "react";
 
 import { DataTable } from "@/components/DataTable";
+import { YamlDiffView } from "@/components/YamlDiffView";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -175,29 +176,10 @@ function StrategyEditorPage(): React.JSX.Element {
             <CardTitle className="text-sm">Diff vs current</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div>
-                <div className="mb-1 text-muted-foreground">Current</div>
-                <pre
-                  data-testid="diff-current"
-                  className="max-h-[400px] overflow-auto rounded-md border border-border bg-muted/20 p-2 font-mono"
-                >
-                  {currentConfigQuery.data?.config_yaml ??
-                    (isFreshBot
-                      ? "(no active config — first version)"
-                      : "Loading…")}
-                </pre>
-              </div>
-              <div>
-                <div className="mb-1 text-muted-foreground">New (editing)</div>
-                <pre
-                  data-testid="diff-new"
-                  className="max-h-[400px] overflow-auto rounded-md border border-border bg-muted/20 p-2 font-mono"
-                >
-                  {yamlText}
-                </pre>
-              </div>
-            </div>
+            <YamlDiffView
+              current={currentConfigQuery.data?.config_yaml ?? ""}
+              draft={yamlText}
+            />
           </CardContent>
         </Card>
       </div>
