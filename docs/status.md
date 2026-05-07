@@ -1,5 +1,74 @@
 # Session status
 
+## 2026-05-07 (session-end — F4 E1 smoke runbook executed + 5 master-fix commits)
+
+**F4 phase exit-criteria E1 SIGN-OFF COMPLETE: PASS with 2 partials.** Master HEAD `67e8c5f`. Runbook `docs/runbooks/F4_E1_dashboard_smoke.md` ticked end-to-end with operator `luster` + sign-off timestamp `2026-05-07T15:26:32+00:00`. F4 phase truly closed — F5 unlock pending operator decision per §0.10.
+
+### Today's master commits (5)
+
+- `fix(T-413)` `c3c8a57` — Overview BotSelector multi-select → `useNavStore.setLastSelectedBotId` wire-up (3 LOC src; uncommitted from prior evening session shipped today).
+- `chore(devx)` `868e35b` — Vite dev server LAN-bind (`host: "0.0.0.0"` per §16.2; backend stays on `127.0.0.1`). Operator can now browse `http://192.168.100.100:5173/` from LAN devices without SSH tunnel.
+- `fix(deps)` `2968461` — bumped `mako 1.3.11→1.3.12` + `pip 26.0.1→26.1.1` for CVE-2026-44307 + CVE-2026-6357 (CVEs published 2026-05-05→2026-05-07 on existing transitive deps; ci-full was red on master before this commit).
+- `fix(audit)` `c241c15` (intermediate, default=str) + `67e8c5f` (proper double-encode fix) — `audit_events.{before,after}_state` JSONB double-encode trap under analytics-api registered JSONB codec. Helper `audit.py:insert_audit_event` now passes Python dict directly to asyncpg (codec serialises once); UUID/datetime/Decimal pre-stringified via new `_to_jsonable(value)` helper that recurses dicts/lists. **L-011 lesson** added capturing the codec-asymmetry trap.
+
+### F4 E1 smoke results
+
+- **Cri 1** (navigate 9 sections) — ✓ FULL PASS (Steps 1-9 ticked; partials inside Steps 3 + 6 due to empty fixture acceptable).
+- **Cri 2** (drill into trade end-to-end) — ✗ PARTIAL (no trades fixture; F4 scope is dashboard, not end-to-end ingest).
+- **Cri 3** (scoring inspector per-rule breakdown) — ✓ FULL PASS (verified F3 dvoj-bot signal_id=3 with alpha=reject + beta=passthrough scoring evaluations from 2026-05-02).
+- **Cri 4** (feature inspector chart) — ✗ PARTIAL (features table empty; OHLC ingest not active in F4).
+- **Cri 5** (backtest lab POST 202 + new row) — ✓ FULL PASS (verified twice cross-fix; 2 backtest_run rows live in DB with `status=queued`).
+- **Cri 6** (Playwright CI green on master HEAD) — ✓ FULL PASS (run 25504796848 on `67e8c5f` success in 1m5s, 3/3 chromium scenarios passed).
+
+### Live-discovery audit-row data integrity
+
+- `bot_config.apply` v2 (Event #3) drill panel renders `before_state (7 keys)` + `after_state (7 keys)` as pretty-printed JSON object — `applied_at` field has `+00:00` offset (§N1 ✓), `config_hash` 64-char hex preserved.
+- `backtest_run.queued` #4 drill shows `after_state (11 keys)` with `id` UUID stringified (`f846180e-...`) + `started_at` + `date_range_start/end` all with `+00:00`.
+- Pre-fix rows id 1 + 2 stored as JSON-string scalars (read-side `null`) — acceptable smoke tech-debt; new writes clean.
+
+### Active lessons (docs/review-lessons.md)
+
+11 lessons L-001..L-011. **L-011 NEW** — "JSONB double-encode under registered codec" — most recent and most operationally relevant. Active control: brief-reviewer must reject `json.dumps(state) if state is not None else None` patterns in JSONB-writer query helpers running under analytics-api or feature-engine (both register codec); tests must assert `isinstance(captured, dict)` AND emulate codec via `json.dumps(captured)` to prove no `TypeError`.
+
+### Tech debt + follow-up candidates (NOT F5 blockers)
+
+1. **`fix(T-401c)`** — symbol_map cleanup migration (`DELETE FROM symbol_map WHERE exchange NOT IN ('binance','bybit','custom')`); operator already DELETE-d 2 stale `tradingview` rows manually pre-runbook 2026-05-05.
+2. **`chore(T-422)`** — Playwright cache in `e2e.yml` (`actions/cache@v4` on `~/.cache/ms-playwright`); cold install spiked once today (>13 min cancelled), subsequent runs ~1 min on warm runner cache.
+3. **`chore(ui)`** — Zustand `persist` middleware on `useNavStore.lastSelectedBotId`; UX nit: per-bot + strategy left-nav links disabled after page refresh until operator re-picks bot.
+4. **`fix(audit)`** — cleanup of pre-fix corrupted rows id 1 + 2 (UPDATE audit_events SET after_state = ..::jsonb WHERE jsonb_typeof(after_state) = 'string'); optional polish.
+5. **`fix(signal_gateway)`** — apply same `_to_jsonable` pattern when/if signal-gateway service registers JSONB codec; currently safe-by-accident, latent flag in L-011.
+
+### Watch-outs for next session pickup
+
+- **F5 phase unlock decision** — F4 truly closed today; F5 (Shadow Variants + Backtest Harness + Finishing per BRIEF §19:2575+; est 2-3 weeks) unlock pending operator decision per §0.10 phase-gate.
+- **Dev stack restart procedure**: laborka shell needs DSN + NATS_URL overrides because `.env` uses compose-internal hostnames (`postgres`, `nats`). Working invocation: `DATABASE_URL='postgresql://scalper:devpass@127.0.0.1:5432/scalper' NATS_URL='nats://127.0.0.1:4222' uv run uvicorn services.analytics_api.app.main:create_app --factory --host 127.0.0.1 --port 8000`. Vite reads `vite.config.ts`, no env override needed.
+- **Vite LAN URL**: `http://192.168.100.100:5173/` from any LAN device (per `chore(devx)` `868e35b`); backend stays 127.0.0.1, Vite proxies `/api` + `/events` server-side.
+- **Two background processes** still running at session end: pnpm dev (Vite) `bop4f8rx3` + uvicorn (analytics-api) `bz8o3mf8j`. Operator can leave them up or kill at will; no unsaved state.
+
+---
+
+## 2026-05-05 (evening session-end — F4 close-out + smoke runbook live demo)
+
+**F4 phase exit-criteria E1 partial sign-off — operator-led runbook execution started; remote LAN access established via SSH tunnel; one ad-hoc UX bug found + fixed (UNCOMMITTED).** Master HEAD unchanged from afternoon session (`d161863` chore(tasks): T-423 done). Pending uncommitted: **`ui/src/routes/index.tsx`** (3-line wire-up: Overview BotSelector → `useNavStore.setLastSelectedBotId`).
+
+### Live demo session events
+
+- **Symbol map enum drift bug surfaced + worked-around** during runbook Step 4. Stale `tradingview` rows in `symbol_map` (left over from F3 dvoj-bot smoke; predate T-401b ExchangeSource StrEnum tightening to `binance|bybit|custom`). `/api/symbol-map/` returned 500 ValueError. **Fix applied in-place via SQL DELETE** of 2 stale rows. ROOT CAUSE: T-401b enum tightening had no DB cleanup migration. **Follow-up task candidate**: `fix(T-401c)` migration `DELETE FROM symbol_map WHERE exchange NOT IN ('binance', 'bybit', 'custom')` — defensive even though dev DB now clean.
+- **Per-bot nav link UX bug**: Overview BotSelector (multi-mode) did NOT update `useNavStore.lastSelectedBotId`, so left-nav "Per-bot live view" stayed disabled until operator manually navigated to `/bot/<id>` URL. **Fixed in `routes/index.tsx`** (3-line: import `useNavStore`, hold `setLastSelectedBotId` ref, on multi-select pick first bot as last-selected). UNCOMMITTED — needs drift-checker + brief-reviewer next session before commit.
+- **LAN access pattern verified**: SSH tunnel from secondary PC works (`ssh -L 5173:127.0.0.1:5173 -L 8000:127.0.0.1:8000 luster@laborka` then browse `http://localhost:5173`). Per BRIEF §16.6 LAN-only invariant — no wider exposure needed; SSH tunnel preserves "no public listener" stance.
+- **CI run 25390558068 still in_progress at session end** (master push of T-422 from afternoon). Step 6 "Install Playwright chromium browser" running >13 min (no `actions/cache@v4` in `e2e.yml` workflow). Background task `by8nuoi6o` still polling — notification on completion will fire automatically. **Follow-up task candidate**: `chore(T-422): cache Playwright browsers in CI` — `actions/cache@v4` on `~/.cache/ms-playwright` + `~/.cache/apt` — reduces cold install ~10 min → ~30 s.
+
+### Watch-outs for next session pickup
+
+1. **First action: commit the uncommitted `ui/src/routes/index.tsx` wire-up.** Inspect via `git diff ui/src/routes/index.tsx` (3-line; in-scope of T-413 nav UX). Path: drift-checker → brief-reviewer → `fix(T-413): Overview BotSelector → useNavStore wire-up` commit. NO new task ID needed — bug regressed from original T-413 plan.
+2. **Second action: triage CI run 25390558068 outcome.** If green → operator can tick runbook Step 10. If red → fetch artifact `playwright-report` (7-day retention).
+3. **Third action: optional follow-up `chore(T-422)` Playwright cache** — operator-driven; F5 unlocking shouldn't wait on this.
+4. **Fourth action: optional follow-up `fix(T-401c)` symbol_map cleanup migration** — only if operator wants belt-and-braces; current dev DB already clean.
+5. **F4 E1 sign-off section** in `docs/runbooks/F4_E1_dashboard_smoke.md` — operator continues runbook ticks (Steps 4-9 visual / Step 10 CI-side); when 6 checkboxes done, fill ISO-8601 `+00:00` timestamp.
+6. **F5 phase unlock** — pending operator decision per §0.10 phase-gate after E1 sign-off.
+
+---
+
 ## 2026-05-05 (session-end)
 
 **F4 phase COMPLETE: 24/24 numbered tasks + T-423 close-out runbook shipped (100% F4 scope delivered).** Master HEAD `8d6cfe9` (this commit), branch up-to-date with origin. Repo-wide pytest **1789 passed** (unchanged; F4 frontend cohort didn't add backend tests — backend was complete at T-409). Vitest **160 passed** (4 → 160 = +156 across T-410 scaffold + T-411 component lib + T-412..T-420 9 dashboard sections + T-422 api-client). Dashboard-query parametrizations **23** (CI-full gated; 0 → 2 → 23 from T-421). Playwright scenarios **3** (master-push gated; 0 → 3 from T-422). 47 pytest skipped (env-gated integration; unchanged), no regressions.
