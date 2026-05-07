@@ -36,9 +36,9 @@ cd ui
 pnpm dev
 ```
 
-Vite serves on `http://127.0.0.1:5173`. Vite proxies `/api/*` + `/events/*` → `127.0.0.1:8000` per `ui/vite.config.ts`. Without backend running, every fetch fails ECONNREFUSED.
+Vite listens on all interfaces (LAN-bind, dev-only); backend stays on `127.0.0.1:8000` and is reached only via Vite's server-side proxy (`/api/*` + `/events/*`). Without backend running, every fetch fails ECONNREFUSED.
 
-Operator browser: open `http://localhost:5173`.
+Operator browser: open `http://localhost:5173` on laborka, or `http://<laborka-LAN-IP>:5173` from any LAN device (no SSH tunnel needed).
 
 ---
 

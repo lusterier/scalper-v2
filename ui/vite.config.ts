@@ -21,7 +21,7 @@ export default defineConfig({
     alias: { "@": path.resolve(__dirname, "./src") },
   },
   server: {
-    host: "127.0.0.1", // §16.6 LAN-only; explicit no 0.0.0.0
+    host: "0.0.0.0", // §16.2 dashboard LAN-bind; backend stays 127.0.0.1
     port: 5173,
     proxy: {
       "/api": "http://127.0.0.1:8000",
