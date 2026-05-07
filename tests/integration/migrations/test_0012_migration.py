@@ -190,10 +190,11 @@ async def test_migration_0012_downgrade_preserves_pgcrypto(
             cwd=_REPO_ROOT,
         )
 
-        # downgrade -1 (rollback 0012 only)
+        # downgrade to 0011 (rollback exactly 0012; explicit target — robust
+        # against future migrations changing alembic head per L-012).
         await asyncio.to_thread(
             subprocess.run,
-            ["uv", "run", "alembic", "-c", str(_ALEMBIC_INI), "downgrade", "-1"],
+            ["uv", "run", "alembic", "-c", str(_ALEMBIC_INI), "downgrade", "0011"],
             check=True,
             capture_output=True,
             text=True,

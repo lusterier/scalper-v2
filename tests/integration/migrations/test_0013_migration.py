@@ -219,7 +219,7 @@ async def test_migration_0013_meta_default_is_empty_jsonb(
 async def test_migration_0013_downgrade_drops_table(
     base_dsn: str,
 ) -> None:
-    """§N8 — downgrade -1 drops backtest_trades table + indexes; pgcrypto preserved."""
+    """§N8 — downgrade to 0012 drops backtest_trades table + indexes; pgcrypto preserved."""
     throwaway_name = f"scalper_v2_mig0013_dn_{_uuid_mod.uuid4().hex[:8]}"
 
     admin_conn = await asyncpg.connect(dsn=base_dsn)
@@ -242,7 +242,11 @@ async def test_migration_0013_downgrade_drops_table(
         )
         await asyncio.to_thread(
             subprocess.run,
-            ["uv", "run", "alembic", "-c", str(_ALEMBIC_INI), "downgrade", "-1"],
+            # Explicit target 0012 per L-012 — robust against future migrations
+            # changing alembic head (relative -1 would silently rollback the wrong
+            # revision and the test_0013_drops_table assertion would still pass
+            # while leaving 0013 effectively un-tested for downgrade).
+            ["uv", "run", "alembic", "-c", str(_ALEMBIC_INI), "downgrade", "0012"],
             check=True,
             capture_output=True,
             text=True,
