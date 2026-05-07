@@ -1,6 +1,10 @@
 # Tasks
 
-## Current Phase: F4 — Analytics API and Dashboard UI
+## Current Phase: F5 — Shadow Variants + Backtest Harness + Finishing
+
+Unlocked: 2026-05-07 (operator-unlocked after F4 deliverables shipped + F4 E1 sign-off PASS-with-2-partials 2026-05-07T15:26:32+00:00 per `chore(F4-E1-smoke)` `4caa3d0` + operator signal *"pokracuj s F5"* this session). Per BRIEF §19:2575-2580 — est. 2 weeks (operator OQ-3 default A — 2-week realistic at F4/F3 cadence, slip acceptable). F5 phase: **0/22 tasks done — backlog populated by T-500 (this task family precedent T-019 + T-200; F3/F4 used anonymous `chore(tasks)` `a07e46e` + `dec8c12`)**. F4 phase (closed): 24/24 + T-423 + E1 SIGN-OFF (see `docs/runbooks/F4_E1_dashboard_smoke.md`). 22 numbered F5 tasks (T-501..T-522) decomposed into 4 clusters: Backtest harness (T-501..T-509, 9 tasks) + Shadow variants runtime (T-510..T-514, 5 tasks) + UI extensions (T-515..T-517, 3 tasks) + Backend polish + ops (T-518..T-522, 5 tasks). 2 F5-binding §20 hazards (H-016 shadow task cleanup, H-023 shadow restart via OHLC replay) — 24 hazards already-shipped F0..F4 audited via T-519 gating task. 5 exit criteria E1..E5 mapped to owner tasks (E1 = T-507 CLI + T-509 worker; E2 = T-508 compare + T-516 UI; E3 = T-511 + T-512 kill-test; E4 = T-519 audit; E5 = T-522 sign-off). 2 new migrations 0013 (backtest_trades) + 0014 (shadow_variants + shadow_rejected). **Sibling v1 bot disabled** 2026-05-02 (signabot.service systemd disable + timescaledb container stopped); ports 8000/5432 voľné pre v2 dev stack.
+
+## Previous Phase: F4 — Analytics API and Dashboard UI (closed 2026-05-07T15:26:32+00:00)
 Unlocked: 2026-05-02 (operator-unlocked after F3 deliverables shipped + F3 dvoj-bot smoke verified 2026-05-02T20:15:30+00:00; `chore(F3-close)` `548c0cc`). Per BRIEF §19:2552-2571 — est. 2-3 weeks. F3 phase: 16/16 tasks done (T-300..T-313 + T-308b + T-311 + T-312). F4 phase: **24/24 tasks done + T-423 close-out runbook shipped + E1 SIGN-OFF 2026-05-07T15:26:32+00:00 (PASS with 2 partials)**. Runbook executed end-to-end by operator `luster` on master HEAD `67e8c5f`: 4/6 exit criteria full PASS (Cri 1 navigate 9 sections + Cri 3 scoring per-rule breakdown via F3 dvoj-bot signal_id=3 + Cri 5 backtest lab POST 202 + Cri 6 Playwright CI green run 25504796848); 2/6 PARTIAL (Cri 2 trade drill + Cri 4 feature chart deferred — F4 fixture has no trades/no features; F4 scope is dashboard, real-data fill comes with F5+ shadow variants + backtest harness). 5 master-fix commits surfaced live: `fix(T-413)` `c3c8a57` (Overview BotSelector → useNavStore wire-up) + `chore(devx)` `868e35b` (Vite LAN-bind §16.2) + `fix(deps)` `2968461` (mako + pip CVE patches) + `fix(audit)` `c241c15`+`67e8c5f` (audit_events JSONB double-encode trap under registered codec; **L-011 lesson** added). F5 phase (Shadow Variants + Backtest Harness + Finishing per BRIEF §19:2575+) unlock pending operator decision per §0.10. **Sibling v1 bot disabled** 2026-05-02 (signabot.service systemd disable + timescaledb container stopped); ports 8000/5432 voľné pre v2 dev stack.
 
 ## In progress
@@ -130,39 +134,127 @@ Unlocked: 2026-05-02 (operator-unlocked after F3 deliverables shipped + F3 dvoj-
 - [x] T-001: Monorepo scaffold (2026-04-19)
 - [x] T-213b: PaperExchange persistence + execution emission (2026-04-28) — F2 eleventh numbered work task; **second F2 task with active math-validator gate** (Gate 4 ACTIVE per CLAUDE.md gate-4 conditional rule — staged diff touched `packages/exchange/paper/` financial math: realized_pnl computation §E.1-§E.3). **Pre-emptive split T-213b → T-213b + T-213c** per L-007 + OQ-1 default A — full T-213b estimated ~390 LOC src EXCEEDED §0.3 cap of 400; split into T-213b (writes + execution emission) + T-213c (reads + restart recovery — future plan-doc). T-213b packages: `packages/exchange/paper/persistence.py` (NEW — 10 helpers: 4 INSERT @non_idempotent + 6 UPDATE/DELETE naked per W#4 stance A; ~285 effective LOC) + `packages/exchange/paper/adapter.py` (extended +560 LOC over T-213a 286 baseline). Constructor extended to 9 params: 7 T-213a baseline + 2 new (`pool: asyncpg.Pool`, `event_queue_maxsize: int = 1000` per BLOCKER 6 / L-001 / §N9 active control). **place_market_order full body** replaces T-213a NotImplementedError partial stub: single-tx INSERT chain across paper_orders + paper_trades + paper_executions + paper_positions on open per §9.5 step 8; UPDATE paper_trades close + DELETE paper_positions on reduce_only=True; emit ExecutionEvent + PositionEvent post-commit per §9.5 step 9 + Decision #2. **set_trading_stop full body** UPDATE paper_positions sl_price + tp_price ONLY per BLOCKER 1 schema parity (tpsl_mode + tp_size in `_active_positions` dict only — paper_positions schema mirrors live position_state per §3.1 line 268). **`_drain_sl_tp_fill` split** per W#5(b): 6 LOC dispatcher + `_drain_partial_tp` 47 LOC + `_drain_full_close` 35 LOC + 4 helpers (`_build_drain_context`, `_insert_synthetic_close_order`, `_insert_close_execution`, `_emit_close_events`); each method ≤50 LOC. **Synthetic paper_orders rows for SL/TP fills** per Decision #5 + H-024 binding: paper_executions.order_id FK to a real synthetic order so T-218 dispatcher exec_type derivation (DB execId → order_id match) works uniformly across paper + live. **`paper_orders.idempotent` mapping** (CONCERN 2): market → False (mirror @non_idempotent + H-003); sl/tp → True (mirror Bybit set_trading_stop @idempotent). **`correlation_id` sourcing** (BLOCKER 2): adapter generates `f"paper-corr-{uuid.uuid4()}"` per call (OQ-3 sub-question default A — decoupled from T-216). **`exchange_order_id`** UUID4 per Decision #6 (OQ-6 default A). **`paper_trades.notional_usd`** computed at INSERT time per BLOCKER 3 (NUMERIC(20,4); `qty * fill_price`). **Realized P&L on close** per Decision #8 (long: `(exit-entry)*qty - fees_open - fees_close`; short: `(entry-exit)*qty - fees_open - fees_close`; quantize NUMERIC(20,4)). **Partial TP semantics** per Decision #9 + OQ-3 default A: paper_trades stays OPEN with reduced qty + tp_hit=TRUE; partial_pnl = `(tp - entry) * tp_size - tp_fee` (TP fee only; entry fee RESERVED for full close). **`entry_fee` tracked separately** on `_active_positions` dict at open time per math-validator MATH FAIL → VERIFIED post-fix (Fix #1): full-close path uses `fees_open=position["entry_fee"]` NOT `position["fees_paid"]` to prevent partial-TP fee double-subtraction; `position["fees_paid"]` continues to accumulate for paper_trades.fees_paid persistence. **`stream_executions` / `stream_positions` AsyncIterator** per Decision #11/#12 + T-201 OQ-1: per-instance bounded `asyncio.Queue` (DI'd maxsize), `def`-not-`async-def` returning generator; OQ-5 default A: round-robin caveat documented via `test_two_consumers_split_events_does_not_broadcast`. **`cancel_order`** UPDATE paper_orders status='cancelled' (idempotent on already-cancelled); **`set_leverage`** no-op (paper has no leverage). **`OrderRejected` reused** (BLOCKER 4) for caller-mistake cases (`position_already_open` / `no_position_to_close`); no new exception class. **`update_paper_trade_partial` helper** (BLOCKER 5): UPDATE paper_trades SET qty/fees_paid/realized_pnl WHERE id (PK) for partial-TP path. **`asyncpg==0.30.0` dependency** declared in `packages/exchange/pyproject.toml` (CONCERN 3 fix; matches packages/db pin). **Hand verification §E.1** (full close long realized_pnl 460.7000 + notional_usd 32500.0000 + fees_paid 39.3000), **§E.2** (partial TP 46.0700 / qty=0.4 / tp_hit=TRUE / fees_paid=23.4300 / OQ-3 default A entry fee reserved), **§E.3** (aggregate partial-TP-then-SL close: -188.9100 / fees_paid=38.9100 — corrected derivation post math-validator MATH FAIL). **All 4 review gates passed**: plan-reviewer 1st REVISE 6 BLOCKERS+4 CONCERNS → 2nd APPROVE with W#1-W#7 Write-time guidance (W#1-W#4 doc-coherence resolved at consolidation; W#5-W#7 implementation-time). drift-checker 1st DRIFT (LOC inflation + 6 missing tests) → 2nd ON TRACK after operator-approved option A refactor (split drain methods + 7 tests added). brief-reviewer SHIP. math-validator 1st MATH FAIL (§E.3 partial-TP fee double-subtracted at full close path) → 2nd VERIFIED after Fix #1 (entry_fee tracked separately on `_active_positions` dict; `_drain_full_close` + `_persist_close` use `position["entry_fee"]` instead of `prior_fees`). 7 missing tests added: `test_persist_failure_rolls_back_full_chain` (§9.5 step 8 atomicity), `test_emit_happens_after_persist_commit` (Decision #2 ordering), `test_drain_called_after_t213a_enqueue_in_same_candle` (wiring), `test_pending_queue_empty_after_full_drain` (queue invariant), `test_partial_tp_then_sl_close_yields_correct_aggregate_pnl` (§E.3 -188.9100), `test_manual_reduce_only_close_after_partial_tp_uses_entry_fee_not_fees_paid` (math regression guard, 410.7300), `test_execution_event_shape_matches_protocol_dataclass` parametrized over (open/close/sl/tp); plus `test_close_paper_trade_uses_pk_not_symbol_status` (H-018 white-box SQL assertion) + `test_active_positions_dict_matches_paper_positions_after_each_mutation` (CONCERN 4 — _active_positions ↔ paper_positions parity over 4 mutation sites). **Hazards bound**: H-013 tpsl_mode propagation chain end-to-end (set_trading_stop → `_active_positions` dict → `PendingSLTPFill` → drain branch on `fill.tpsl_mode == 'Partial'`; no `'Full'` default baked); H-018 close paper_trades by PK only (`WHERE id = $`); H-024 DB-driven exec_type via synthetic paper_orders FK. **ci-full GREEN on branch HEAD `ba331b3`** (run 25063111500). Plan: `docs/plans/T-213b.md` (746 LOC). 14 integration + 11 unit tests + adjustments to T-211/T-213a tests for new ctor (pool kwarg) + drain-after-cross capture pattern. Repo-wide pytest 685 + 36 → 688 + 54 (+3 new pass + 18 new env-gated paper integration). **Calibration win continued** (T-204 → T-210 → T-214 → T-211 → T-206 → T-212 → T-213a → T-213b trajectory): 20 verbatim Decisions + 7 genuine OQs (all "use defaults") + Write-time guidance discipline + math-validator catch-and-recover (operator-flagged surface-expansion guard activated, mid-implementation refactor option A applied per L-007 spirit). **Unblocks T-213c** (reads + restart recovery — get_positions / get_fill_price / get_closed_pnl_cumulative DB read bodies; on-construct rehydrate of `_active_positions` from paper_positions). **Unblocks T-218** (execution dispatcher consumes `stream_executions()` per §9.5 step 5).
 
-## Next (F5 — pending operator unlock per §0.10)
+## Next
 
-F5 phase scope per BRIEF §19:2575+ (Shadow Variants + Backtest Harness + Finishing). Tasks pending operator-driven plan-out. Phase gate not yet open — F5 unlock requires operator decision after F4 exit-criteria E1 sign-off (see `docs/runbooks/F4_E1_dashboard_smoke.md`).
+F5 phase scope per BRIEF §19:2575-2580 (full shadow + backtest capability + polish). Unlocked 2026-05-07 per master HEAD `4caa3d0` chore(F4-E1-smoke) sign-off + operator unlock signal "pokracuj s F5" this session. Mirror precedent: T-019 (F1, named-task path) + T-200 (F2, named-task path); F3/F4 used anonymous `chore(tasks): unlock FN phase + add NN-task plan` commits (`a07e46e` / `dec8c12`); T-500 reverts to T-019/T-200 named-task pattern for cleaner drift-checker / brief-reviewer visibility on a 22-task plan. Plan: `docs/plans/T-500.md` (single-pass plan-reviewer APPROVE 2026-05-07 with 5 Write-time guidance items).
 
-### F4 dependencies graph
+### F5 numbered (T-501..T-522 — 22 tasks)
 
-- T-400 unblocks: T-401a, T-402, T-403, T-404, T-405, T-407, T-408
-- T-401a unblocks: T-401b (shipped) + T-405 (audit viewer reads audit_events table)
-- T-401b unblocks: T-405 audit log viewer (reads symbol_map.create/.update/.delete events T-401b writes)
-- T-402 unblocks: T-413 Per-bot live view UI (consumes /api/positions + later T-403 signals + T-406 P&L) + T-414 Trade explorer UI (consumes /api/trades + drill-down via T-403/T-404/T-407)
-- T-403 unblocks: T-413 Per-bot live view UI (signals feed last 50) + T-414 Trade explorer drill-down (signal+scoring lookup) + T-418 Scoring inspector UI (consumes /api/scoring/by-signal/{id} for rule-by-rule view)
-- T-404 unblocks: T-417 Feature inspector UI (consumes /api/features/latest browser + /api/features/history chart)
-- T-405 unblocks: T-416 Strategy editor UI (consumes /api/configs/validate live + apply) + T-419 Audit log viewer UI (consumes /api/audit/ chronological + /api/audit/{id})
-- T-402 unblocks: T-406
-- T-410 unblocks: T-411
-- T-411 unblocks: T-412..T-420
-- T-401+T-402+T-406 unblock: T-412
-- T-402+T-403+T-408 unblock: T-413
-- T-413+T-414 unblock: T-422
-- T-410..T-422 unblock: T-423
-- T-409 (alerting) is independent of UI; can ship in parallel any time after T-400
+#### Backtest harness cluster (T-501..T-509 — 9 tasks)
 
-### F4 hazard-bound deferrals (carry-over from F3)
+- [ ] T-500: Populate F5 backlog (this task) — TASKS.md restructure adding `### F5 numbered` (T-501..T-522) + `### F5+ opportunistic` (Backlog), 2 F5-binding hazards (H-016 + H-023), 5 exit-criteria E1..E5 trace, 2 new migrations (0013 + 0014). Plan-doc `docs/plans/T-500.md`. **0 src LOC** + ~580 LOC docs (markdown exempt §0.3). Mirror T-019 + T-200 precedents.
+- [ ] T-501: Migration 0013 `backtest_trades` table (FK `run_id → backtest_runs.id` from T-407 migration 0012; per-trade columns mirror live `trades` schema). Spec: BRIEF §12.2:1969-1971. Est: ~150 LOC migration + `test_migration.py` + ~50 LOC `packages/db/queries/backtest_trades.py` read helper. §N9 N/A (schema-only). Blocks: T-507 + T-509 + T-516.
+- [ ] T-502: `ReplayBus` skeleton — in-process NATS-compatible publish/subscribe with timestamp-ordered delivery; mirrors `packages/bus/nats_client.py` interface so consumers can swap. Spec: BRIEF §12.2:1953. Est: ~200 LOC src + ~150 LOC tests (replay determinism). §N9 N/A (in-process bus). Blocks: T-507.
+- [ ] T-503: `HistoricalOHLCSource` — TimescaleDB read + configurable replay pace (1x / 10x / max); cursor-based iteration to avoid loading 30-day window. Spec: BRIEF §12.2:1954-1955. Est: ~180 LOC src + ~120 LOC tests. **§N9: replay pace 1x/10x/max configurable per BRIEF §12.2:1955** (env/CLI knob). Blocks: T-506 + T-507.
+- [ ] T-504: `HistoricalSignalSource` — chronological replay of `signals` table for bot's symbol universe; read-only consumer. Spec: BRIEF §12.2:1956. Est: ~140 LOC src + ~100 LOC tests. §N9 N/A (read-only). Blocks: T-507.
+- [ ] T-505: Intra-candle path generator — deterministic `O→(toward high if close>open else toward low first)→extreme→other extreme→C` per BRIEF §12.2:1961-1963. **§N9: path step count + ordering rule fixed (BRIEF §12.2:1961 mathematical invariant) — NOT configurable. Any timing/jitter knobs configurable per L-001 active control.** Est: ~120 LOC src + ~150 LOC tests (path determinism + TradingView "Replay" parity). Blocks: T-506.
+- [ ] T-506: PaperExchange wired to HistoricalOHLCSource for replay mode — refactor T-213b PaperExchange adapter to accept either live `market.ohlc.1m.>` NATS or replay HistoricalOHLCSource source. Spec: BRIEF §12.2:1957. Est: ~200 LOC src delta + ~150 LOC tests. §N9 N/A (mode flag, not threshold). Blocks: T-507.
+- [ ] T-507: `scripts/backtest.py` CLI — `--bot <id> --from <date> --to <date> [--override 'path.to.field=value']` invocation; orchestrates ReplayBus + HistoricalOHLCSource + HistoricalSignalSource + PaperExchange + strategy-engine + execution-service into single in-process process. Summary stats persistence to `backtest_runs.summary` (total trades / WR / P&L / PF / MDD). Spec: BRIEF §12.2:1949 + §12.2:1966-1968. **(E1 owner — CLI side; per WG#5).** **§N9: --override CLI knob configurable per BRIEF §12.2:1949; summary metric thresholds (PF / MDD / WR cutoffs) — config or fixed math? Default A: pure aggregates, no thresholds.** Est: ~250 LOC src + ~180 LOC tests. **Pre-emptively split-flagged** per L-007 — if summary-stats compute non-trivial, split T-507a (orchestration) + T-507b (summary stats). Blocks: T-508 + T-509.
+- [ ] T-508: Comparison mode — `python scripts/backtest.py --compare run_A_uuid run_B_uuid` outputs aggregate metrics diff + per-trade diff (same signal, different outcome). Spec: BRIEF §12.2:1973-1974. **(E2 owner — CLI compare side; per WG#5).** Est: ~180 LOC src + ~140 LOC tests. §N9 N/A (read-only diff). Blocks: T-522.
+- [ ] T-509: Backtest worker connect to T-407 `/api/backtests/{id}` placeholder — when operator triggers backtest from UI (Step 4 of F4 E1 smoke runbook = `status=queued` row), worker picks up + runs T-507 CLI internally + writes summary back to row. Async background task in analytics-api lifespan or separate `services/backtest-worker/` (default A: in-process in analytics-api per OQ-1, separated F6+ if perf demands). **(E1 owner — worker connect side; per WG#5).** **§N9: worker poll interval + concurrency cap configurable per L-001 active control.** Est: ~220 LOC src + ~140 LOC tests. Blocks: T-522.
 
-- **T-F3+ live-mode safeguard runtime check** — §16.5 lifespan fail-fast on `exchange.mode==live AND BOT_CONFIRM_LIVE!="yes"` + `LIVE MODE ENGAGED` warning + Telegram alert. Compose env passthrough already shipped in T-311. T-409 (alerting-svc) ships Telegram surface; safeguard runtime check natural slot during T-409 or as separate T-F3+ task. ~15 LOC + tests.
-- **F4+ T-306 feature_history population** — T-303 series conditions + T-312 oi_squeeze plugin currently return data_missing (T-306 resolver doesn't populate `feature_history`). T-417 Feature inspector může surfaceť this gap operator-side; resolver upgrade ~30 LOC slot natural during T-404 or post-T-417.
-- **F4+ built-in `oi_change` feature** — `packages/features/builtins/` per BRIEF §9.3:1488. Natural slot when T-417 Feature inspector surfaces missing OI feature for live OI-strategy bots.
-- **F4+ risk-based position sizing** — replace `execution.qty: Decimal` with `sizing.tiers` block from §B.1:3006-3025. ~80 LOC src + tests; natural slot post-T-413 (per-bot live view will surface qty staleness if balance changes).
+#### Shadow variants runtime cluster (T-510..T-514 — 5 tasks)
+
+- [ ] T-510: Migration 0014 `shadow_variants` + `shadow_rejected` tables — per BRIEF §13.3 + §13.5. Schema includes terminal_outcome enum (sl_hit/be_hit/tp_trail/tp_full/timeout for variants; would_tp/would_sl/would_be/no_trigger for rejected) + MFE/MAE Decimals + variant_name + parent_trade_id FK. Est: ~180 LOC migration + `test_migration.py` + ~80 LOC `packages/db/queries/shadow.py` read + write helpers. §N9 N/A (schema). **L-011 caveat: shadow.py write helpers run under execution-service (no `_register_jsonb_codec` registered → safe-by-accident); if execution-service adds codec registration in F5+, switch to dict-direct pattern per L-011 active control.** Per WG#3. Blocks: T-511 + T-513 + T-516 + T-517.
+- [ ] T-511: Shadow-worker skeleton in execution-service — per-variant `_step` FSM running against `PaperExchange` instance seeded with live entry; subscribes to `shadow.start.<bot_id>` NATS topic per BRIEF §13.3. **(E3 owner — FSM + paper engine seed side; per WG#5).** **Hazard: H-016 (shadow task cleanup) — F5-binding owner.** Est: ~280 LOC src + ~200 LOC tests. **Pre-emptively split-flagged** per L-007 — if FSM + paper seed + persistence + emission overshoots, split T-511a (FSM + paper seed) + T-511b (persistence + emission) per F2 T-216 precedent. §N9 N/A (FSM transitions). Blocks: T-512 + T-513.
+- [ ] T-512: OHLC replay restart recovery (BRIEF §13.4) — on execution-service restart, for each pending variant query `ohlc_1m` from `created_at` to `now`, replay using same `_step` from T-511. **Hazard: H-023 (shadow restart via OHLC replay) — F5-binding owner; eliminates `lost_on_restart`.** **(E3 owner — replay recovery side; per WG#5).** **Mandatory kill-during-variant integration test** per E3 exit criterion — kills execution-service mid-variant via signal, restarts, verifies variant resumes correctly. **§N9: replay query window bounds + per-variant timeout configurable per L-001 active control.** Est: ~220 LOC src + ~250 LOC tests (kill-test integration heavy).
+- [ ] T-513: Rejected-signal shadow tracking (BRIEF §13.5) — separate from variants. When signal rejected by scoring, 60-min observation task records MFE/MAE + terminal label (would_tp/would_sl/would_be/no_trigger) → `shadow_rejected` table. Restart recovery via OHLC replay (also v2 improvement per §13.5). **§N9: 60-min observation duration + MFE/MAE poll interval configurable per L-001 active control.** Est: ~250 LOC src + ~200 LOC tests. Blocks: T-517.
+- [ ] T-514: Shadow variants config schema — per-bot `shadow.variants:` YAML block per BRIEF §13.2; pydantic validation extends T-217 `BotConfig` model. Validation: variant names unique, overrides keys valid execution-config paths, max_duration_hours bounded. Est: ~120 LOC src + ~100 LOC tests. §N9 N/A (config validation per BRIEF §B). Blocks: T-511.
+
+#### UI extensions cluster (T-515..T-517 — 3 tasks)
+
+- [ ] T-515: Strategy editor diff-against-live (BRIEF §19:2575 line 7) — extend T-416 strategy editor with side-by-side diff: "Current applied (read-only)" vs "Editing draft" with line-by-line YAML diff highlighter. Est: ~200 LOC src + ~150 LOC tests. §N9 N/A (UI render).
+- [ ] T-516: Shadow variants per-trade drill-down (T-414 8-section placeholder #4 → real renderer). Renders all variants alongside live outcome per BRIEF §13.6. **(E2 owner — UI side variant view; per WG#5).** Est: ~250 LOC src + ~150 LOC tests. §N9 N/A (UI render). Blocked-by: T-510 + T-511 + T-512.
+- [ ] T-517: Per-symbol best-variant aggregate + per-rejected-signal explorer (BRIEF §13.6) — new dashboard sub-routes `/shadow/aggregate/$symbol` + `/shadow/rejected`. Est: ~280 LOC src + ~180 LOC tests. **Pre-emptively split-flagged** per L-007 — two independent UI surfaces; if combined overshoots, T-517a (aggregate) blocked-by `T-510 + T-512` + T-517b (rejected explorer) blocked-by `T-510 + T-513`. **DAG fix per WG#2: blocked-by T-510 (schema) + T-512 (variant runtime → aggregate side) + T-513 (rejected tracking → explorer side).** §N9 N/A (UI render).
+
+#### Backend polish + ops cluster (T-518..T-522 — 5 tasks)
+
+- [ ] T-518: Feature auto-backfill on registration (BRIEF §9.3) — when a new `feature_definitions` row inserts, feature-engine schedules backfill job for historical OHLC range. **§N9: backfill window default + max-batch-size configurable per L-001 active control.** Est: ~200 LOC src + ~150 LOC tests.
+- [ ] T-519: §20 hazard test audit — verify every H-001..H-026 has passing test (E4 enforcement per BRIEF §19:2580). One-batch run via `pytest -m hazard --tb=short`; produces `docs/audit/hazard-test-coverage.md` report. **(E4 owner; per WG#5).** **Late-F5 gating per OQ-4 default A** — single batch run before T-522 close-out; rolling per-task audit deemed too noisy. Est: ~80 LOC marker config + ~50 LOC report generator. §N9 N/A (test marker). Blocked-by: ALL T-501..T-518 passing.
+- [ ] T-520: Hardening shortlist — triage `T-F2+` / `T-F3+` / `T-F4+` opportunistic deferred items + 5 today-flagged tech-debts from F4 E1 smoke (ui nav persist via Zustand persist middleware, audit pre-fix row cleanup id 1+2 from `c241c15` intermediate fix, `signal_gateway.insert_signal` latent fix per L-011, `T-401c` symbol_map cleanup migration, `chore(T-422)` Playwright cache in CI workflow). Operator approves shortlist at T-520 plan-doc time per OQ-5 default A; rest deferred F6+. **Multi-commit task** — each shortlisted item becomes a sub-commit with own brief-reviewer pass. Est: ~150 LOC src across small fixes + ~100 LOC tests.
+- [ ] T-521: Final docs pass — runbooks (`docs/runbooks/F5_E1_backtest_smoke.md`, `docs/runbooks/F5_E2_shadow_smoke.md`); glossary update; README rewrite reflecting MVP-complete state; `docs/CLAUDE_CODE_BRIEF.md` deltas if §B / §11 / §12 / §13 surfaced ambiguities during F5. Est: ~400 LOC docs (markdown exempt §0.3). Blocked-by: T-519 audit passing.
+- [ ] T-522: F5 close-out runbook + E1..E5 sign-off (mirror T-313 / T-423 pattern). Operator-runnable smoke verifying 5 exit criteria; sign-off section with full ISO-8601 `+00:00` timestamp per §N1. **(E5 owner; per WG#5).** Est: ~280 LOC runbook + status.md + TASKS.md updates. Blocked-by: T-507 + T-508 + T-509 + T-512 + T-516 + T-518 + T-519 + T-521 all green.
+
+### F5 dependencies graph
+
+Top-of-DAG (no F5-internal deps; can start in parallel after T-500 lands): **T-501, T-502, T-503, T-504, T-505, T-510, T-514, T-515, T-518, T-520**. Operator picks one or two.
+
+```
+T-501 (migration 0013) ──┐
+T-502 (ReplayBus) ───────┤
+T-503 (OHLCSource) ──────┤
+T-504 (SignalSource) ────┼─→ T-507 (CLI E1 owner) ──┬─→ T-508 (compare E2 owner) ──┐
+T-505 (intra-candle) ────┤                          │                                │
+T-506 (PaperEx replay) ──┘                          │                                │
+                                                    │                                │
+T-509 (worker E1 owner) ←───────────────────────────┘                                │
+                                                                                     │
+T-510 (migration 0014) ──┬─→ T-511 (shadow-worker E3 owner; H-016) ─→ T-512 (E3+H-023)
+T-514 (config schema) ───┤                                            │              │
+                         └─→ T-513 (rejected tracking)                │              │
+                                                                      │              │
+T-515 (strategy diff UI) — independent                                │              │
+T-516 (variants drill-down UI E2 owner) ←─ T-510 + T-511 + T-512 ─────┘              │
+T-517 (aggregate + rejected UI) ← T-510 + T-512 + T-513 (per WG#2)                   │
+                                                                                     │
+T-518 (feature backfill) — independent                                               │
+T-520 (hardening shortlist) — independent (multi-commit)                             │
+                                                                                     │
+T-519 (hazard audit E4 owner) ← all T-501..T-518 passing ────────────────────────────┘
+T-521 (docs final pass) ← T-519 passing
+T-522 (close-out E5 owner) ← T-507 + T-508 + T-509 + T-512 + T-516 + T-518 + T-519 + T-521
+```
+
+**Critical-path bottleneck:** T-512 OHLC replay restart recovery — kill-during-variant integration test integration-heavy and may dominate session length.
+
+### F5 migration sequence (continues 0012 → 0013 → 0014)
+
+| ID | Migration | Tables | Owner task |
+|----|-----------|--------|------------|
+| 0013 | Backtest trades ledger | `backtest_trades` (FK to `backtest_runs.id`) | T-501 |
+| 0014 | Shadow variants + rejected | `shadow_variants` + `shadow_rejected` | T-510 |
+
+Both forward-only per §N8 + L-007 (one migration per task — never bundled).
+
+### F5 exit-criteria trace (§19 lines 2576-2580)
+
+| ID | Bullet | Owner task(s) |
+|----|--------|---------------|
+| E1 | Backtest on 30-day historical window completes + reports aggregates | T-507 (CLI side) + T-509 (worker connect side) end-to-end smoke |
+| E2 | Two backtests with different configs compared side-by-side | T-508 (CLI compare side) + T-516 (UI side variant view) |
+| E3 | Shadow variants persist across restart (verified by killing execution-service mid-variant) | T-511 (FSM + paper seed) + T-512 (replay recovery — kill-during-variant integration test mandatory) |
+| E4 | All §20 hazards have passing tests | T-519 audit gating (one-batch run + report) |
+| E5 | Operator signs off "Plný MVP scope" | T-522 close-out runbook + sign-off |
+
+### F5 hazard binding (§20)
+
+2 F5-binding hazards (24 already-shipped F0..F4 audited via T-519 gating task):
+
+| ID | Title | F5 owner |
+|----|-------|----------|
+| H-016 | Shadow task cleanup | T-511 + T-512 |
+| H-023 | Shadow restart via OHLC replay | T-512 (eliminates `lost_on_restart`) |
+
+T-519 audit verifies all 26 hazards have passing tests in one batch run; any gap surfaces a follow-up `fix(F5-hazard-<id>)` commit.
 
 ## Backlog
 
 F1 bullet 1 (full signal-gateway) absorbed into F0 (T-015a..T-015b2b); per-bot HMAC selection per §9.1 ADR-0001 topic moved to `### F1+ opportunistic` below, not a phase blocker.
 
+### F5+ opportunistic
+
+- [ ] T-F5+: ReplayBus extended to support pause/resume/seek (debug + interactive backtest UX); F5 ships 1x/10x/max only.
+- [ ] T-F5+: Backtest comparison HTML report — pretty-printed metrics diff; F5 ships CLI text + UI side-by-side; HTML render is polish.
+- [ ] T-F5+: Shadow variants statistical significance test — when N variants over M trades, Bonferroni-corrected best-variant claim.
+- [ ] T-F5+: Feature backfill progress dashboard tile — currently log-only.
+- [ ] T-F5+: Multi-bot backtest run (F5 ships single-bot per CLI invocation).
+
+### F4+ opportunistic (carry-over from F3 + F4 deferrals)
+
+- [ ] T-F3+ live-mode safeguard runtime check — §16.5 lifespan fail-fast on `exchange.mode==live AND BOT_CONFIRM_LIVE!="yes"` + `LIVE MODE ENGAGED` warning + Telegram alert. Compose env passthrough already shipped in T-311. T-409 (alerting-svc) ships Telegram surface; safeguard runtime check natural slot during F5 hardening (T-520) or as separate T-F3+ task. ~15 LOC + tests.
+- [ ] F4+ T-306 feature_history population — T-303 series conditions + T-312 oi_squeeze plugin currently return data_missing (T-306 resolver doesn't populate `feature_history`). T-417 Feature inspector může surfaceť this gap operator-side; resolver upgrade ~30 LOC slot natural during T-518 (feature auto-backfill on registration) or as separate task.
+- [ ] F4+ built-in `oi_change` feature — `packages/features/builtins/` per BRIEF §9.3:1488. Natural slot when T-417 Feature inspector surfaces missing OI feature for live OI-strategy bots; can land during T-518 OR T-520 hardening shortlist.
+- [ ] F4+ risk-based position sizing — replace `execution.qty: Decimal` with `sizing.tiers` block from §B.1:3006-3025. ~80 LOC src + tests; natural slot during T-520 hardening shortlist (per-bot live view will surface qty staleness if balance changes).
 
 ### F2+ opportunistic
 
