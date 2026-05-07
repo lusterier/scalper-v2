@@ -29,6 +29,18 @@ jobs:
       - name: Install ui dependencies
         working-directory: ui
         run: pnpm install --frozen-lockfile
+      # T-520 cherry-pick: cache Playwright browser binaries keyed on
+      # pnpm-lock.yaml (Playwright version pin lives there transitively).
+      # Cache hit drops "Install Playwright chromium browser" step from
+      # ~10 min cold install to ~30 s. apt deps via --with-deps still
+      # rerun (system packages, OS-level — not cacheable per actions/cache).
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('ui/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
       - name: Install Playwright chromium browser
         working-directory: ui
         # --with-deps installs Ubuntu apt packages required by Chromium
