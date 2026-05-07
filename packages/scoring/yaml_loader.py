@@ -54,6 +54,8 @@ from .types import (
     ExecutionSection,
     ScoringConfig,
     ScoringRule,
+    ShadowConfig,
+    ShadowVariant,
     SignalsSection,
 )
 
@@ -377,6 +379,33 @@ def _parse_execution(spec: dict[str, Any]) -> ExecutionSection:
     return ExecutionSection(**coerced)
 
 
+def _parse_shadow(spec: dict[str, Any] | None) -> ShadowConfig | None:
+    """Parse ``shadow:`` YAML block per BRIEF §13.2; return ``None`` if absent.
+
+    Decimal coercion on per-variant ``overrides`` mirrors :func:`_parse_execution`
+    pattern. Pydantic validators on :class:`ShadowConfig` + :class:`ShadowVariant`
+    enforce structural rules (unique names + valid override keys + max_duration_hours
+    bounds + enabled requires variants). Backward-compat: existing alpha.yaml /
+    beta.yaml fixtures have no ``shadow:`` block → returns ``None`` → BotConfig.shadow
+    stays None → T-511 worker checks ``if bot.shadow is not None and bot.shadow.enabled``.
+    """
+    if not spec:
+        return None
+    raw_variants = spec.get("variants", []) or []
+    coerced_variants: list[ShadowVariant] = []
+    for v in raw_variants:
+        if not isinstance(v, dict):
+            continue
+        overrides_raw = v.get("overrides", {}) or {}
+        overrides: dict[str, Decimal] = {k: _to_decimal(val) for k, val in overrides_raw.items()}
+        coerced_variants.append(ShadowVariant(name=v.get("name", ""), overrides=overrides))
+    return ShadowConfig(
+        enabled=bool(spec.get("enabled", False)),
+        variants=coerced_variants,
+        max_duration_hours=float(spec.get("max_duration_hours", 4.0)),
+    )
+
+
 def load_bot_config_from_string(
     yaml_text: str,
     *,
@@ -419,6 +448,7 @@ def load_bot_config_from_string(
         signals=_parse_signals(data.get("signals", {})),
         execution=_parse_execution(data.get("execution", {})),
         scoring=scoring,
+        shadow=_parse_shadow(data.get("shadow")),
     )
 
 

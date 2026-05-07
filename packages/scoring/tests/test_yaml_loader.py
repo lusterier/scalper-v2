@@ -415,10 +415,13 @@ scoring:
 
 def test_b1_remaining_unmodeled_extras_ignored_via_extra_ignore(tmp_path: Path) -> None:
     """§B.1 unmodeled top-level keys (display_name/created_at/status/trading.primary_interval/
-    sizing/shadow) parse without error — T-308 WG#5 + T-310a defense-in-depth.
+    sizing) parse without error — T-308 WG#5 + T-310a defense-in-depth.
 
     T-310a lands ``exchange:``/``signals:``/``execution:`` as first-class BotConfig fields;
-    this test now exercises only the remaining genuinely-unmodeled keys.
+    T-514 promotes ``shadow:`` to a modeled :class:`ShadowConfig` field — `shadow.enabled=true`
+    now requires non-empty `variants` per ShadowConfig validator. This test uses
+    `shadow.enabled: false` to exercise BotConfig parsing path with shadow modeled but
+    not requiring variants.
     """
     yaml_text = """\
 bot_id: alpha
@@ -432,7 +435,7 @@ sizing:
   tiers:
     - { balance_min: 500, size: 700 }
 shadow:
-  enabled: true
+  enabled: false
 scoring:
   mode: passthrough
   trigger_threshold: 4.0
@@ -442,6 +445,9 @@ scoring:
     assert cfg.bot_id == "alpha"
     assert cfg.symbols == ["BTCUSDT", "ETHUSDT"]
     assert cfg.scoring.mode == "passthrough"
+    # T-514: shadow modeled with enabled=false → ShadowConfig present but inactive.
+    assert cfg.shadow is not None
+    assert cfg.shadow.enabled is False
 
 
 def test_pydantic_validation_error_on_bad_rule_shape(tmp_path: Path) -> None:
@@ -844,3 +850,143 @@ scoring:
     cfg_from_string = load_bot_config_from_string(yaml_text)
     assert cfg_from_string.bot_id == cfg.bot_id
     assert cfg_from_string.scoring.mode == cfg.scoring.mode
+
+
+# ---------------------------------------------------------------------------
+# T-514 — Shadow config schema (BRIEF §13.2)
+# ---------------------------------------------------------------------------
+
+from decimal import Decimal  # noqa: E402
+
+from packages.scoring.types import ShadowConfig, ShadowVariant  # noqa: E402
+
+_T514_BASE_YAML = """
+bot_id: alpha
+version: 1
+exchange:
+  mode: paper
+  account: sub_alpha
+  api_key_env: BOT_ALPHA_BYBIT_API_KEY
+  api_secret_env: BOT_ALPHA_BYBIT_API_SECRET
+trading:
+  universe: [BTCUSDT]
+execution:
+  qty: "0.001"
+  leverage: 20
+  sl_pct: "0.01"
+  tp_pct: "0.01"
+  tp_qty_pct: "0.5"
+  be_trigger: "0.005"
+  be_sl_level: "0.003"
+  trail_pct: "0.005"
+  fee_rate: "0.00055"
+scoring:
+  mode: passthrough
+"""
+
+
+def test_shadow_config_defaults() -> None:
+    """Default ShadowConfig: enabled=False, empty variants, max_duration_hours=4.0."""
+    cfg = ShadowConfig()
+    assert cfg.enabled is False
+    assert cfg.variants == []
+    assert cfg.max_duration_hours == 4.0
+
+
+def test_shadow_variant_overrides_decimal_coercion() -> None:
+    """Pydantic coerces float YAML values to Decimal in overrides dict."""
+    variant = ShadowVariant(name="sl_tight", overrides={"sl_pct": Decimal("0.005")})
+    assert variant.overrides["sl_pct"] == Decimal("0.005")
+    assert isinstance(variant.overrides["sl_pct"], Decimal)
+
+
+def test_shadow_variant_overrides_target_unknown_field_raises() -> None:
+    """Override key outside ExecutionSection 9-field subset → ValidationError."""
+    with pytest.raises(ValidationError, match="unknown ExecutionSection"):
+        ShadowVariant(name="bad", overrides={"unknown_field": Decimal("0")})
+
+
+def test_shadow_config_duplicate_variant_names_raises() -> None:
+    """Two variants with same name → ValidationError."""
+    with pytest.raises(ValidationError, match="must be unique"):
+        ShadowConfig(
+            enabled=True,
+            variants=[ShadowVariant(name="x"), ShadowVariant(name="x")],
+        )
+
+
+def test_shadow_config_enabled_without_variants_raises() -> None:
+    """enabled=True + empty variants → ValidationError."""
+    with pytest.raises(ValidationError, match="requires at least 1 variant"):
+        ShadowConfig(enabled=True, variants=[])
+
+
+@pytest.mark.parametrize("invalid_hours", [0.0, -1.0, 25.0, 100.0])
+def test_shadow_config_max_duration_hours_outside_bounds_raises(invalid_hours: float) -> None:
+    """max_duration_hours outside (0, 24] → ValidationError."""
+    with pytest.raises(ValidationError):
+        ShadowConfig(max_duration_hours=invalid_hours)
+
+
+def test_shadow_variant_extra_field_forbidden() -> None:
+    """ShadowVariant extra=forbid catches operator typos (e.g. 'enabld' on variant)."""
+    with pytest.raises(ValidationError):
+        ShadowVariant(name="x", enabld=True)  # type: ignore[call-arg]
+
+
+def test_shadow_config_extra_field_forbidden() -> None:
+    """ShadowConfig extra=forbid catches operator typos at top level."""
+    with pytest.raises(ValidationError):
+        ShadowConfig(disabled=True)  # type: ignore[call-arg]
+
+
+def test_botconfig_shadow_field_default_none() -> None:
+    """BotConfig without shadow kwarg → bot.shadow is None (backward-compat)."""
+    cfg = load_bot_config_from_string(_T514_BASE_YAML)
+    assert cfg.shadow is None
+
+
+def test_yaml_loader_brief_13_2_5_variants_round_trip() -> None:
+    """§A — BRIEF §13.2 verbatim 5-variant example loads cleanly."""
+    yaml_text = (
+        _T514_BASE_YAML
+        + """
+shadow:
+  enabled: true
+  variants:
+    - name: baseline
+    - name: no_be
+      overrides: { be_trigger: 0 }
+    - name: full_tp
+      overrides: { tp_qty_pct: 1.0, trail_pct: 0 }
+    - name: sl_tight
+      overrides: { sl_pct: 0.005 }
+    - name: sl_wide
+      overrides: { sl_pct: 0.015 }
+  max_duration_hours: 4
+"""
+    )
+    cfg = load_bot_config_from_string(yaml_text)
+    assert cfg.shadow is not None
+    assert cfg.shadow.enabled is True
+    assert cfg.shadow.max_duration_hours == 4.0
+    assert len(cfg.shadow.variants) == 5
+    names = [v.name for v in cfg.shadow.variants]
+    assert names == ["baseline", "no_be", "full_tp", "sl_tight", "sl_wide"]
+    # Override Decimal coercion verified.
+    sl_tight = cfg.shadow.variants[3]
+    assert sl_tight.overrides["sl_pct"] == Decimal("0.005")
+    full_tp = cfg.shadow.variants[2]
+    assert full_tp.overrides["tp_qty_pct"] == Decimal("1.0")
+    assert full_tp.overrides["trail_pct"] == Decimal("0")
+    # baseline (no overrides) decodes as empty dict.
+    assert cfg.shadow.variants[0].overrides == {}
+
+
+def test_yaml_loader_alpha_without_shadow_yields_none() -> None:
+    """§B — backward-compat: existing fixture YAML without shadow block → bot.shadow is None."""
+    cfg = load_bot_config_from_string(_T514_BASE_YAML)
+    assert cfg.shadow is None
+    # Existing fields still parse correctly — no regression.
+    assert cfg.bot_id == "alpha"
+    assert cfg.execution.sl_pct == Decimal("0.01")

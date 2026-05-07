@@ -35,6 +35,8 @@ __all__ = [
     "ScoringConfig",
     "ScoringResult",
     "ScoringRule",
+    "ShadowConfig",
+    "ShadowVariant",
     "SignalsSection",
 ]
 
@@ -205,6 +207,95 @@ class ExecutionSection(BaseModel):
     emergency_close_on_sl_fail: bool = True
 
 
+# 9-field subset of ExecutionSection valid as shadow override targets per
+# BRIEF §13.2. ExecutionSection has 11 fields total; `sl_retry_count` (int) +
+# `emergency_close_on_sl_fail` (bool) are intentionally excluded — they are
+# NOT Decimal-coercible numeric risk-management knobs (BRIEF §13.2 examples
+# only override Decimal-typed thresholds: sl_pct/tp_pct/be_trigger/trail_pct/
+# tp_qty_pct etc.). qty + leverage + fee_rate kept legal even if BRIEF examples
+# don't override them — no semantic harm in allowing.
+_EXECUTION_OVERRIDE_FIELDS: frozenset[str] = frozenset(
+    {
+        "qty",
+        "leverage",
+        "sl_pct",
+        "tp_pct",
+        "tp_qty_pct",
+        "be_trigger",
+        "be_sl_level",
+        "trail_pct",
+        "fee_rate",
+    }
+)
+
+
+class ShadowVariant(BaseModel):
+    """Per-variant override per BRIEF §13.2 YAML schema.
+
+    ``extra="forbid"`` deviates from BotConfig's defense-in-depth ``extra="ignore"``
+    intentionally: shadow is a net-new modeled feature; ``forbid`` catches operator
+    typos (`enabld: true` / unknown variant fields) immediately at YAML load instead
+    of silent ignore. The BotConfig ``extra="ignore"`` compromise serves legacy
+    unmodeled-but-existing top-level keys (display_name/created_at/sizing) — that
+    rationale doesn't apply here.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(..., min_length=1)
+    overrides: dict[str, Decimal] = Field(default_factory=dict)
+
+    @field_validator("overrides")
+    @classmethod
+    def _overrides_target_execution_fields(cls, value: dict[str, Decimal]) -> dict[str, Decimal]:
+        unknown = set(value) - _EXECUTION_OVERRIDE_FIELDS
+        if unknown:
+            msg = (
+                f"shadow variant overrides target unknown ExecutionSection "
+                f"fields: {sorted(unknown)}; valid keys: "
+                f"{sorted(_EXECUTION_OVERRIDE_FIELDS)}"
+            )
+            raise ValueError(msg)
+        return value
+
+
+class ShadowConfig(BaseModel):
+    """Per-bot shadow simulation config per BRIEF §13.2.
+
+    ``extra="forbid"`` rationale matches :class:`ShadowVariant` — net-new feature
+    rejects operator typos at YAML load.
+
+    ``max_duration_hours`` upper bound 24h aligns with intra-day scalper time
+    horizon (T-501 backtest_trades hypertable + execution-service in-memory FSM
+    per T-511 owner). Long-running variants would increase H-016 task-cleanup
+    risk + memory pressure on the in-process shadow-worker. Bound is operator-
+    defensive; widen if a legitimate use case appears (BRIEF §13.2 default 4h
+    is the canonical operator value; 24h is a safe-by-default cap).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    variants: list[ShadowVariant] = Field(default_factory=list)
+    max_duration_hours: float = Field(default=4.0, gt=0.0, le=24.0)
+
+    @field_validator("variants")
+    @classmethod
+    def _variant_names_unique(cls, value: list[ShadowVariant]) -> list[ShadowVariant]:
+        names = [v.name for v in value]
+        if len(names) != len(set(names)):
+            msg = f"shadow variant names must be unique within bot: {names}"
+            raise ValueError(msg)
+        return value
+
+    @model_validator(mode="after")
+    def _enabled_requires_variants(self) -> ShadowConfig:
+        if self.enabled and not self.variants:
+            msg = "shadow.enabled=True requires at least 1 variant"
+            raise ValueError(msg)
+        return self
+
+
 class BotConfig(BaseModel):
     """Top-level bot YAML config (§9.4 + §10).
 
@@ -214,10 +305,12 @@ class BotConfig(BaseModel):
     ``extra="ignore"`` is defense-in-depth per T-308 WG#5 + T-310a: the
     yaml_loader extracts specific kwargs (no ``**data`` splat into ``BotConfig(...)``),
     so unmodeled top-level keys (``display_name``, ``created_at``, ``status``,
-    ``trading.primary_interval``, ``sizing``, ``shadow``) never reach the
-    ctor in the loader path. ``extra="ignore"`` defends against alternative
-    caller paths (e.g. analytics-api inspector) that might construct BotConfig
-    via ``**raw_dict``. Not a workaround — a hardening layer.
+    ``trading.primary_interval``, ``sizing``) never reach the ctor in the
+    loader path. (``shadow`` was on this list pre-T-514; T-514 promotes it to
+    a fully-modeled :class:`ShadowConfig` field per BRIEF §13.2.)
+    ``extra="ignore"`` defends against alternative caller paths (e.g.
+    analytics-api inspector) that might construct BotConfig via ``**raw_dict``.
+    Not a workaround — a hardening layer.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
@@ -229,6 +322,7 @@ class BotConfig(BaseModel):
     signals: SignalsSection = Field(default_factory=SignalsSection)
     execution: ExecutionSection
     scoring: ScoringConfig
+    shadow: ShadowConfig | None = None
 
     @field_validator("bot_id")
     @classmethod
