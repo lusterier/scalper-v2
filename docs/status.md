@@ -1,5 +1,60 @@
 # Session status
 
+## 2026-05-07 (evening session-end — F5 marathon: 10/22 tasks done + T-520 hardening shortlist 3/5)
+
+**F5 phase: 10/22 numbered tasks done (~50%) + 3 T-520 hardening shortlist sub-commits + L-013 lesson generalizing pre-emptive _to_jsonable convention.** Master HEAD `426e873`. **Today total: 33 master commits** across morning F4 close + afternoon F5 marathon.
+
+### F5 cluster progress (per T-500 backlog)
+
+- **Backtest harness cluster (T-501..T-509, 9 tasks)**: 5/9 done — T-501 migration 0013 backtest_trades + T-502 ReplayBus + T-503 HistoricalOHLCSource + T-504 HistoricalSignalSource + T-505 intra-candle path generator. **Remaining**: T-506 PaperExchange replay-mode wiring + T-507 CLI orchestrator + T-508 comparison mode + T-509 worker-connect.
+- **Shadow variants runtime cluster (T-510..T-514, 5 tasks)**: 3/5 done — T-510a migration 0014 shadow_variants/rejected schema + T-510b shadow.py read+write helpers + 2 StrEnums + T-514 shadow config schema. **Remaining**: T-511 shadow-worker FSM (H-016 owner) + T-512 OHLC replay restart-recovery (H-023 owner) + T-513 rejected-signal observation.
+- **UI extensions cluster (T-515..T-517, 3 tasks)**: 1/3 done — T-515 YamlDiffView strategy editor diff. **Remaining**: T-516 shadow variants per-trade drill-down + T-517 aggregate + rejected explorer.
+- **Backend polish + ops cluster (T-518..T-522, 5 tasks)**: 0/5 done. **Remaining**: T-518 feature auto-backfill + T-519 hazard test audit (E4 gating) + T-520 hardening shortlist (multi-commit; 3/5 sub-items done — see below) + T-521 final docs + T-522 close-out runbook.
+
+### T-520 hardening shortlist progress (multi-commit umbrella)
+
+3/5 sub-commits done in this session:
+
+1. **`chore(ui)` ui nav persist** (`bb5d57b`) — Zustand `persist` middleware on `useNavStore.lastSelectedBotId` via localStorage namespaced key `scalper-v2-nav`; resolves F4 E1 smoke nit (per-bot + strategy nav links disabled after refresh until re-pick); `partialize` whitelist + `version=1`; 4/4 vitest tests passing.
+2. **`chore(ci)` Playwright cache** (`bc1cab7`) — `actions/cache@v4` step in `.github/workflows/e2e.yml` keyed on `ui/pnpm-lock.yaml`; cache hit drops Playwright install ~10 min cold → ~30s; resolves F4 E1 watch-out from `chore(F4-E1-smoke)` `4caa3d0`.
+3. **`fix(signal_gateway)` L-011 pre-emptive** (`9d1370e`) — `signal_gateway.insert_signal` payload serialised via `json.dumps(_to_jsonable(payload))` instead of `json.dumps(payload)`; mirror T-510b shadow.py B-mode; switch trigger documented; codec-immune convention regardless of future signal-gateway codec registration. 4/4 mock tests + 4/4 integration env-gated all passing.
+
+**Remaining T-520 sub-items (2)**: audit pre-fix rows cleanup (id 1+2 from F4 E1 c241c15 intermediate fix; smoke residue, optional defensive cleanup) + T-401c symbol_map cleanup migration (defensive; dev DB already clean operator-side). Both punch-list items can be cherry-picked ad-hoc; not F5 close-out blockers.
+
+### Today's master commits (33)
+
+**Morning (F4 close, 7 commits)**: `c3c8a57` fix(T-413) BotSelector wire-up + `868e35b` chore(devx) Vite LAN-bind + `2968461` fix(deps) mako/pip CVE + `c241c15` fix(audit) intermediate `default=str` + `67e8c5f` fix(audit) double-encode proper + L-011 lesson + `4caa3d0` chore(F4-E1-smoke) sign-off + `0c086ae` chore(tasks) T-500 F5 backlog populate.
+
+**Afternoon (F5 marathon, 26 commits)**:
+- F5 implementation tasks: T-501 (`071576b`) + T-505 (`4ae8b39`) + L-012 fix (`7c5c025`) + T-510a (`8716cc0`) + T-504 (`2f22505`) + T-510b (`6df8859`) + T-503 (`2a040d4`) + T-502 (`c1fcae8`) + T-514 (`419b712`) + T-515 (`2c6ca4d`).
+- T-520 cherry-picks: ui nav persist (`bb5d57b`) + Playwright cache (`bc1cab7`) + signal_gateway L-011 (`9d1370e`).
+- Lessons: L-013 codec-state-immune JSONB convention (`426e873`).
+- Plus 9 `chore(tasks)` follow-ups (one per F5-numbered done) + 1 `chore(F4-E1-smoke)` sign-off.
+
+### Active lessons (`docs/review-lessons.md`)
+
+13 lessons L-001..L-013 active:
+- **L-013 NEW** — pre-emptive `_to_jsonable` wrapper as codec-state-immune JSONB-writer convention (generalizes T-510b + T-520 cherry-pick #3).
+- **L-012 NEW** (this morning) — explicit revision targets in migration downgrade tests (caught T-501 ci-full regression).
+- **L-011 NEW** (yesterday F4 E1 close) — JSONB double-encode under registered codec.
+
+L-006 LOC overshoot acceptable on integration tasks + L-007 pre-emptive split discipline most exercised across F5 cohort (T-510a/T-510b explicit split per L-007).
+
+### Watch-outs for next session
+
+- **F5 phase pickup**: 12/22 numbered tasks remaining + 2 T-520 sub-items + L-013 active control needs codification in plan-reviewer subagent prompt.
+- **Top-of-DAG zostávajúce ne-T-520**: T-506 PaperExchange replay-mode integration (~200 src; integrates T-503+T-505 with existing T-213b — drift risk on existing fill-semantics test suite) + T-518 Feature auto-backfill (~200 src; APScheduler integration; isolated from F5 cluster) + T-516 shadow variants UI (~250 src; needs T-512 runtime — soft-blocked) + T-519 hazard test audit (gating; late-F5).
+- **Critical-path bottleneck**: T-512 OHLC replay restart-recovery (kill-during-variant integration test mandatory) is heaviest F5 task; T-516 + T-517 UI tasks soft-blocked on T-512 runtime.
+- **Dev stack still up at session end**: postgres + nats + analytics-api (PID `66469`) + pnpm dev Vite (PID `13010`). Backgrounded; reusable next session.
+- **CI status**: ci-fast + ci-full + e2e all green on master HEAD chains across today's 33 commits (verified across multiple `gh run watch` cycles); L-012 fix from morning unblocked T-501 cohort regression.
+- **Master HEAD trajectory**: `4caa3d0` (F4 E1 close) → `0c086ae` (T-500) → ... → `426e873` (L-013).
+
+### F5 close-out estimate (per OQ-3=A)
+
+Per BRIEF §19:2575+ "est. 2-3 weeks" + operator OQ-3=A "2 weeks realistic": at current pace (10 tasks shipped 1 day after F5 unlock), F5 close-out plausibly ~5-7 days **if** session length normalizes. T-512 + T-519 are the heavy gating tasks. F5 close-out runbook (T-522) ships ~280 LOC mirror T-313/T-423.
+
+---
+
 ## 2026-05-07 (session-end — F4 E1 smoke runbook executed + 5 master-fix commits)
 
 **F4 phase exit-criteria E1 SIGN-OFF COMPLETE: PASS with 2 partials.** Master HEAD `67e8c5f`. Runbook `docs/runbooks/F4_E1_dashboard_smoke.md` ticked end-to-end with operator `luster` + sign-off timestamp `2026-05-07T15:26:32+00:00`. F4 phase truly closed — F5 unlock pending operator decision per §0.10.
