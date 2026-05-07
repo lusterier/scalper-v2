@@ -6,17 +6,32 @@
 // trade explorer / T-415 backtest lab will likely add their own
 // last-selected state).
 //
-// In-memory only — F5+ may persist to localStorage; per §0.8 anti-
-// hypothetical, no persistence in F4.
+// T-520 cherry-pick (2026-05-07): added `persist` middleware over
+// localStorage. Resolves F4 E1 smoke nit where per-bot + strategy-
+// editor left-nav links stayed disabled after page refresh until the
+// operator re-picked a bot in Overview. `partialize` keeps only
+// `lastSelectedBotId` in localStorage; setter is rebuilt by Zustand
+// at hydration, not persisted. `version: 1` so future schema bumps
+// can drop stale state cleanly.
 
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 interface NavStoreState {
   lastSelectedBotId: string | null;
   setLastSelectedBotId: (botId: string | null) => void;
 }
 
-export const useNavStore = create<NavStoreState>((set) => ({
-  lastSelectedBotId: null,
-  setLastSelectedBotId: (lastSelectedBotId) => set({ lastSelectedBotId }),
-}));
+export const useNavStore = create<NavStoreState>()(
+  persist(
+    (set) => ({
+      lastSelectedBotId: null,
+      setLastSelectedBotId: (lastSelectedBotId) => set({ lastSelectedBotId }),
+    }),
+    {
+      name: "scalper-v2-nav",
+      version: 1,
+      partialize: (state) => ({ lastSelectedBotId: state.lastSelectedBotId }),
+    }
+  )
+);
