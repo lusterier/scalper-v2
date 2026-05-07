@@ -13,10 +13,16 @@ dependencies = [
     # a parallel WS stack to the one already vetted for H-007 in F1.
     "websockets==15.0.1",
     "scalper-v2-core",
+    # T-504 HistoricalSignalSource reuses SignalRow projection from
+    # packages.db.queries.analytics:SignalRow (11-field DRY); workspace
+    # internal edge, no external package added. Mirrors packages/scoring
+    # precedent (its own scalper-v2-db edge for FeatureRow projections).
+    "scalper-v2-db",
 ]
 
 [tool.uv.sources]
 scalper-v2-core = { workspace = true }
+scalper-v2-db = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
