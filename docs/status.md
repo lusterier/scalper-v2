@@ -1,5 +1,42 @@
 # Session status
 
+## 2026-05-08 (afternoon — T-507a BusProtocol prereq shipped)
+
+**F5 phase: 12/22 numbered tasks done (~55%).** Master HEAD `e4723e8`. T-507a was an unplanned prereq sub-task that emerged when T-507 plan-reviewer caught 4 BLOCKERs (consumer signature hard-typing + FeatureResolver bus.kv_get gap + invented BotConfig field + L-006 framing). Operator chose split T-507a (BusProtocol prereq, this) + T-507b (CLI; remaining).
+
+### chore(devx) `b179e8d` + `df38a76` + `d164bbb` morning recap
+
+3 chore(devx) commits earlier today exposed dev-stack lifecycle: `dev-up.sh`/`dev-down.sh` one-command wrapper + LAN-bind on postgres + nats (4222/8222) + analytics-api on `0.0.0.0` per operator-led trusted-LAN stance. All 5 service surfaces now reachable from second LAN PC without SSH tunnel. `docs/runbooks/dev_stack.md` documents workflow + revert recipe.
+
+### T-507a delivered (12/22)
+
+Plan-reviewer 2-pass APPROVE → drift-checker SKIPPED (small narrow scope) → brief-reviewer 2-pass SHIP (FIX FIRST → SHIP on 3 RUF100 + 1 E501) → math-validator OUT OF SCOPE.
+
+- **packages/bus/protocol.py** (NEW, 71 LOC) — BusProtocol Protocol class (publish + subscribe + close + kv_get + kv_put + kv_update); `runtime_checkable` deliberately omitted per §0.8.
+- **packages/bus/replay_bus.py** (modified) — `subscribe(...)` def → async (matches NatsClient + 12 await call-sites verified by grep); 3 KV stubs: `kv_get` returns None unconditionally with `@idempotent` decorator (FeatureResolver._try_kv falls back to _try_db per OQ-5=A — NO FeatureResolver modification needed); `kv_put`/`kv_update` raise NotImplementedError.
+- **6 consumer-function signature retypes across 5 modules**: consumer.py 3 (handler + 2 publish helpers — handler delegates into both, mypy fail-cascades unless all 3 retype) + dispatcher.py 1 + reconcile.py 1 (`emit_post_commit_close_event` reaches replay path via dispatcher._process close-flow — caught by plan-reviewer concern) + paper/adapter.py 1 + scoring/resolver.py 1.
+- **Tests**: 12 await mods + 1 def→async + 3 new KV stub tests in test_replay_bus.py + 4 new BusProtocol satisfaction tests (introspection-based per `test_protocol_conformance.py:50-68` precedent). 1889 → 1896 = +7 tests passing.
+- **Other `bus: NatsClient` sites** (feature_engine pipeline, analytics_api SSE, market_data, signal_gateway webhook, alerting, rate_limiter, execution-service composition root) remain live-only per plan §"Out of replay scope" — explicit enumeration prevents T-507b accidental ReplayBus mount.
+
+### T-507b remaining (CLI orchestrator)
+
+Carries OQ-1=A single + OQ-2=A compose-direct + OQ-3=A post-replay-SQL-copy + OQ-6=A PF=None (with ADR-0008). Address all CONCERNs from prior T-507 REVISE: PF Decimal/float explicit cast, run_dispatcher_for_bot signature fix, --override syntax precision, §N3 helper annotations, env-gated integration test. Est: ~280 LOC src + ~220 LOC tests + ADR.
+
+### F5 cluster progress (per T-500 backlog)
+
+- **Backtest harness cluster (T-501..T-509, 9 tasks)**: 7/9 done — T-501..T-505 + T-506 + **T-507a NEW**. **Remaining**: T-507b + T-508 + T-509.
+- **Shadow variants runtime cluster (T-510..T-514, 5 tasks)**: 3/5 done (unchanged). **Remaining**: T-511 + T-512 + T-513.
+- **UI extensions (T-515..T-517, 3 tasks)**: 1/3 done (unchanged).
+- **Backend polish + ops (T-518..T-522, 5 tasks)**: 0/5 done (unchanged); T-520 hardening 3/5 cherry-picked.
+
+### Watch-outs for next session
+
+- **T-507b** is next. Plan-doc rewrite needed (T-507.md was renamed to T-507a.md; T-507b plan-doc fresh write). 4 OQs from prior REVISE cycle answered (OQ-1/2/3/6 all=A); 1 ADR write (PF semantic).
+- **Dev stack**: postgres + nats Docker + analytics-api uvicorn + Vite all running; LAN access live via `192.168.100.100`.
+- **CI status**: pre-commit clean on master.
+
+---
+
 ## 2026-05-08 (morning — T-506 PaperExchange replay-mode shipped + chore(devx) dev-stack wrapper)
 
 **F5 phase: 11/22 numbered tasks done (~50%) + 3 T-520 hardening shortlist sub-commits unchanged + 1 chore(devx) dev-stack lifecycle wrapper.** Master HEAD `b179e8d`. T-506 + chore(tasks) + chore(devx) = 3 master commits this morning.
