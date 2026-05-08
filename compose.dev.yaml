@@ -96,7 +96,12 @@ services:
       - nats_data:/data
       - ./infra/nats/server.conf:/etc/nats/server.conf:ro
     ports:
-      - "127.0.0.1:4222:4222"
+      # LAN-bound 0.0.0.0 (operator-led 2026-05-08): same trusted-LAN stance
+      # as postgres above. 4222 = NATS client protocol (nats CLI / SDK from
+      # other LAN PCs). 8222 = HTTP monitor endpoints (varz / connz / streamsz)
+      # — no UI per se, browse JSON or run prometheus-nats-exporter against it.
+      - "0.0.0.0:4222:4222"
+      - "0.0.0.0:8222:8222"
 
   prometheus:
     volumes: !override

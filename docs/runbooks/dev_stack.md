@@ -9,25 +9,56 @@ Local development orchestration: PostgreSQL + NATS (Docker Compose) + analytics-
 ./scripts/dev-down.sh  # tear down (preserves DB volumes)
 ```
 
-After `dev-up.sh`:
-- PostgreSQL — `0.0.0.0:5432` (LAN-accessible per operator decision 2026-05-08 — home LAN trusted, no router port-forward; user `scalper`, password from `.env` `POSTGRES_PASSWORD` — fallback `devpass`, DB `scalper`)
-- NATS — `127.0.0.1:4222` (loopback — no external client need today)
-- analytics-api — `http://127.0.0.1:8000` (loopback — FastAPI + SSE; Vite proxies)
-- Vite — `http://127.0.0.1:5173` (local) **and** `http://192.168.100.100:5173` (LAN; per chore(devx) `868e35b` LAN-bind)
+After `dev-up.sh` — **all services LAN-bound 0.0.0.0** per operator decision 2026-05-08 (home LAN trusted; no router port-forward; no untrusted devices):
 
-Vite proxies `/api` + `/events` server-side to `127.0.0.1:8000` (per `ui/vite.config.ts`); analytics-api + NATS stay loopback per BRIEF §16.6 (no public listener; LAN-bound services are operator discretion based on the trusted-LAN constraint).
+- PostgreSQL — `192.168.100.100:5432` (user `scalper`, password from `.env` `POSTGRES_PASSWORD` — fallback `devpass`, DB `scalper`)
+- NATS client — `192.168.100.100:4222` (NATS protocol; for `nats` CLI / SDK)
+- NATS HTTP monitor — `http://192.168.100.100:8222` (JSON endpoints `/varz`, `/connz`, `/streamsz`, `/healthz`; no UI — browse JSON or run `prometheus-nats-exporter` against it)
+- analytics-api — `http://192.168.100.100:8000` (FastAPI + SSE; OpenAPI docs at `/docs`)
+- Vite — `http://192.168.100.100:5173` (per chore(devx) `868e35b` LAN-bind)
 
-## Remote DB access (pgAdmin / DBeaver / psql from another LAN host)
+Vite proxies `/api` + `/events` server-side to `127.0.0.1:8000` (per `ui/vite.config.ts`); analytics-api listening on `0.0.0.0` keeps that path working unchanged.
 
-PostgreSQL is bound to `0.0.0.0:5432` so any host on the home LAN can connect directly without an SSH tunnel. Connection details:
+BRIEF §16.6 LAN-only invariant is **preserved**: nothing publicly exposed (no router port-forward, no cloudflared on dev). LAN-bound services are operator discretion based on the trusted-LAN constraint — guest WiFi or port-forward would invalidate this stance.
 
-- Host: `192.168.100.100` (laborka LAN IP — verify with `ip -4 addr show eno1` if it shifts on DHCP renewal)
+## Remote access from another LAN PC
+
+All four service surfaces are reachable from any host on the home LAN without SSH tunnels.
+
+### pgAdmin / DBeaver / psql (PostgreSQL)
+
+- Host: `192.168.100.100` (verify with `ip -4 addr show eno1` if DHCP shifted)
 - Port: `5432`
-- Database: `scalper`
-- Username: `scalper`
-- Password: value of `POSTGRES_PASSWORD` in `.env` (typically `devpass`)
+- Database: `scalper` · Username: `scalper` · Password: `.env` `POSTGRES_PASSWORD` (typically `devpass`)
 
-**Security note**: this stance assumes the LAN is trusted (no untrusted devices, no router port-forward to 5432). If the trust model changes (guest WiFi, port-forward), revert to `127.0.0.1:5432:5432` in `compose.dev.yaml` and use SSH tunnel via pgAdmin's Tunnel tab (host `192.168.100.100`, port `22`, OS user `luster`).
+### nats CLI
+
+```bash
+nats --server=nats://192.168.100.100:4222 stream ls
+nats --server=nats://192.168.100.100:4222 sub 'market.ohlc.1m.>'
+```
+
+### NATS HTTP monitor
+
+Browse JSON endpoints in any browser:
+- `http://192.168.100.100:8222/varz` — server stats
+- `http://192.168.100.100:8222/connz` — active connections
+- `http://192.168.100.100:8222/streamsz` — JetStream stream list
+- `http://192.168.100.100:8222/healthz` — health probe
+
+(No built-in UI; run `prometheus-nats-exporter` against `:8222` if Grafana visualization is needed — flagged as F1+ follow-up in `compose.dev.yaml`.)
+
+### analytics-api (FastAPI)
+
+- OpenAPI docs: `http://192.168.100.100:8000/docs`
+- Endpoints: `http://192.168.100.100:8000/api/...` (bots, trades, signals, scoring, features, audit, configs, analytics, backtests, symbol-map)
+- SSE stream: `http://192.168.100.100:8000/events/stream`
+
+### Vite UI
+
+- Dashboard: `http://192.168.100.100:5173/`
+
+**Security note**: this trusted-LAN stance assumes no untrusted devices on the LAN and no router port-forward. If the trust model changes (guest WiFi, port-forward), revert each service to `127.0.0.1` bind in `compose.dev.yaml` (postgres + nats) and `scripts/dev-up.sh` (uvicorn `--host 127.0.0.1`), then use SSH tunnel from the remote PC (pgAdmin Tunnel tab; or `ssh -L` for the rest).
 
 ## Why a wrapper instead of full compose
 

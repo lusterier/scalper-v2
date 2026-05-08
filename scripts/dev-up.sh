@@ -66,14 +66,17 @@ fi
 if is_running "${ANALYTICS_PID_FILE}"; then
   echo "[dev-up] analytics-api already running (pid $(cat "${ANALYTICS_PID_FILE}")) — skipping"
 else
-  echo "[dev-up] starting analytics-api uvicorn on 127.0.0.1:8000..."
+  echo "[dev-up] starting analytics-api uvicorn on 0.0.0.0:8000 (LAN-bound)..."
   # setsid puts the child in its own session + process group so dev-down can
   # signal the whole group via `kill -- -PGID`. Plain `nohup ... &` in a
   # non-interactive script (job control off under set -e) leaves the child
   # in the script's PGID and orphans children on dev-down kill.
+  # Host 0.0.0.0 per operator-led 2026-05-08 trusted-LAN stance (matches
+  # postgres + nats LAN bind in compose.dev.yaml). Vite proxy still works
+  # via 127.0.0.1 — same listener.
   DATABASE_URL="${DATABASE_URL}" NATS_URL="${NATS_URL}" \
     setsid nohup uv run uvicorn services.analytics_api.app.main:create_app \
-    --factory --host 127.0.0.1 --port 8000 \
+    --factory --host 0.0.0.0 --port 8000 \
     >"${ANALYTICS_LOG_FILE}" 2>&1 &
   echo $! >"${ANALYTICS_PID_FILE}"
   echo "[dev-up] analytics-api pid $(cat "${ANALYTICS_PID_FILE}") (log: ${ANALYTICS_LOG_FILE})"
@@ -102,12 +105,12 @@ LAN_IP="${LAN_IP:-127.0.0.1}"
 
 cat <<EOF
 
-[dev-up] stack ready:
-  postgres:        127.0.0.1:5432
-  nats:            127.0.0.1:4222
-  analytics-api:   http://127.0.0.1:8000   (log: ${ANALYTICS_LOG_FILE})
-  vite (LAN):      http://${LAN_IP}:5173
-  vite (local):    http://127.0.0.1:5173   (log: ${VITE_LOG_FILE})
+[dev-up] stack ready (all LAN-bound 0.0.0.0 per operator-led 2026-05-08 trusted-LAN stance):
+  postgres:        ${LAN_IP}:5432         (also 127.0.0.1:5432)
+  nats client:     ${LAN_IP}:4222         (also 127.0.0.1:4222)
+  nats monitor:    http://${LAN_IP}:8222  (varz / connz / streamsz; JSON only)
+  analytics-api:   http://${LAN_IP}:8000  (log: ${ANALYTICS_LOG_FILE})
+  vite:            http://${LAN_IP}:5173  (log: ${VITE_LOG_FILE})
 
 Tear down with: ./scripts/dev-down.sh
 EOF
