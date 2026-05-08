@@ -1,5 +1,44 @@
 # Session status
 
+## 2026-05-08 (evening — T-507b CLI orchestrator shipped)
+
+**F5 phase: 13/22 numbered tasks done (~59%).** Master HEAD `db2d282`. T-507b je najväčší F5 task — orchestruje 6 komponentov do single in-process backtest CLI per BRIEF §12.2:1949. 8 BLOCKERs + 7 CONCERNs surfaced cez 3 plan-reviewer + 2 brief-reviewer cykly; všetky resolved.
+
+### T-507b delivered (13/22)
+
+Plan-reviewer 3-pass APPROVE (REVISE → REVISE → APPROVE) → brief-reviewer 2-pass SHIP (FIX FIRST → SHIP) → math-validator VERIFIED (per-content financial-math invocation; 5 hand-computed §A-§E summary fixtures cross-check exactly).
+
+- **`scripts/backtest.py`** (NEW, 510 LOC) — CLI orchestrator; argparse + composition root + `_compute_summary` + `_publish_signals` + `_load_bot_config_with_overrides`/`_apply_overrides` helpers
+- **`packages/core/replay_clock.py`** (NEW, 51 LOC) — Belt-and-suspenders ReplayClock per OQ-D=C; virtual time advanced per OHLC bucket + per signal received_at
+- **`packages/exchange/paper/adapter.py`** (+11 LOC) — `replay_clock` kwarg + advance call in `_process_replay_candle`
+- **`packages/db/queries/analytics.py`** (+117 LOC) — 3 helpers (update_to_running + update_completion + copy_paper_trades_to_backtest)
+- **Cascade BusProtocol retypes**: `services/execution/app/{lifecycle,placement,placement_persist}.py` (3 modules, 4 functions) extending T-507a Protocol scope so CLI ReplayBus injection at composition root is mypy-strict-clean
+- **ADR-0008** PF=None semantic shipped
+- **13 unit tests + 3 ReplayClock + 1 env-gated integration** (full-fidelity per OQ-B=B)
+
+### Key BLOCKER catches across review cycles
+
+1. **Plan-reviewer 1st cycle (4 BLOCKERs)**: bus typing → T-507a; FeatureResolver kv_get → T-507a; invented `scoring_config_hash` → raw bytes per OQ-A=A; L-006 framing → 14% acknowledged
+2. **Plan-reviewer 2nd cycle (2 BLOCKERs)**: missing make_per_bot_handler subscription (would produce 0 trades silently); HistoricalSignalSource symbol_universe; SignalRow→SignalValidated reconstruction; composition variable order; signals.ttl_seconds
+3. **Plan-reviewer 3rd cycle (2 BLOCKERs)**: max_signal_age_seconds + replay-clock semantic → ReplayClock per OQ-D=C; ExecutionSettings name → Settings alias
+4. **Brief-reviewer 1st cycle (4 BLOCKERs)**: §N1 SQL NOW() → started_at param; mypy 4 errors (Action enum cast, SlippageModel annotation, ExecutionSettings call-arg, make_per_bot_handler bus typing — last forced cascade retype); ruff 19 errors; architectural arrow ReplayClock relocation z scripts/ do packages/core/
+
+### F5 cluster progress
+
+- **Backtest harness cluster (T-501..T-509, 9 tasks)**: 8/9 done — T-501..T-505 + T-506 + T-507a + **T-507b NEW**. **Remaining**: T-508 (compare mode) + T-509 (worker connect)
+- **Shadow variants runtime (T-510..T-514, 5 tasks)**: 3/5 done (unchanged)
+- **UI extensions (T-515..T-517, 3 tasks)**: 1/3 done (unchanged)
+- **Backend polish + ops (T-518..T-522, 5 tasks)**: 0/5 done (unchanged)
+
+### Watch-outs for next session
+
+- **T-508 next** (compare mode `--compare run_A run_B`); independent of T-507b orchestration code-path; ~180 LOC src + ~140 LOC tests per T-500 backlog
+- **T-509 worker** consumes T-507a BusProtocol + invokes T-507b main() programmatically with existing run_id
+- **Today total**: 9 master commits (T-506 + chore(tasks) + 3 chore(devx) dev-stack + T-507a + chore(tasks) + T-507b + this chore(tasks))
+- **Dev stack**: postgres + nats Docker + analytics-api + Vite (LAN-bound 0.0.0.0); operator can run T-507b CLI integration test locally via `BACKTEST_INTEGRATION=1 POSTGRES_TEST_DSN='...' uv run pytest tests/integration/scripts/test_backtest_integration.py`
+
+---
+
 ## 2026-05-08 (afternoon — T-507a BusProtocol prereq shipped)
 
 **F5 phase: 12/22 numbered tasks done (~55%).** Master HEAD `e4723e8`. T-507a was an unplanned prereq sub-task that emerged when T-507 plan-reviewer caught 4 BLOCKERs (consumer signature hard-typing + FeatureResolver bus.kv_get gap + invented BotConfig field + L-006 framing). Operator chose split T-507a (BusProtocol prereq, this) + T-507b (CLI; remaining).
