@@ -54,6 +54,10 @@ _EXPECTED_VARIANTS_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("mfe_pct", "double precision", "YES"),
     ("mae_pct", "double precision", "YES"),
     ("meta", "jsonb", "NO"),
+    # T-511b2a / migration 0015: parent_kind discriminator added (ADR-0010).
+    # `migrated_db_dsn` fixture upgrades to `head`, so post-0015 column shape
+    # is what the test sees regardless of the test file's "0014" naming.
+    ("parent_kind", "text", "NO"),
 )
 
 _EXPECTED_REJECTED_COLUMNS: tuple[tuple[str, str, str], ...] = (
@@ -195,18 +199,25 @@ async def test_migration_0014_creates_btree_indexes(
         await conn.close()
 
 
-async def test_migration_0014_shadow_variants_fk_cascade_to_trades(
+async def test_migration_0014_shadow_variants_no_fk_cascade_after_0015_relax(
     migrated_db_dsn: str,
 ) -> None:
-    """OQ-3=A — DELETE parent trades row cascade-deletes child shadow_variants."""
+    """T-511b2a / migration 0015 / ADR-0010 — FK was DROPPED in 0015.
+
+    The original 0014 cascade-delete-on-trades behaviour was supplanted by
+    application-layer integrity via parent_kind discriminator. ``migrated_db_dsn``
+    upgrades to head, so this test now verifies the post-0015 reality: DELETE
+    on parent trade does NOT cascade-delete shadow_variants. test_0015_migration
+    has the canonical FK-absence verification (`pg_constraint` query).
+    """
     conn = await asyncpg.connect(dsn=migrated_db_dsn)
     try:
         trade_id = await _insert_trade(conn)
         await conn.execute(
             "INSERT INTO shadow_variants "
             "(parent_trade_id, bot_id, variant_name, side, "
-            " entry_price, qty, created_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            " entry_price, qty, created_at, parent_kind) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             trade_id,
             "alpha",
             "no_be",
@@ -214,6 +225,7 @@ async def test_migration_0014_shadow_variants_fk_cascade_to_trades(
             Decimal("65000"),
             Decimal("0.001"),
             datetime(2026, 5, 7, 12, 0, 2, tzinfo=UTC),
+            "live",
         )
         before = await conn.fetchval(
             "SELECT COUNT(*) FROM shadow_variants WHERE parent_trade_id = $1", trade_id
@@ -225,7 +237,8 @@ async def test_migration_0014_shadow_variants_fk_cascade_to_trades(
         after = await conn.fetchval(
             "SELECT COUNT(*) FROM shadow_variants WHERE parent_trade_id = $1", trade_id
         )
-        assert after == 0
+        # FK dropped in 0015 — shadow_variants row stays after parent DELETE.
+        assert after == 1
     finally:
         await conn.close()
 
@@ -286,12 +299,15 @@ async def test_migration_0014_meta_defaults_are_empty_jsonb(
     conn = await asyncpg.connect(dsn=migrated_db_dsn)
     try:
         # shadow_variants: insert without meta → server-default applies.
+        # T-511b2a / 0015: parent_kind required (NOT NULL) — fixture provides
+        # 'live' so head-upgraded DB satisfies the constraint while the test
+        # still exercises 0014's meta JSONB DEFAULT '{}'::jsonb behaviour.
         trade_id = await _insert_trade(conn)
         variant_id = await conn.fetchval(
             "INSERT INTO shadow_variants "
             "(parent_trade_id, bot_id, variant_name, side, "
-            " entry_price, qty, created_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+            " entry_price, qty, created_at, parent_kind) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
             "RETURNING id",
             trade_id,
             "alpha",
@@ -300,6 +316,7 @@ async def test_migration_0014_meta_defaults_are_empty_jsonb(
             Decimal("65000"),
             Decimal("0.001"),
             datetime(2026, 5, 7, 12, 0, 3, tzinfo=UTC),
+            "live",
         )
         variants_meta_raw = await conn.fetchval(
             "SELECT meta FROM shadow_variants WHERE id = $1", variant_id
