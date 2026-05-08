@@ -1,5 +1,36 @@
 # Session status
 
+## 2026-05-08 (late-evening III — T-511a PE shadow-mode prereq shipped)
+
+**F5 phase: 16/22 numbered tasks done (~73%).** Master HEAD `b6cac80`. Shadow runtime cluster 3/5 → 4/5 with T-511a (T-510a + T-510b + T-511a + T-514; T-511b + T-512 + T-513 remaining).
+
+### T-511a delivered (16/22)
+
+Plan-reviewer 2-pass APPROVE (REVISE → APPROVE on **ADR-0005 v2 BLOCKER** — `sl_type='be'` → `'trail'` fix in 5 plan-doc locations) → drift-checker SKIPPED → brief-reviewer single-pass SHIP → math-validator OUT OF SCOPE.
+
+**Critical catch**: I had written `sl_type='be'` after partial_tp in 5 plan-doc places — **ADR-0005 v2 verbatim mandates `'trail'`, NOT `'be'`**. Live execution-service has 3-state vocabulary `protective / be / trail`: `'be'` comes from separate lifecycle BE-trigger path (price crosses `be_trigger`), `'trail'` comes from partial_tp dispatcher path. Shipping `'be'` would silently mislabel v2 trail state as BE in shadow lifecycle — direct H-024 v2 invariant regression.
+
+**T-511a delivers (PE refactor only; T-511b shadow worker deferred)**:
+- `seed_open_state` ctor kwarg + `_apply_seed_open_state` helper — pre-populates caches BEFORE NATS subscribe (eliminates place_market_order race on empty `_last_price`)
+- `bus_unsubscribe_market_ohlc` async method — idempotent NATS/ReplayBus dual-path (H-016 ergonomic precondition)
+- `sl_type` field on `_active_positions` — 3-state vocabulary; `set_trading_stop` initializes 'protective'; `_drain_partial_tp` promotes 'trail' per ADR-0005 v2
+- 5 unit tests; 123 paper-suite pass (118 existing + 5 new); 0 regressions
+
+### F5 cluster progress
+
+- **Backtest harness (T-501..T-509)**: 9/9 = 100% (unchanged)
+- **Shadow runtime (T-510..T-514)**: 4/5 done — T-510a + T-510b + **T-511a NEW** + T-514. **Remaining**: T-511b (shadow worker module; consumes refactored PE) + T-512 (OHLC replay restart-recovery; H-023 owner) + T-513 (rejected-signal observation)
+- **UI extensions (T-515..T-517)**: 1/3 done (unchanged; T-516+T-517 soft-blocked on T-512)
+- **Backend polish + ops (T-518..T-522)**: 0/5 done
+
+### Watch-outs for next session
+
+- **T-511b next reasonable pickup**: shadow-worker module consuming refactored PE per T-511a. Open question for T-511b plan stage: BE-trigger path in PE for shadow lifecycle (PE has no lifecycle BE-trigger today; either skip BE_HIT outcome OR add BE-trigger refactor to T-511b OR defer to follow-up). ~280 LOC src per backlog estimate.
+- **Critical-path gating task**: T-512 OHLC replay restart-recovery (H-023 owner; mandatory kill-during-variant integration test per E3 exit criterion). Heaviest remaining F5 task; UI tasks soft-blocked
+- **Today total**: 14 master commits (T-506 + chore + 3 chore(devx) + T-507a + chore + T-507b + chore + T-508 + chore + T-509 + chore + T-511a)
+
+---
+
 ## 2026-05-08 (late-evening II — T-509 worker shipped; backtest harness cluster 9/9 complete)
 
 **F5 phase: 15/22 numbered tasks done (~68%).** Master HEAD `850b94a`. **Backtest harness cluster T-501..T-509 = 9/9 (100% complete)** — F5 backtest goal delivered per BRIEF §12.2.
