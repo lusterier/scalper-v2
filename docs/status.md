@@ -1,8 +1,12 @@
 # Session status
 
-## 2026-05-08 (morning — T-506 PaperExchange replay-mode shipped)
+## 2026-05-08 (morning — T-506 PaperExchange replay-mode shipped + chore(devx) dev-stack wrapper)
 
-**F5 phase: 11/22 numbered tasks done (~50%) + 3 T-520 hardening shortlist sub-commits unchanged.** Master HEAD `a96df9e`. Single-task session; no T-520 sub-items advanced.
+**F5 phase: 11/22 numbered tasks done (~50%) + 3 T-520 hardening shortlist sub-commits unchanged + 1 chore(devx) dev-stack lifecycle wrapper.** Master HEAD `b179e8d`. T-506 + chore(tasks) + chore(devx) = 3 master commits this morning.
+
+### chore(devx) `b179e8d` — dev-stack one-command lifecycle
+
+`scripts/dev-up.sh` + `scripts/dev-down.sh` (NEW, 134 LOC bash) + `docs/runbooks/dev_stack.md` (NEW, 71 LOC) + `README.md` `## Local dev` section. **Why**: operator-asked after morning incident — `dev-up.sh` prvá skúška recreated postgres+nats BEZ overlay, stratila port-publish, broke analytics-api connection pool. Brief-reviewer FIX FIRST chytil 2 BLOCKERs (compose overlay missing + hardcoded password) + 4 CONCERNs (kill PGID silent no-op without setsid + health-poll missing fail-fast + hostname -I non-deterministic + runbook password-source clarity); všetky 6 adresované. Mid-review damage repaired live (recreate s overlay + restart analytics-api PID 337430 → 349407 pred commit-om). Workflow odteraz: `./scripts/dev-up.sh` štartuje compose overlay (postgres + nats) + setsid-nohup uvicorn + setsid-nohup pnpm vite; `./scripts/dev-down.sh` zhodí všetko cez kill -- -PGID + compose stop. Idempotent (PID-file checks); fail-fast na 30s healthcheck timeout; LAN IP cez `ip -4 -o addr show eno1`; DSN derives z `.env` POSTGRES_PASSWORD (fallback devpass). Mini-task pattern bez plan-reviewer per `chore(devx) 868e35b` precedent.
 
 ### T-506 delivered
 
