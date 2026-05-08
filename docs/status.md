@@ -1,5 +1,48 @@
 # Session status
 
+## 2026-05-08 (late-night VII — T-513b1 rejected-signal observation restart-recovery via OHLC replay shipped; H-023 replay half complete for rejected branch; T-513b2 kill-test mirror is sole remaining E3 gating sub-task)
+
+**F5 phase: 24/45 tasks done (~53%).** Master HEAD pre-merge `7875392` (chore for T-523). Shadow runtime cluster 11/12 sub-tasks done (T-510a + T-510b + T-511a + T-511b1 + T-511b2a + T-511b2 + T-512a + T-512b + T-513a + T-513b1 + T-514; T-513b2 sole remaining = mandatory rejected-signal kill-test integration test). T-513b split per L-007 + operator OQ-1=A 2026-05-08 (mirror T-512 split precedent — combined T-513b scope ~1100 LOC trips §0.3 cap + L-014/L-016 calibration miss risk).
+
+### T-513b1 delivered — replay-recovery infrastructure half of H-023 for rejected-signal shadow
+
+- **All 4 review gates passed**: plan-reviewer 2-pass APPROVE 2026-05-08 (pass-1 REVISE 4 textual CONCERN — phase counter math + OQ wording + OQ markers + Operator decisions section enumeration; all 4 mechanical fixes applied; pass-2 APPROVE with 20-item Write-time guidance) → drift-checker ON TRACK (12 staged files; all 20 WG verified) → brief-reviewer SHIP (24 nových testov; §N1/§N3/§N5/§N6/§N9 clean; L-008/L-013/L-014/L-015/L-016 active controls applied) → math-validator VERIFIED (math reuse from T-513a; orchestration only; hand-verification byte-for-byte reproducible).
+- Implements **BRIEF §13.5:2024 verbatim** *"Restart recovery: also via OHLC replay in v2 (unlike v1). No `lost_on_restart` state."* v2 improvement requirement.
+- Mirror T-512a `shadow_replay.py` pattern but for `shadow_rejected` rows. Key differences from T-512a: NO PaperExchange (pure observer FSM), NO parent_kind discriminator (rejected don't trade), 1:1 ID-to-task mapping (vs 1:N), reuses T-513a `_compute_thresholds` + `_compute_mfe_mae_pcts` + `_make_observation_candle_handler` (imported; no math drift).
+- **NEW `services/execution/app/shadow_rejected_replay.py`** (491 LOC): `resume_active_observations_on_startup` lifespan hook + `replay_rejected_observation_to_now` per-row replay-finalize-or-resume + `_replay_observation_candle_loop` cursor iteration + `_finalize_replay_terminal` cascade-delete-race tolerance + `_decode_meta` JSONB round-trip.
+- **NEW Settings + enum + cross-bot helper + register_resume_task**:
+  - `ShadowRejectedTerminal.SHUTDOWN_MID_REPLAY` enum value (mirror T-512a OQ-4=A forward-compat; column TEXT no CHECK per migration 0014).
+  - `select_all_active_shadow_rejected` cross-bot enumeration helper (mirror T-512a precedent).
+  - `ShadowRejectedWorker.register_resume_task(*, rejected_id, task)` public API (1:1 keying).
+  - `shadow_rejected_replay_query_window_max_hours: Decimal = Decimal("48")` + `shadow_rejected_replay_per_observation_timeout_seconds: float = 120.0` (mirror T-512a values for symmetry; per §N9 + L-001).
+- **main.py wire**: `resume_active_observations_on_startup` AFTER `shadow_rejected_worker.start()` (mirror T-512a OQ-4=A precedent; functionally agnostic since rejected obs have no cancel-hook subscribe equivalent of `trade.closed.>`; operator-symmetry rationale per OQ-4=A baked).
+- 21 nových testov (target +20; +1 bonus on register_resume_task path); pytest baseline 2041 → 2062 (+21; 0 regressions).
+
+### §0.3 LOC kalibrácia — 5. dátový bod L-014/L-016
+
+- src ~553 LOC (vs naive 400 cap = +38% over). 5. data point: T-511b1 +70%, T-512a +150%, T-513a +58%, T-512b +61%, T-513b1 +21% — calibration band 1.5-1.8× systematicky drží pre FSM/integration cohort. L-014/L-016 active controls v plan-reviewer Gate 1 + brief-reviewer Gate 3 enforced. Pre-authorized §0.3 over-cap waiver per plan §LOC budget §6 mirror T-511b1/T-512a/T-513a/T-512b precedent.
+
+### F5 E3 exit-criterion — len T-513b2 zostáva pre full sign-off
+
+- E3 verbatim: BRIEF §19:2589 *"Shadow variants persist across restart (verified by killing execution-service mid-variant)."*
+- T-512b shipped: variant kill-test (replay-finalize + replay-resume paths) — variant half complete.
+- T-513b1 shipped (this): rejected-signal replay-recovery infrastructure — replay half complete for rejected branch.
+- **T-513b2 remaining**: mandatory kill-during-rejected-observation integration test (BRIEF §20:2790 verbatim `test_rejected_signal_shadow_survives_restart_via_replay`); in-process simulated restart Path A mirror T-512b. Final F5 E3 sign-off pin.
+
+### Watch-outs for next session
+
+- **T-513b2 sole remaining critical-path pickup** — rejected-signal kill-test integration test. Mirror T-512b in-process simulated restart Path A. Reuses T-512b shipped conftest fixtures (`base_dsn` + `nats_test_url` + `migrated_db_dsn` + `bus` + `pool`). NEW `services/execution/tests/integration/test_rejected_observation_restart.py` OR extend existing `test_shadow_restart.py` — plan-stage decides. Est: ~600 LOC test body (mirror T-512b 677 LOC).
+- **F5 critical-path bottleneck post-T-513b2 ship** revised to **T-533** (named-state FSM enum refactor; largest hardening task; touches 4 columns + migration 0018 + state population). T-513b2 + T-512 OHLC replay (orig bottleneck) closed once T-513b2 ships.
+- **Hardening tasks (T-524..T-536) land AFTER existing F5 tail per OQ-3=A**: T-513b2 → T-516+T-517 (UI) → T-518..T-521 (existing backend polish) → T-524..T-536 → T-522 close-out + Live-ready sign-off.
+- **L-015 active control reminder for T-531/T-532/T-533 plan stages**: each plan-doc MUST include "Sibling migration test impact" section per L-015 (migrations 0016 + 0017 + 0018 each modify earlier-migration-introduced tables).
+
+### Lessons surfaced
+
+- **L-014/L-016 calibration confirmed (5th data point)**: T-513b1 +21% over-cap is the SMALLEST overshoot in the cohort so far — likely because T-513b1 reuses T-513a math wholesale (orchestration only; no new financial math). When task scope is "wire-up + import existing helpers" the multiplier compresses toward 1.0×; when scope adds genuine new FSM/math (T-512a +150%, T-511b1 +70%) the multiplier expands. No new lesson — calibration data point only.
+- **Pre-emptive split + math-reuse pattern matures**: T-513b1 demonstrates that splitting replay-recovery into infra + verification halves enables clean math-reuse (T-513a `_compute_thresholds` + `_compute_mfe_mae_pcts` + `_make_observation_candle_handler` imported, not re-implemented) → math-validator VERIFIED with byte-for-byte hand-verification reproducibility. Future restart-recovery tasks should follow this split + reuse pattern.
+
+---
+
 ## 2026-05-08 (late-night VI — T-523 F5 scope extension to Live-ready MVP shipped per ADR-0011; 13 mandatory pre-live hardening tasks T-524..T-536 added; "Plný MVP" → "Live-ready MVP" rename + new exit criterion E6)
 
 **F5 phase: 23/44 tasks done (~52% post-scope-extension).** Master HEAD pre-merge `387b67d` (`chore(tasks)` for T-512b). T-523 reorg 2026-05-08 added 13 mandatory pre-live operational hardening tasks (T-524..T-536) + T-523 meta-chore itself (mirror T-500 named-task precedent). F5 cluster expanded from 30 entries (22 done + 8 pending) to 44 entries (23 done + 21 pending: T-513b + T-516..T-522 existing + T-524..T-536 hardening).
