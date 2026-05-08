@@ -650,3 +650,119 @@ async def test_on_parent_close_skips_already_done_tasks() -> None:
     )
     await worker._on_parent_close(payload)
     task_done.cancel.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# T-512a / BRIEF §13.4 / H-023 — retro-fit + register_resume_task
+# ---------------------------------------------------------------------------
+
+
+async def test_run_shadow_variant_persists_overrides_meta_on_insert() -> None:
+    """T-512a retro-fit: insert_shadow_variant call carries meta={'symbol':...,'overrides':{...}}.
+
+    Resume path (shadow_replay) decodes this via Decimal(row.meta["overrides"][k])
+    and row.meta["symbol"] to reconstruct PE seed_open_state + handler args.
+    Required-effect retro-fit; test pins the contract.
+    """
+    bus, _, _ = _make_bus_with_log()
+    pool = _make_pool()
+    worker = ShadowWorker(
+        bus=bus,
+        pool=pool,
+        seed_balance=Decimal("10000"),
+        slippage_model="fixed_pct",
+        slippage_params={"fixed_slippage_pct": Decimal("0")},
+        fee_rate=Decimal("0.0006"),
+        clock=lambda: datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    payload = _make_payload(
+        variants=[
+            VariantSpec(
+                name="aggressive",
+                overrides={"be_trigger": Decimal("0.003"), "sl_pct": Decimal("0.007")},
+            ),
+        ],
+    )
+    insert_mock = AsyncMock(return_value=_make_shadow_variant_row())
+    with (
+        patch("services.execution.app.shadow_worker.insert_shadow_variant", insert_mock),
+        patch(
+            "services.execution.app.shadow_worker.update_shadow_variant_terminal",
+            AsyncMock(return_value=_make_shadow_variant_row()),
+        ),
+        patch("services.execution.app.shadow_worker.PaperExchange") as pe_cls,
+    ):
+        pe_inst = MagicMock()
+        pe_inst.start_consuming = AsyncMock()
+        pe_inst.bus_unsubscribe_market_ohlc = AsyncMock()
+        pe_cls.return_value = pe_inst
+        await worker._on_shadow_start(payload)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        # Cancel running task to avoid hanging on terminal_future.
+        for task in worker._active_tasks.get(42, []):
+            task.cancel()
+        await asyncio.gather(*worker._active_tasks.get(42, []), return_exceptions=True)
+
+    assert insert_mock.await_args is not None
+    insert_kwargs = insert_mock.await_args.kwargs
+    meta = insert_kwargs["meta"]
+    assert meta["symbol"] == "BTCUSDT"
+    assert meta["overrides"]["be_trigger"] == "0.003"
+    assert meta["overrides"]["sl_pct"] == "0.007"
+
+
+def test_register_resume_task_appends_to_active_tasks_registry() -> None:
+    """T-512a public API: register_resume_task appends task into _active_tasks[parent_trade_id]
+    so T-511b2 _on_parent_close cancel hook covers resume tasks identically to live-spawn tasks."""
+    bus, _, _ = _make_bus_with_log()
+    pool = _make_pool()
+    worker = ShadowWorker(
+        bus=bus,
+        pool=pool,
+        seed_balance=Decimal("10000"),
+        slippage_model="fixed_pct",
+        slippage_params={"fixed_slippage_pct": Decimal("0")},
+        fee_rate=Decimal("0.0006"),
+        clock=lambda: datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    task_a = MagicMock()
+    task_b = MagicMock()
+    worker.register_resume_task(parent_trade_id=99, task=task_a)
+    worker.register_resume_task(parent_trade_id=99, task=task_b)
+    assert worker._active_tasks[99] == [task_a, task_b]
+    # Different parent_trade_id → new entry.
+    task_c = MagicMock()
+    worker.register_resume_task(parent_trade_id=100, task=task_c)
+    assert worker._active_tasks[100] == [task_c]
+
+
+async def test_on_parent_close_cancels_resume_tasks_registered_via_public_api() -> None:
+    """T-512a + T-511b2: parent-close cancel hook covers resume tasks identically.
+
+    Mirror test_on_parent_close_cancels_active_tasks_for_trade_id but registers via
+    public API instead of direct dict assignment. Pins the encapsulation contract.
+    """
+    bus, _, _ = _make_bus_with_log()
+    pool = _make_pool()
+    worker = ShadowWorker(
+        bus=bus,
+        pool=pool,
+        seed_balance=Decimal("10000"),
+        slippage_model="fixed_pct",
+        slippage_params={"fixed_slippage_pct": Decimal("0")},
+        fee_rate=Decimal("0.0006"),
+        clock=lambda: datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    resume_task = MagicMock()
+    resume_task.done = MagicMock(return_value=False)
+    resume_task.cancel = MagicMock()
+    worker.register_resume_task(parent_trade_id=42, task=resume_task)
+    payload = TradeClosedPayload(
+        parent_trade_id=42,
+        parent_kind="live",
+        bot_id="alpha",
+        closed_at=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    await worker._on_parent_close(payload)
+    resume_task.cancel.assert_called_once()

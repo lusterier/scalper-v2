@@ -99,6 +99,7 @@ from .health import router as health_router
 from .placement import make_per_bot_handler
 from .pool import build_adapter_pool
 from .restart import reconcile_on_startup
+from .shadow_replay import resume_active_variants_on_startup
 from .shadow_worker import ShadowWorker
 
 if TYPE_CHECKING:
@@ -256,6 +257,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             clock=lambda: datetime.now(UTC),
         )
         await shadow_worker.start()
+
+        # 6.7. T-512a / BRIEF §13.4 / H-023 — shadow variant restart-recovery
+        # via OHLC replay. AFTER shadow_worker.start() (cancel-hook subscription
+        # `trade.closed.>` is live before resume tasks register into _active_tasks)
+        # AND AFTER reconcile_on_startup (live trade re-hydration done; SELECT
+        # trades.status returns post-reconcile state). BEFORE scheduler.start()
+        # (audit doesn't fire mid-replay).
+        await resume_active_variants_on_startup(
+            pool=pool,
+            bus=bus,
+            settings=settings,
+            shadow_worker=shadow_worker,
+            clock=lambda: datetime.now(UTC),
+        )
 
         # 7. T-220b — APScheduler-driven P&L audit (per ADR-0007 D1-D7).
         # Sub-account → adapter + bot_ids reverse mapping for audit job composition.

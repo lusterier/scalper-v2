@@ -69,6 +69,7 @@ __all__ = [
     "insert_shadow_variant",
     "select_active_shadow_rejected",
     "select_active_shadow_variants",
+    "select_all_active_shadow_variants",
     "select_shadow_rejected_by_id",
     "select_shadow_variant_by_id",
     "update_shadow_rejected_terminal",
@@ -134,6 +135,13 @@ _SELECT_ACTIVE_VARIANTS_SQL = (
     f"SELECT {_SHADOW_VARIANT_BASE_COLUMNS}"  # noqa: S608 — column whitelist constant, no user input  # nosec B608
     " FROM shadow_variants"
     " WHERE bot_id = $1 AND terminated_at IS NULL"
+    " ORDER BY created_at ASC"
+)
+
+_SELECT_ALL_ACTIVE_VARIANTS_SQL = (
+    f"SELECT {_SHADOW_VARIANT_BASE_COLUMNS}"  # noqa: S608 — column whitelist constant, no user input  # nosec B608
+    " FROM shadow_variants"
+    " WHERE terminated_at IS NULL"
     " ORDER BY created_at ASC"
 )
 
@@ -280,10 +288,26 @@ async def select_active_shadow_variants(
 ) -> list[ShadowVariantRow]:
     """Return active variants (terminated_at IS NULL) for ``bot_id`` ordered by created_at ASC.
 
-    Uses ``shadow_variants_bot_active`` partial index (T-510a). T-512
-    restart-recovery consumer reads on execution-service startup.
+    Uses ``shadow_variants_bot_active`` partial index (T-510a). T-516 UI
+    per-trade variants drill-down consumer.
     """
     rows = await conn.fetch(_SELECT_ACTIVE_VARIANTS_SQL, bot_id)
+    return [_row_to_shadow_variant(row) for row in rows]
+
+
+async def select_all_active_shadow_variants(
+    conn: _DbExecutor,
+) -> list[ShadowVariantRow]:
+    """Cross-bot enumeration of active variants ordered by created_at ASC (T-512a).
+
+    Used by ``services.execution.app.shadow_replay.resume_active_variants_on_startup``
+    on lifespan startup to iterate every shadow variant pending across all
+    bots. Differs from :func:`select_active_shadow_variants` — no
+    ``bot_id`` filter; sequential index scan on ``shadow_variants_bot_active``
+    partial index (terminated_at IS NULL filter) acceptable at expected
+    F5 scale (<500 active variants total per H-016 + T-510a docstring).
+    """
+    rows = await conn.fetch(_SELECT_ALL_ACTIVE_VARIANTS_SQL)
     return [_row_to_shadow_variant(row) for row in rows]
 
 

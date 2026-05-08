@@ -149,13 +149,14 @@ def test_shadow_rejected_row_dataclass_shape() -> None:
 
 
 def test_shadow_variant_terminal_strenum_values() -> None:
-    """5 values per BRIEF §13.3."""
+    """5 values per BRIEF §13.3 + 1 T-512a addition (SHUTDOWN_MID_REPLAY per OQ-4=A)."""
     assert {member.value for member in ShadowVariantTerminal} == {
         "sl_hit",
         "be_hit",
         "tp_trail",
         "tp_full",
         "timeout",
+        "shutdown_mid_replay",
     }
 
 

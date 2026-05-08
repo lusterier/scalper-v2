@@ -114,3 +114,12 @@ class Settings(BaseSettings):
     # testing). Future task can promote to per-bot YAML if a use case surfaces.
     shadow_seed_balance_usd: Decimal = Decimal("10000")
     shadow_fee_rate: Decimal = Decimal("0.0006")
+
+    # T-512a / BRIEF §13.4 / H-023 — shadow variant restart-recovery via OHLC
+    # replay. Bounded for safety: extreme stuck variants (created_at outliers)
+    # don't DoS startup; per-variant compute timeout caps runaway loop. 48h
+    # window covers 2x ShadowConfig.max_duration_hours upper bound (24h);
+    # 120s timeout = ~4000x compute margin (48h x 2880 candles x ~10us each
+    # = ~30ms expected) / ~400x I/O margin (asyncpg cursor prefetch=1000 = ~0.3s).
+    shadow_replay_query_window_max_hours: Decimal = Decimal("48")
+    shadow_replay_per_variant_timeout_seconds: float = 120.0

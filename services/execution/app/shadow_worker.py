@@ -90,6 +90,48 @@ def _terminal_from_pe_state(
     return ShadowVariantTerminal.TP_FULL
 
 
+async def _drive_variant_to_terminal(
+    *,
+    terminal_future: asyncio.Future[TerminalEvent],
+    variant_state: dict[str, Decimal],
+    timeout_seconds: float,
+    side: Literal["buy", "sell"],
+    entry_price: Decimal,
+) -> tuple[ShadowVariantTerminal, Decimal | None, float, float]:
+    """Drive variant to terminal-or-timeout; return ``(outcome, realized_pnl, mfe_pct, mae_pct)``.
+
+    Pre-conditions: PE constructed with ``terminal_callback=on_terminal`` (which
+    fulfils ``terminal_future``), PE.start_consuming() awaited, own_sub
+    subscribed to ``market.ohlc.1m.<symbol>`` with ``_make_candle_handler``.
+
+    Called from BOTH live ``ShadowWorker._run_shadow_variant`` (T-511b1 shipped
+    path) AND T-512a resume ``shadow_replay.replay_shadow_variant_to_now``
+    post-replay-no-terminal continuation. Single source of truth for the
+    terminal-classification + MFE/MAE computation logic so paths can't drift.
+    """
+    outcome: ShadowVariantTerminal
+    realized_pnl: Decimal | None
+    try:
+        terminal_evt = await asyncio.wait_for(terminal_future, timeout=timeout_seconds)
+        outcome = _terminal_from_pe_state(
+            exec_type=terminal_evt.exec_type,
+            sl_type_at_close=terminal_evt.sl_type_at_close,
+            tpsl_mode_at_close=terminal_evt.tpsl_mode_at_close,
+        )
+        realized_pnl = terminal_evt.realized_pnl
+    except TimeoutError:
+        outcome = ShadowVariantTerminal.TIMEOUT
+        realized_pnl = None
+
+    if side == "buy":
+        mfe_pct = float((variant_state["best_price"] - entry_price) / entry_price)
+        mae_pct = float((entry_price - variant_state["worst_price"]) / entry_price)
+    else:
+        mfe_pct = float((entry_price - variant_state["best_price"]) / entry_price)
+        mae_pct = float((variant_state["worst_price"] - entry_price) / entry_price)
+    return outcome, realized_pnl, mfe_pct, mae_pct
+
+
 class ShadowWorker:
     """Subscribes ``shadow.start.>``; spawns N tasks per ShadowStartPayload.
 
@@ -194,6 +236,22 @@ class ShadowWorker:
             tasks.append(task)
         self._active_tasks.setdefault(payload.parent_trade_id, []).extend(tasks)
 
+    def register_resume_task(
+        self,
+        *,
+        parent_trade_id: int,
+        task: asyncio.Task[None],
+    ) -> None:
+        """T-512a: register a restart-recovery resume task into ``_active_tasks``.
+
+        Public surface for ``services.execution.app.shadow_replay`` so the
+        T-511b2 parent-close cancel hook (``_on_parent_close``) covers
+        resume tasks identically to live-spawn tasks. Encapsulates the
+        ``_active_tasks`` registry layout — callers must NOT access the
+        dict directly.
+        """
+        self._active_tasks.setdefault(parent_trade_id, []).append(task)
+
     async def _run_shadow_variant(
         self,
         *,
@@ -213,6 +271,18 @@ class ShadowWorker:
             tp_qty_pct = Decimal(str(ovr.get("tp_qty_pct", "1")))
             max_duration_hours = Decimal(str(ovr.get("max_duration_hours", "4")))
 
+            # T-512a: persist variant overrides + symbol in meta JSONB so the
+            # restart-recovery path (services.execution.app.shadow_replay) can
+            # reconstruct PE seed_open_state + _make_candle_handler factory args
+            # + ohlc_1m replay window symbol filter. ShadowVariantRow projection
+            # has no symbol column (T-510a OQ); meta stash is the canonical
+            # source. Decimal→str serialisation here; _serialize_meta +
+            # _to_jsonable (L-013 convention) handles JSON encoding. Resume
+            # decode: Decimal(row.meta["overrides"][k]) + row.meta["symbol"].
+            overrides_meta: dict[str, Any] = {
+                "symbol": payload.symbol,
+                "overrides": {k: str(v) for k, v in variant.overrides.items()},
+            }
             async with self._pool.acquire() as conn:
                 row = await insert_shadow_variant(
                     conn,
@@ -224,6 +294,7 @@ class ShadowWorker:
                     qty=payload.qty,
                     created_at=self._clock(),
                     parent_kind=payload.parent_kind,
+                    meta=overrides_meta,
                 )
             variant_id = row.id
 
@@ -283,27 +354,13 @@ class ShadowWorker:
                 ),
             )
 
-            timeout_seconds = float(max_duration_hours * Decimal(3600))
-            outcome: ShadowVariantTerminal
-            realized_pnl: Decimal | None
-            try:
-                terminal_evt = await asyncio.wait_for(terminal_future, timeout=timeout_seconds)
-                outcome = _terminal_from_pe_state(
-                    exec_type=terminal_evt.exec_type,
-                    sl_type_at_close=terminal_evt.sl_type_at_close,
-                    tpsl_mode_at_close=terminal_evt.tpsl_mode_at_close,
-                )
-                realized_pnl = terminal_evt.realized_pnl
-            except TimeoutError:
-                outcome = ShadowVariantTerminal.TIMEOUT
-                realized_pnl = None
-
-            if payload.side == "buy":
-                mfe_pct = float((variant_state["best_price"] - entry) / entry)
-                mae_pct = float((entry - variant_state["worst_price"]) / entry)
-            else:
-                mfe_pct = float((entry - variant_state["best_price"]) / entry)
-                mae_pct = float((variant_state["worst_price"] - entry) / entry)
+            outcome, realized_pnl, mfe_pct, mae_pct = await _drive_variant_to_terminal(
+                terminal_future=terminal_future,
+                variant_state=variant_state,
+                timeout_seconds=float(max_duration_hours * Decimal(3600)),
+                side=payload.side,
+                entry_price=entry,
+            )
 
             async with self._pool.acquire() as conn:
                 result = await update_shadow_variant_terminal(

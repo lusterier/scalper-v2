@@ -91,6 +91,12 @@ class ShadowVariantTerminal(StrEnum):
     TP_TRAIL = "tp_trail"
     TP_FULL = "tp_full"
     TIMEOUT = "timeout"
+    # T-512a / OQ-4=A: parent trade closed during downtime → shadow variant
+    # cannot resume meaningfully (parent context gone). NOT a "lost_on_restart"
+    # state per BRIEF §20:2785 H-023 policy — variant IS recorded with explicit
+    # terminal outcome. App-layer extension only (column TEXT no CHECK per
+    # T-510a OQ-4=A).
+    SHUTDOWN_MID_REPLAY = "shutdown_mid_replay"
 
 
 class ShadowRejectedTerminal(StrEnum):

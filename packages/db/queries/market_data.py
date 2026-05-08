@@ -14,9 +14,11 @@ DB query of its own).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from datetime import datetime
     from decimal import Decimal
 
@@ -29,7 +31,31 @@ if TYPE_CHECKING:
     # pass `async with pool.acquire() as conn` results without casting.
     type _DbExecutor = asyncpg.Connection[asyncpg.Record] | PoolConnectionProxy[asyncpg.Record]
 
-__all__ = ["fetch_latest_ohlc_bucket", "insert_ohlc_1m"]
+__all__ = [
+    "OhlcReplayRow",
+    "fetch_latest_ohlc_bucket",
+    "insert_ohlc_1m",
+    "select_ohlc_for_replay_window",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class OhlcReplayRow:
+    """Minimal projection of ``ohlc_1m`` for in-process replay (T-512a).
+
+    Carries only the fields needed to construct
+    :class:`packages.bus.schemas.OhlcCandlePayload` for shadow_replay's
+    candle handler invocation. Source column intentionally omitted —
+    replay consumers don't differentiate provenance (binance vs synthetic
+    vs replay) at the FSM step, only at the data-pipeline layer.
+    """
+
+    bucket_start: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
 
 
 async def fetch_latest_ohlc_bucket(
@@ -120,3 +146,44 @@ async def insert_ohlc_1m(
         volume,
         source,
     )
+
+
+async def select_ohlc_for_replay_window(
+    conn: _DbExecutor,
+    *,
+    symbol: str,
+    from_at: datetime,
+    to_at: datetime,
+    prefetch: int = 1000,
+) -> AsyncIterator[OhlcReplayRow]:
+    """Server-side cursor on ``ohlc_1m`` for ``[from_at, to_at]`` window (T-512a).
+
+    Used by ``services.execution.app.shadow_replay.replay_shadow_variant_to_now``
+    to iterate candles chronologically for in-process FSM replay. Mirror
+    T-503 :class:`HistoricalOHLCSource` cursor pattern — bounded memory
+    across multi-hour windows. Caller MUST consume the iterator inside
+    the same conn.transaction() block (server-side cursor lifetime).
+
+    Source column ignored — replay consumes whatever provenance is in the
+    table for the requested symbol+window. ``source = ANY(...)`` filtering
+    can be added if specific provenance becomes load-bearing in F5+.
+    """
+    async with conn.transaction():
+        async for row in conn.cursor(
+            "SELECT bucket_start, open, high, low, close, volume "
+            "FROM ohlc_1m "
+            "WHERE symbol = $1 AND bucket_start >= $2 AND bucket_start <= $3 "
+            "ORDER BY bucket_start ASC",
+            symbol,
+            from_at,
+            to_at,
+            prefetch=prefetch,
+        ):
+            yield OhlcReplayRow(
+                bucket_start=row["bucket_start"],
+                open=row["open"],
+                high=row["high"],
+                low=row["low"],
+                close=row["close"],
+                volume=row["volume"],
+            )
