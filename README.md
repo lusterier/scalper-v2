@@ -32,6 +32,18 @@ Docker Compose on Ubuntu 24.04 LTS. Full list in brief §3.
 
 Deployment instructions will be added once F0 exit criteria are met. See brief §18.
 
+## Local dev
+
+Bring up infra + services with one command:
+
+```bash
+./scripts/dev-up.sh    # postgres + nats (compose) + analytics-api (uvicorn) + vite
+./scripts/dev-down.sh  # tear down (DB volumes preserved)
+```
+
+Full lifecycle, troubleshooting, and toolchain notes in
+[`docs/runbooks/dev_stack.md`](docs/runbooks/dev_stack.md).
+
 ## License
 
 Private. Not for redistribution.
