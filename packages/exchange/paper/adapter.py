@@ -27,6 +27,40 @@ T-213a full-stub methods (T-211 unchanged):
   owned by T-213b.
 * ``stream_executions``, ``stream_positions`` — async iterator owned
   by T-213b.
+
+T-506 adds replay-mode wiring per BRIEF §12.2:1957 *"PaperExchange: as
+in 12.1, but wired to HistoricalOHLCSource for tick prices."*:
+
+* Constructor gains ``mode: Literal["live","replay"]`` discriminator
+  + ``historical_source: HistoricalOHLCSource | None`` injected dep.
+  Live mode (default) is backwards-compatible — every existing call
+  site at ``services/execution/app/pool.py`` plus tests works unchanged.
+* :meth:`run_replay` — replay-only entry point; consumes
+  ``historical_source`` to exhaustion; expands each :class:`OHLCRow`
+  via T-505 ``generate_intra_candle_path`` into 3 sequential intra-
+  candle segments; per segment runs :meth:`_check_sl_tp_crosses_replay`
+  + drains pending fills via existing T-213b ``_drain_sl_tp_fill``
+  pipeline.
+* :meth:`_process_replay_candle` — populates BOTH ``_last_price`` and
+  ``_last_candle`` caches per live-mode parity. Synthesised
+  ``OhlcCandlePayload`` for ``_last_candle`` cache hardcodes
+  ``source='binance'`` regardless of ``OHLCRow.source`` because
+  ``_compute_slippage`` and ``slippage.*`` never read
+  ``candle.source`` — verified by grep at plan-time. Lie is contained
+  at cache boundary.
+* :meth:`_check_sl_tp_crosses_replay` — semantic mirror of
+  :meth:`_check_sl_tp_crosses` taking bare ``(symbol, low, high)`` so
+  no synthetic ``OhlcCandlePayload`` lies leak into the SL/TP-detect
+  path. Live :meth:`_check_sl_tp_crosses` body is byte-for-byte
+  unchanged to preserve existing fill-semantics test suite (status.md
+  flagged drift risk on live tests as T-506's primary risk).
+
+T-506 replay mode supersedes T-213a Q4-A pessimistic SL-first
+simplification per BRIEF §12.2:1961-1963 — bullish candles correctly
+fire TP first, bearish correctly fire SL first, because intra-candle
+segments are narrower than the full candle range. Live mode keeps
+T-213a Q4-A pessimism unchanged (explicit non-goal per §0.8 minimum-
+scope discipline).
 """
 
 from __future__ import annotations
@@ -45,6 +79,7 @@ from packages.exchange.errors import OrderRejected
 from packages.exchange.types import ExecutionEvent, OrderPlaceResult, Position, PositionEvent
 
 from . import fees, persistence, slippage
+from .intra_candle import generate_intra_candle_path
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -53,6 +88,8 @@ if TYPE_CHECKING:
 
     from packages.bus import MessageEnvelope, NatsClient
     from packages.core import BotId
+
+    from .historical_ohlc_source import HistoricalOHLCSource, OHLCRow
 
 
 logger = logging.getLogger(__name__)
@@ -143,6 +180,8 @@ class PaperExchange:
         now_fn: Callable[[], datetime] = now_utc,
         pool: asyncpg.Pool,
         event_queue_maxsize: int = 1000,
+        mode: Literal["live", "replay"] = "live",
+        historical_source: HistoricalOHLCSource | None = None,
     ) -> None:
         if slippage_model not in _SLIPPAGE_MODELS:
             raise ValueError(
@@ -154,6 +193,15 @@ class PaperExchange:
                 f"slippage_params for {slippage_model!r} must have keys "
                 f"{sorted(required)}, got {sorted(slippage_params)}"
             )
+        if mode == "replay" and historical_source is None:
+            raise ValueError(
+                "PaperExchange(mode='replay') requires historical_source: HistoricalOHLCSource"
+            )
+        if mode == "live" and historical_source is not None:
+            raise ValueError(
+                "PaperExchange(mode='live') must not pass historical_source "
+                "(use mode='replay' to enable historical replay)"
+            )
         self._seed_balance = seed_balance
         self._slippage_model: SlippageModel = slippage_model
         self._fee_rate = fee_rate
@@ -162,6 +210,8 @@ class PaperExchange:
         self._slippage_params = slippage_params
         self._now_fn = now_fn
         self._pool = pool
+        self._mode: Literal["live", "replay"] = mode
+        self._historical_source = historical_source
         # Per-instance state (§N6: not module-level globals).
         self._last_price: dict[str, Decimal] = {}
         self._last_candle: dict[str, OhlcCandlePayload] = {}
@@ -180,13 +230,21 @@ class PaperExchange:
         )
 
     async def start_consuming(self) -> None:
-        """T-213c: hydrate ``_active_positions`` from paper_positions BEFORE NATS subscribe.
+        """T-213c live-mode entry: hydrate ``_active_positions`` BEFORE NATS subscribe.
 
         OQ-6 default A — hydrate at the lifecycle entry point so dict
         state reflects DB before the first candle arrives. OQ-7 default
         A — query failure propagates; composition root crashes.
         Decision #16: subscribe to ``market.ohlc.1m.>`` for SL/TP monitor.
+
+        T-506: live-only entry point. ``mode='replay'`` callers must
+        invoke :meth:`run_replay` instead.
         """
+        if self._mode != "live":
+            raise RuntimeError(
+                f"start_consuming() requires mode='live', got mode={self._mode!r}; "
+                "use run_replay() for mode='replay'"
+            )
         await self._hydrate_active_positions()
         await self._bus.subscribe("market.ohlc.1m.>", self._on_candle)
 
@@ -305,6 +363,130 @@ class PaperExchange:
             self._pending_sl_tp_fills.append(
                 PendingSLTPFill(
                     symbol=candle.symbol,
+                    side=side,
+                    qty=tp_qty,
+                    trigger_price=tp_price,
+                    triggered_at=self._now_fn(),
+                    kind="tp",
+                    tpsl_mode=tpsl_mode,
+                )
+            )
+
+    async def run_replay(self) -> None:
+        """T-506 replay-mode entry point: consume historical_source to exhaustion.
+
+        Iterates ``self._historical_source`` (T-503 HistoricalOHLCSource)
+        and feeds each :class:`OHLCRow` into :meth:`_process_replay_candle`,
+        which expands the candle into 3 intra-candle segments via T-505
+        ``generate_intra_candle_path`` and drives ``_check_sl_tp_crosses_replay``
+        + ``_drain_sl_tp_fill`` per segment. Returns when source exhausted.
+
+        Per OQ-3=A: NO ``paper_positions`` hydrate, NO DB position-state
+        seed during replay. ``_drain_sl_tp_fill`` continues to write to
+        live ``paper_*`` tables in replay mode; T-507 CLI runs against
+        dev DB; production replay sandbox out of scope per §0.8.
+        """
+        if self._mode != "replay":
+            raise RuntimeError(f"run_replay() requires mode='replay', got mode={self._mode!r}")
+        assert self._historical_source is not None  # ctor validation guaranteed
+        async for ohlc in self._historical_source:
+            await self._process_replay_candle(ohlc)
+
+    async def _process_replay_candle(self, ohlc: OHLCRow) -> None:
+        """Expand a real candle into 3 intra-candle segments + drive fill checks.
+
+        Mirrors live-mode :meth:`_on_candle` minus the NATS-envelope
+        decode + ``is_closed`` short-circuit (replay candles are always
+        closed by construction). Populates BOTH ``_last_price`` and
+        ``_last_candle`` caches per live-mode parity — the latter is
+        read by :meth:`_compute_slippage` via :meth:`place_market_order`,
+        so omission would ``KeyError`` on the first signal-driven order.
+        """
+        self._last_price[ohlc.symbol] = ohlc.close
+        # T-506 BLOCKER fix: cache the FULL real candle for _compute_slippage.
+        # Synthesised OhlcCandlePayload hardcodes source="binance" (Literal
+        # default) regardless of OHLCRow.source — _compute_slippage (defined
+        # at L503; reads candle.high/.low at L519-520) is the only consumer
+        # of self._last_candle, and the slippage module functions take direct
+        # (high, low, factor) args. No downstream consumer reads candle.source.
+        # Schema lie is contained at the cache boundary. (Alternative B
+        # refactor _compute_slippage signature — rejected because live-mode
+        # test churn violates status.md drift-warning. Alternative C parallel
+        # _last_segment_range dict — rejected as additional state + mode-branch.)
+        self._last_candle[ohlc.symbol] = OhlcCandlePayload(
+            symbol=ohlc.symbol,
+            bucket_start=ohlc.bucket_start,
+            open=ohlc.open,
+            high=ohlc.high,
+            low=ohlc.low,
+            close=ohlc.close,
+            volume=ohlc.volume,
+            is_closed=True,
+        )
+        o, p1, p2, c = generate_intra_candle_path(
+            open=ohlc.open, high=ohlc.high, low=ohlc.low, close=ohlc.close
+        )
+        for seg_open, seg_close in ((o, p1), (p1, p2), (p2, c)):
+            seg_low = min(seg_open, seg_close)
+            seg_high = max(seg_open, seg_close)
+            await self._check_sl_tp_crosses_replay(symbol=ohlc.symbol, low=seg_low, high=seg_high)
+            while self._pending_sl_tp_fills:
+                fill = self._pending_sl_tp_fills.pop(0)
+                await self._drain_sl_tp_fill(fill)
+
+    async def _check_sl_tp_crosses_replay(
+        self, *, symbol: str, low: Decimal, high: Decimal
+    ) -> None:
+        """Replay-mode SL/TP cross detection accepting bare ``(symbol, low, high)``.
+
+        Semantically identical to :meth:`_check_sl_tp_crosses`'s SL-first-
+        within-range branch (T-213a Q4-A) — the intra-candle ordering
+        correction comes from :meth:`_process_replay_candle` splitting
+        the real candle into 3 narrower segments BEFORE this method runs,
+        so each call here sees a smaller ``[low, high]`` range that
+        contains AT MOST one of ``{SL, TP}`` for typical bullish/bearish
+        cases (TradingView "Replay" semantics per BRIEF §12.2:1961-1963).
+
+        Body mirrors :meth:`_check_sl_tp_crosses` lines 331-373 with
+        ``candle.symbol`` → ``symbol``, ``candle.low`` → ``low``,
+        ``candle.high`` → ``high``. No new logic. Duplication is
+        intentional per §0.8 minimum-scope to keep
+        :meth:`_check_sl_tp_crosses`'s ``OhlcCandlePayload`` signature
+        unchanged for live-mode test backwards-compat.
+        """
+        position = self._active_positions.get(symbol)
+        if position is None:
+            return
+        side = position.get("side")
+        qty = position.get("qty")
+        sl_price: Decimal | None = position.get("sl_price")
+        tp_price: Decimal | None = position.get("tp_price")
+        tpsl_mode: Literal["Full", "Partial"] = position["tpsl_mode"]
+        if side is None or qty is None:
+            return
+        if sl_price is not None and low <= sl_price <= high:
+            self._pending_sl_tp_fills.append(
+                PendingSLTPFill(
+                    symbol=symbol,
+                    side=side,
+                    qty=qty,
+                    trigger_price=sl_price,
+                    triggered_at=self._now_fn(),
+                    kind="sl",
+                    tpsl_mode=tpsl_mode,
+                )
+            )
+            return  # SL-first within segment.
+        if tp_price is not None and low <= tp_price <= high:
+            tp_qty = position.get("tp_size") if tpsl_mode == "Partial" else qty
+            if tp_qty is None:
+                raise ValueError(
+                    f"Partial TP without tp_size for {symbol}; "
+                    f"set_trading_stop must supply tp_size when tpsl_mode='Partial'"
+                )
+            self._pending_sl_tp_fills.append(
+                PendingSLTPFill(
+                    symbol=symbol,
                     side=side,
                     qty=tp_qty,
                     trigger_price=tp_price,
