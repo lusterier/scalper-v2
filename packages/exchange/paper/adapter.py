@@ -68,6 +68,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import (  # noqa: TC003 — Awaitable used in runtime ctor signature
+    Awaitable,
+    Callable,
+)
 from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003 — runtime annotation on frozen dataclass
 from decimal import Decimal
@@ -130,6 +134,25 @@ def _stub_message(method: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class TerminalEvent:
+    """T-511b1: PaperExchange position-terminal callback payload.
+
+    Fired by ``_drain_full_close`` AFTER persistence commits + post-emit, with
+    snapshot captured BEFORE in-memory position removal. Live mode passes no
+    callback (default ``None``) → no-op. Shadow worker (T-511b1) registers a
+    per-variant callback to drive ``_terminal_from_pe_state`` outcome
+    classification per ADR-0005 v2 H-024 derivation chain (sl_type derived
+    from PE-snapshot, NOT exchange-orderlink).
+    """
+
+    symbol: str
+    exec_type: Literal["sl", "tp"]
+    sl_type_at_close: Literal["protective", "be", "trail"]
+    tpsl_mode_at_close: Literal["Full", "Partial"]
+    realized_pnl: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class PendingSLTPFill:
     """Decision #12: SL/TP cross-detection event enqueued by T-213a.
 
@@ -186,6 +209,7 @@ class PaperExchange:
         historical_source: HistoricalOHLCSource | None = None,
         replay_clock: ReplayClock | None = None,
         seed_open_state: dict[str, Any] | None = None,
+        terminal_callback: Callable[[TerminalEvent], Awaitable[None]] | None = None,
     ) -> None:
         if slippage_model not in _SLIPPAGE_MODELS:
             raise ValueError(
@@ -228,6 +252,10 @@ class PaperExchange:
         # T-511a: NATS Subscription handle from start_consuming(); enables
         # bus_unsubscribe_market_ohlc() teardown for H-016 ergonomic precondition.
         self._market_ohlc_subscription: object | None = None
+        # T-511b1: optional terminal callback fired by _drain_full_close post-
+        # persist + post-emit; shadow worker registers per-variant callback
+        # for outcome classification. Live mode default None → no-op.
+        self._terminal_callback = terminal_callback
         # Per-instance state (§N6: not module-level globals).
         self._last_price: dict[str, Decimal] = {}
         self._last_candle: dict[str, OhlcCandlePayload] = {}
@@ -1017,10 +1045,26 @@ class PaperExchange:
             await persistence.delete_paper_position(
                 conn, bot_id=str(self._bot_id), symbol=fill.symbol
             )
+        # T-511b1: snapshot BEFORE del so terminal_callback gets sl_type +
+        # tpsl_mode from PE state at close moment (ADR-0005 v2 H-024 derivation).
+        # Defensive .get() defaults: legacy code paths that bypass set_trading_stop
+        # (T-211/T-213a tests using direct dict manipulation) lack sl_type/tpsl_mode
+        # — default 'protective' / 'Full' aligns with 3-state vocab + Decision #14.
+        terminal_snapshot = TerminalEvent(
+            symbol=fill.symbol,
+            exec_type=fill.kind,
+            sl_type_at_close=position.get("sl_type", "protective"),
+            tpsl_mode_at_close=position.get("tpsl_mode", "Full"),
+            realized_pnl=realized_pnl_total,
+        )
         del self._active_positions[fill.symbol]
         await self._emit_close_events(
             fill, ctx, remaining_size=Decimal("0"), side_after=None, entry_price_after=None
         )
+        if self._terminal_callback is not None:
+            # T-511b1: fire AFTER persist + emit so DB state is consistent
+            # before downstream consumers (shadow worker) react.
+            await self._terminal_callback(terminal_snapshot)
 
     def _build_drain_context(
         self, fill: PendingSLTPFill, position: dict[str, Any]
@@ -1120,6 +1164,8 @@ class PaperExchange:
         sl_price: Decimal | None = None,
         tp_price: Decimal | None = None,
         tp_size: Decimal | None = None,
+        *,
+        sl_type: Literal["protective", "be", "trail"] | None = None,
     ) -> None:
         """T-213b: persist sl_price + tp_price to paper_positions; tpsl_mode + tp_size in dict.
 
@@ -1131,16 +1177,30 @@ class PaperExchange:
         H-013 invariant (Decision #14): ``tpsl_mode`` propagated to dict
         without ``'Full'`` default baking; ``_check_sl_tp_crosses`` reads
         from dict when constructing :class:`PendingSLTPFill`.
+
+        T-511b1: optional ``sl_type`` keyword-only kwarg for shadow-worker
+        BE-trigger path. Accepts ``'protective'`` or ``'be'``; rejects
+        ``'trail'`` with ``ValueError`` because partial_tp → 'trail' must
+        flow exclusively through :meth:`_drain_partial_tp` per ADR-0005 v2
+        H-024 derivation chain (writing 'trail' externally would corrupt
+        terminal classification at next exec_type derivation point).
         """
+        if sl_type == "trail":
+            raise ValueError("sl_type='trail' may only be set by _drain_partial_tp per ADR-0005 v2")
         existing = self._active_positions.get(symbol, {})
         existing["sl_price"] = sl_price
         existing["tp_price"] = tp_price
         existing["tp_size"] = tp_size
         existing["tpsl_mode"] = tpsl_mode
-        # T-511a: initialize sl_type='protective' if missing; preserves existing
-        # value (e.g., 'trail' set by partial_tp drain or 'be' set by future
-        # lifecycle BE-trigger). 3-state vocab per ADR-0005 v2 + execution-service.
-        existing.setdefault("sl_type", "protective")
+        if sl_type is not None:
+            # T-511b1: explicit sl_type kwarg overrides setdefault behavior;
+            # used by shadow worker BE-trigger path (sl_type='be').
+            existing["sl_type"] = sl_type
+        else:
+            # T-511a: initialize sl_type='protective' if missing; preserves existing
+            # value (e.g., 'trail' set by partial_tp drain or 'be' set by future
+            # lifecycle BE-trigger). 3-state vocab per ADR-0005 v2 + execution-service.
+            existing.setdefault("sl_type", "protective")
         self._active_positions[symbol] = existing
         async with self._pool.acquire() as conn:
             await persistence.update_paper_position_sl_tp(

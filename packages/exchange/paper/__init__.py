@@ -13,6 +13,6 @@ semantics + paper_* persistence + execution-emission body.
 
 from __future__ import annotations
 
-from .adapter import PaperExchange, SlippageModel
+from .adapter import PaperExchange, SlippageModel, TerminalEvent
 
-__all__ = ["PaperExchange", "SlippageModel"]
+__all__ = ["PaperExchange", "SlippageModel", "TerminalEvent"]
