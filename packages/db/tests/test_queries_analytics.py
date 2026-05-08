@@ -38,6 +38,7 @@ from packages.db.queries.analytics import (
     BotDetailRow,
     FeatureRow,
     OpenPositionRow,
+    PaperTradeRow,
     ScoringEvaluationRow,
     SignalRow,
     SymbolMapRow,
@@ -50,6 +51,7 @@ from packages.db.queries.analytics import (
     count_bot_config_versions,
     count_features_history,
     count_latest_features,
+    count_paper_trades,
     count_signals,
     count_trades,
     delete_symbol_map_entry,
@@ -67,6 +69,8 @@ from packages.db.queries.analytics import (
     select_latest_features,
     select_max_bot_config_version,
     select_open_positions,
+    select_paper_trade_by_id,
+    select_paper_trades_paginated,
     select_scoring_evaluations_by_signal_id,
     select_signal_by_id,
     select_signals_paginated,
@@ -2434,3 +2438,263 @@ async def test_select_trades_by_run_empty_result_returns_empty_list() -> None:
     rows = await select_trades_by_run(conn, run_id=uuid4())
     assert rows == []
     assert isinstance(rows, list)
+
+
+# ---------------------------------------------------------------------------
+# T-516a1 — paper_trades read endpoints (mirror trades 1:1)
+# ---------------------------------------------------------------------------
+
+
+def _make_paper_trade_row(
+    *,
+    paper_trade_id: int = 1,
+    bot_id: str = "alpha",
+    symbol: str = "BTCUSDT",
+    status_value: str = "closed",
+    realized_pnl: str | None = "12.34",
+    mfe_pct: float | None = 0.025,
+) -> dict[str, Any]:
+    """Mirror :func:`_make_trade_row` for paper_trades (same 21 columns)."""
+    return {
+        "id": paper_trade_id,
+        "bot_id": bot_id,
+        "signal_id": 42,
+        "open_order_id": 100,
+        "close_order_id": 101 if status_value != "open" else None,
+        "symbol": symbol,
+        "side": "buy",
+        "entry_price": Decimal("50000.0"),
+        "exit_price": Decimal("50500.0") if status_value != "open" else None,
+        "qty": Decimal("0.5"),
+        "notional_usd": Decimal("25000.0000"),
+        "realized_pnl": Decimal(realized_pnl) if realized_pnl is not None else None,
+        "fees_paid": Decimal("0.5000"),
+        "close_reason": "tp" if status_value == "closed" else None,
+        "opened_at": _T_OPENED,
+        "closed_at": _T_CLOSED if status_value != "open" else None,
+        "status": status_value,
+        "mfe_pct": mfe_pct,
+        "mae_pct": -0.005,
+        "confidence_score": 0.75,
+        "meta": {},
+    }
+
+
+def test_paper_trade_row_dataclass_shape() -> None:
+    """PaperTradeRow is frozen + slots + 21 fields (mirror TradeRow shape per WG#1-2)."""
+    fields = PaperTradeRow.__dataclass_fields__
+    assert len(fields) == 21
+    assert PaperTradeRow.__dataclass_params__.frozen is True  # type: ignore[attr-defined]
+    expected = {
+        "id",
+        "bot_id",
+        "signal_id",
+        "open_order_id",
+        "close_order_id",
+        "symbol",
+        "side",
+        "entry_price",
+        "exit_price",
+        "qty",
+        "notional_usd",
+        "realized_pnl",
+        "fees_paid",
+        "close_reason",
+        "opened_at",
+        "closed_at",
+        "status",
+        "mfe_pct",
+        "mae_pct",
+        "confidence_score",
+        "meta",
+    }
+    assert set(fields.keys()) == expected
+
+
+# ---- select_paper_trades_paginated ----
+
+
+async def test_select_paper_trades_paginated_uses_parameterized_placeholders() -> None:
+    """L-008 — SQL uses $N placeholders only; values never f-string-interpolated."""
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured_args.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_paper_trades_paginated(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        status=TradeStatus.CLOSED,
+        from_at=_T_OPENED,
+        to_at=_T_CLOSED,
+        limit=10,
+        offset=20,
+    )
+    sql, *bind_args = captured_args[0]
+    assert "alpha" not in sql
+    assert "BTCUSDT" not in sql
+    assert "$1" in sql
+    assert "$5" in sql
+    # limit + offset come last as $6, $7.
+    assert "$6" in sql
+    assert "$7" in sql
+    assert bind_args == ["alpha", "BTCUSDT", "closed", _T_OPENED, _T_CLOSED, 10, 20]
+
+
+async def test_select_paper_trades_paginated_orders_by_closed_at_desc_nulls_first() -> None:
+    """ORDER BY closed_at DESC NULLS FIRST per WG#5 mirror live convention."""
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_args: Any) -> list[Any]:
+        captured.append(sql)
+        return []
+
+    conn.fetch = _capture
+    await select_paper_trades_paginated(
+        conn,
+        bot_id=None,
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert "ORDER BY closed_at DESC NULLS FIRST" in captured[0]
+    assert "FROM paper_trades" in captured[0]
+
+
+async def test_select_paper_trades_paginated_returns_typed_list() -> None:
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _make_paper_trade_row(paper_trade_id=1, status_value="closed"),
+            _make_paper_trade_row(paper_trade_id=2, status_value="open"),
+        ]
+    )
+    rows = await select_paper_trades_paginated(
+        conn,
+        bot_id=None,
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert len(rows) == 2
+    assert all(isinstance(r, PaperTradeRow) for r in rows)
+    assert rows[0].status is TradeStatus.CLOSED
+    assert rows[1].status is TradeStatus.OPEN
+    assert rows[1].closed_at is None
+
+
+async def test_paper_trade_double_precision_fields_stay_as_float() -> None:
+    """mfe_pct / mae_pct / confidence_score are float (DOUBLE PRECISION domain), not Decimal."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[_make_paper_trade_row(mfe_pct=0.025)])
+    rows = await select_paper_trades_paginated(
+        conn,
+        bot_id=None,
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert isinstance(rows[0].mfe_pct, float)
+    assert isinstance(rows[0].mae_pct, float)
+    assert isinstance(rows[0].confidence_score, float)
+
+
+# ---- count_paper_trades ----
+
+
+async def test_count_paper_trades_returns_int_matching_filters() -> None:
+    conn = MagicMock()
+    captured_args: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> dict[str, int]:
+        captured_args.append((sql, *args))
+        return {"n": 7}
+
+    conn.fetchrow = _capture
+    n = await count_paper_trades(
+        conn,
+        bot_id="alpha",
+        symbol=None,
+        status=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert n == 7
+    sql, bind_arg = captured_args[0]
+    assert "SELECT COUNT(*)" in sql
+    assert "FROM paper_trades" in sql
+    assert "WHERE bot_id = $1" in sql
+    assert bind_arg == "alpha"
+
+
+async def test_count_paper_trades_uses_same_where_clause_as_select_paper_trades_paginated() -> None:
+    """Both helpers route through `_build_paper_trades_where_clause` (no drift)."""
+    conn = MagicMock()
+    captured_select: list[str] = []
+    captured_count: list[str] = []
+
+    async def _capture_fetch(sql: str, *_args: Any) -> list[Any]:
+        captured_select.append(sql)
+        return []
+
+    async def _capture_fetchrow(sql: str, *_args: Any) -> dict[str, int]:
+        captured_count.append(sql)
+        return {"n": 0}
+
+    conn.fetch = _capture_fetch
+    conn.fetchrow = _capture_fetchrow
+    common: dict[str, Any] = {
+        "bot_id": "alpha",
+        "symbol": "BTCUSDT",
+        "status": TradeStatus.CLOSED,
+        "from_at": _T_OPENED,
+        "to_at": _T_CLOSED,
+    }
+    await select_paper_trades_paginated(conn, **common, limit=50, offset=0)
+    await count_paper_trades(conn, **common)
+    where = (
+        "WHERE bot_id = $1 AND symbol = $2 AND status = $3 AND closed_at >= $4 AND closed_at < $5"
+    )
+    assert where in captured_select[0]
+    assert where in captured_count[0]
+
+
+# ---- select_paper_trade_by_id ----
+
+
+async def test_select_paper_trade_by_id_returns_row_on_hit() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_paper_trade_row(paper_trade_id=42))
+    row = await select_paper_trade_by_id(conn, 42)
+    assert row is not None
+    assert isinstance(row, PaperTradeRow)
+    assert row.id == 42
+
+
+async def test_select_paper_trade_by_id_returns_none_on_miss() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    row = await select_paper_trade_by_id(conn, 999)
+    assert row is None
+
+
+async def test_select_paper_trades_unknown_status_raises_value_error() -> None:
+    """TradeStatus(...) raises on unknown enum value (defensive at row narrowing)."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_make_paper_trade_row(status_value="garbage"))
+    with pytest.raises(ValueError, match="garbage"):
+        await select_paper_trade_by_id(conn, 1)

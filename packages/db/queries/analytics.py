@@ -97,6 +97,7 @@ __all__ = [
     "BotDetailRow",
     "FeatureRow",
     "OpenPositionRow",
+    "PaperTradeRow",
     "ScoringEvaluationRow",
     "SignalRow",
     "SymbolMapRow",
@@ -107,6 +108,7 @@ __all__ = [
     "count_bot_config_versions",
     "count_features_history",
     "count_latest_features",
+    "count_paper_trades",
     "count_signals",
     "count_trades",
     "delete_symbol_map_entry",
@@ -127,6 +129,8 @@ __all__ = [
     "select_latest_features",
     "select_max_bot_config_version",
     "select_open_positions",
+    "select_paper_trade_by_id",
+    "select_paper_trades_paginated",
     "select_scoring_evaluations_by_signal_id",
     "select_signal_by_id",
     "select_signals_paginated",
@@ -643,6 +647,195 @@ async def select_trade_by_id(
     """Return one ``trades`` row by PK; ``None`` if not found."""
     row = await conn.fetchrow(_SELECT_TRADE_BY_ID_SQL, trade_id)
     return _row_to_trade(row) if row is not None else None
+
+
+@dataclass(frozen=True, slots=True)
+class PaperTradeRow:
+    """Full projection of ``paper_trades`` row (21 fields per §12.1 paper_trades + migration 0008).
+
+    Structurally identical to :class:`TradeRow` (same 21 columns; same types
+    + nullability) — paper_trades schema mirrors trades schema 1:1 per
+    §3.1:268 paper-live symmetry invariant. T-516a1 mirrors live read-side
+    surface for paper analytics drill-down.
+
+    DOUBLE PRECISION fields (``mfe_pct`` / ``mae_pct`` / ``confidence_score``)
+    stay as ``float`` per §5.13 — statistical ratios, not money. NUMERIC
+    fields stay as ``Decimal`` per §N1 / §5.3 precision invariant.
+    """
+
+    id: int
+    bot_id: str
+    signal_id: int | None
+    open_order_id: int
+    close_order_id: int | None
+    symbol: str
+    side: str
+    entry_price: Decimal
+    exit_price: Decimal | None
+    qty: Decimal
+    notional_usd: Decimal
+    realized_pnl: Decimal | None
+    fees_paid: Decimal | None
+    close_reason: str | None
+    opened_at: datetime
+    closed_at: datetime | None
+    status: TradeStatus
+    mfe_pct: float | None
+    mae_pct: float | None
+    confidence_score: float | None
+    meta: dict[str, Any]
+
+
+_PAPER_TRADES_BASE_COLUMNS = (
+    "id, bot_id, signal_id, open_order_id, close_order_id, symbol, side, "
+    "entry_price, exit_price, qty, notional_usd, realized_pnl, fees_paid, "
+    "close_reason, opened_at, closed_at, status, mfe_pct, mae_pct, "
+    "confidence_score, meta"
+)
+
+_SELECT_PAPER_TRADE_BY_ID_SQL = (
+    f"SELECT {_PAPER_TRADES_BASE_COLUMNS} FROM paper_trades WHERE id = $1"  # noqa: S608 — column whitelist constant, no user input  # nosec B608
+)
+
+
+def _row_to_paper_trade(row: asyncpg.Record) -> PaperTradeRow:
+    """Mirror :func:`_row_to_trade` byte-for-byte modulo dataclass name (per WG#3)."""
+    meta_value = row["meta"]
+    return PaperTradeRow(
+        id=int(row["id"]),
+        bot_id=str(row["bot_id"]),
+        signal_id=int(row["signal_id"]) if row["signal_id"] is not None else None,
+        open_order_id=int(row["open_order_id"]),
+        close_order_id=(int(row["close_order_id"]) if row["close_order_id"] is not None else None),
+        symbol=str(row["symbol"]),
+        side=str(row["side"]),
+        entry_price=row["entry_price"],
+        exit_price=row["exit_price"],
+        qty=row["qty"],
+        notional_usd=row["notional_usd"],
+        realized_pnl=row["realized_pnl"],
+        fees_paid=row["fees_paid"],
+        close_reason=(str(row["close_reason"]) if row["close_reason"] is not None else None),
+        opened_at=row["opened_at"],
+        closed_at=row["closed_at"],
+        status=TradeStatus(str(row["status"])),
+        mfe_pct=float(row["mfe_pct"]) if row["mfe_pct"] is not None else None,
+        mae_pct=float(row["mae_pct"]) if row["mae_pct"] is not None else None,
+        confidence_score=(
+            float(row["confidence_score"]) if row["confidence_score"] is not None else None
+        ),
+        meta=meta_value if isinstance(meta_value, dict) else {},
+    )
+
+
+def _build_paper_trades_where_clause(
+    *,
+    bot_id: str | None,
+    symbol: str | None,
+    status: TradeStatus | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> tuple[str, list[Any]]:
+    """Mirror :func:`_build_trades_where_clause` for ``paper_trades`` (per WG#4).
+
+    Returns ``("", [])`` when all filters are None (no WHERE clause). Otherwise
+    returns ``("WHERE <predicates>", [<bind args in $N order>])`` using ``$N``
+    placeholders ONLY (NEVER string interpolation per L-008 + §5.10). Filter
+    slots are AND-combined. ``from_at`` / ``to_at`` filter on ``closed_at`` only.
+    """
+    predicates: list[str] = []
+    bind_args: list[Any] = []
+    if bot_id is not None:
+        bind_args.append(bot_id)
+        predicates.append(f"bot_id = ${len(bind_args)}")
+    if symbol is not None:
+        bind_args.append(symbol)
+        predicates.append(f"symbol = ${len(bind_args)}")
+    if status is not None:
+        bind_args.append(str(status))
+        predicates.append(f"status = ${len(bind_args)}")
+    if from_at is not None:
+        bind_args.append(from_at)
+        predicates.append(f"closed_at >= ${len(bind_args)}")
+    if to_at is not None:
+        bind_args.append(to_at)
+        predicates.append(f"closed_at < ${len(bind_args)}")
+    if not predicates:
+        return ("", [])
+    return ("WHERE " + " AND ".join(predicates), bind_args)
+
+
+async def select_paper_trades_paginated(
+    conn: _DbExecutor,
+    *,
+    bot_id: str | None,
+    symbol: str | None,
+    status: TradeStatus | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+    limit: int,
+    offset: int,
+) -> list[PaperTradeRow]:
+    """Return one page of paper_trades with optional filters.
+
+    Mirror :func:`select_trades_paginated` 1:1 modulo target table. ORDER BY
+    ``closed_at DESC NULLS FIRST, id DESC`` per WG#5; limit/offset clamped by
+    caller (router enforces 1 ≤ limit ≤ 200; 0 ≤ offset).
+    """
+    where_clause, where_args = _build_paper_trades_where_clause(
+        bot_id=bot_id,
+        symbol=symbol,
+        status=status,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    limit_placeholder = f"${len(where_args) + 1}"
+    offset_placeholder = f"${len(where_args) + 2}"
+    sql = (
+        f"SELECT {_PAPER_TRADES_BASE_COLUMNS} FROM paper_trades "  # noqa: S608  # nosec B608
+        f"{where_clause} "
+        "ORDER BY closed_at DESC NULLS FIRST, id DESC "
+        f"LIMIT {limit_placeholder} OFFSET {offset_placeholder}"
+    )
+    rows = await conn.fetch(sql, *where_args, limit, offset)
+    return [_row_to_paper_trade(row) for row in rows]
+
+
+async def count_paper_trades(
+    conn: _DbExecutor,
+    *,
+    bot_id: str | None,
+    symbol: str | None,
+    status: TradeStatus | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> int:
+    """Return total paper_trades count matching :func:`select_paper_trades_paginated` filters.
+
+    Mirror :func:`count_trades` — same :func:`_build_paper_trades_where_clause`
+    helper so filter semantics stay in sync.
+    """
+    where_clause, where_args = _build_paper_trades_where_clause(
+        bot_id=bot_id,
+        symbol=symbol,
+        status=status,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    sql = f"SELECT COUNT(*) AS n FROM paper_trades {where_clause}"  # noqa: S608 — where_clause parameterized via $N  # nosec B608
+    row = await conn.fetchrow(sql, *where_args)
+    if row is None:
+        return 0
+    return int(row["n"])
+
+
+async def select_paper_trade_by_id(
+    conn: _DbExecutor,
+    paper_trade_id: int,
+) -> PaperTradeRow | None:
+    """Return one ``paper_trades`` row by PK; ``None`` if not found."""
+    row = await conn.fetchrow(_SELECT_PAPER_TRADE_BY_ID_SQL, paper_trade_id)
+    return _row_to_paper_trade(row) if row is not None else None
 
 
 # ---------------------------------------------------------------------------

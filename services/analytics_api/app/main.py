@@ -71,6 +71,7 @@ from .routers.bots import router as bots_router
 from .routers.configs import router as configs_router
 from .routers.events import router as events_router
 from .routers.features import router as features_router
+from .routers.paper_trades import router as paper_trades_router
 from .routers.positions import router as positions_router
 from .routers.scoring import router as scoring_router
 from .routers.signals import router as signals_router
@@ -196,6 +197,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(symbol_map_router)
     app.include_router(positions_router)
     app.include_router(trades_router)
+    app.include_router(paper_trades_router)
     app.include_router(signals_router)
     app.include_router(scoring_router)
     app.include_router(features_router)
