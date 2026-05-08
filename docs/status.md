@@ -1,5 +1,32 @@
 # Session status
 
+## 2026-05-08 (late-evening — T-508 compare mode shipped)
+
+**F5 phase: 14/22 numbered tasks done (~64%).** Master HEAD `fcdc453`. T-508 is small additive read-only mode extending T-507b CLI; backtest harness cluster 8/9 → 9/9 (only T-509 worker connect remaining).
+
+### T-508 delivered (14/22)
+
+Plan-reviewer single-pass APPROVE → drift-checker SKIPPED → brief-reviewer 2-pass SHIP (FIX FIRST → SHIP on 3 ruff errors + sys.argv CONCERN) → math-validator OUT OF SCOPE.
+
+- **scripts/backtest.py** (+194 LOC) — `--compare nargs=2` argparse flag; `cli_main()` dispatch; `main_compare()` composition root (read-only); `_format_aggregate_diff` + `_format_per_trade_diff` text-table helpers; `_parse_uuid` validator; mutex hard-fail per WG#1
+- **packages/db/queries/analytics.py** (+128 LOC) — 3 read helpers (`select_backtest_run_summary`, `select_diverging_trades_for_compare` with `IS DISTINCT FROM` null-safe equality, `count_common_signals_for_compare` for WG#3 M=0 distinction) + `DivergingTradeRow` dataclass
+- **tests/scripts/test_backtest_cli.py** (+151 LOC) — 8 new tests; 3 monkeypatch'd cli_main tests for auto-restore (CONCERN response avoiding cross-test argv leakage)
+- 1912 → 1922 = +10 tests; no regressions
+
+### F5 cluster progress
+
+- **Backtest harness cluster (T-501..T-509, 9 tasks)**: 8/9 done — T-501..T-505 + T-506 + T-507a + T-507b + **T-508 NEW**. **Remaining**: T-509 (worker connect from analytics-api `/api/backtests/{id}` queue)
+- **Shadow variants runtime (T-510..T-514, 5 tasks)**: 3/5 done (unchanged)
+- **UI extensions (T-515..T-517, 3 tasks)**: 1/3 done (unchanged)
+- **Backend polish + ops (T-518..T-522, 5 tasks)**: 0/5 done (unchanged); T-520 hardening 3/5 cherry-picked
+
+### Watch-outs for next session
+
+- **T-509 worker** is next in backtest cluster — analytics-api lifespan task that polls `backtest_runs WHERE status='queued'` + invokes `scripts.backtest.main()` programmatically with existing `run_id` (T-507b currently always creates fresh row; T-509 must accept external run_id). Est: ~220 LOC src + ~140 LOC tests
+- **Today total**: 11 master commits (T-506 + chore + 3 chore(devx) dev-stack + T-507a + chore + T-507b + chore + T-508 + chore)
+
+---
+
 ## 2026-05-08 (evening — T-507b CLI orchestrator shipped)
 
 **F5 phase: 13/22 numbered tasks done (~59%).** Master HEAD `db2d282`. T-507b je najväčší F5 task — orchestruje 6 komponentov do single in-process backtest CLI per BRIEF §12.2:1949. 8 BLOCKERs + 7 CONCERNs surfaced cez 3 plan-reviewer + 2 brief-reviewer cykly; všetky resolved.
