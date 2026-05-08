@@ -2821,7 +2821,17 @@ All with audit log entries.
 
 **Test.** `test_process_open_fill_does_not_decrement_remaining_qty` (regression guard) + `test_process_open_fill_with_zero_remaining_qty_does_NOT_trigger_close` (defensive-guard pin) + restored `test_process_open_fill_orders_lookup_to_open_branch` with realistic placement-time `remaining_qty=event.qty` semantics.
 
-H-numbering note: H-027/H-028/H-029 are reserved for ADR-0011 anticipated hazards (T-525/T-534/T-535 per pre-live operational hardening cluster); H-030 is the first concrete hazard discovered post-ADR-0011.
+H-numbering note: H-027/H-028/H-029 are reserved for ADR-0011 anticipated hazards (T-525/T-534/T-535 per pre-live operational hardening cluster); H-030 is the first concrete hazard discovered post-ADR-0011. **Companion sibling H-031** (paper adapter must not feed live ExecutionDispatcher) shipped via `fix(T-218c-paper-dispatcher-skip)` 2026-05-08 — together H-030 + H-031 complete dispatcher safety contract for live + paper modes respectively.
+
+### H-031 — Paper adapter must not feed live ExecutionDispatcher
+
+**Context.** ExecutionDispatcher consumes `adapter.stream_executions()` per-bot and processes events via LIVE tables (`orders` / `trades` / `position_state`). PaperExchange writes to `paper_*` tables and emits ExecutionEvent for both open and close fills (`paper/adapter.py:820 _persist_open` + `:930` close-flow + `:1185 _emit_close_events` synthetic SL/TP). Dispatcher's LIVE table lookups return None for paper events → `_derive_exec_type` returns `("unknown", None, None)` → `dispatcher.py:188 RuntimeError("unattributable fill: no order match and no position_state")` → `run_dispatcher_for_bot` re-raises → task dies silently (`main.py:392 gather(return_exceptions=True)` swallows pri shutdown only). Operator-discovered shipped-code bug 2026-05-08; fix shipped via `fix(T-218c-paper-dispatcher-skip)` precedent.
+
+**Policy.** ExecutionDispatcher tasks MUST NOT be created for adapters whose `bot_row.exchange_mode == "paper"`. Paper bots have an internal pipeline via PaperExchange (persist to `paper_*` + emit events via `stream_executions` for event-shape symmetry); the LIVE dispatcher's role is irrelevant for paper. `AdapterPoolResult.paper_bot_ids: frozenset[BotId]` is the canonical source for the skip; `main.py:215-240` consults this set via `if bot_id in adapter_pool.paper_bot_ids: continue` before constructing the dispatcher task. The `orders.requests.<bot_id>` subscriber (line 166) STAYS for paper bots — placement handler routes paper orders via `PaperExchange.place_market_order`; that path is independent of ExecutionDispatcher.
+
+**Test.** `test_lifespan_does_not_create_dispatcher_task_for_paper_bots` + `test_build_adapter_pool_populates_paper_bot_ids`.
+
+H-031 numbering note: T-218b shipped H-030 (open-fill must not decrement remaining_qty) on 2026-05-08 LIVE-mode-protective; T-218c addresses the PAPER-mode separate kill-path. T-218b plan claim "bug dormant in paper mode" was incorrect — paper had its own (different) crash path documented here; see L-018 active control on "dormant in mode" claims requiring code-citation evidence.
 
 ---
 

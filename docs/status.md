@@ -1,5 +1,48 @@
 # Session status
 
+## 2026-05-08 (late-night XI — fix(T-218c-paper-dispatcher-skip) shipped; H-031 NEW hazard + L-018 NEW lesson + T-218b retrospective correction; 7-bug operator audit Item 1 of 7 done)
+
+**F5 phase counter UNCHANGED at 26/47** (fix() commits don't count toward F5 numbered task counter; mirror `fix(T-218b)` + `fix(T-511b2a)` precedent).
+
+### fix(T-218c-paper-dispatcher-skip) — paper-mode silent kill-path; pre-live blocker
+
+- **All 4 review gates passed**: plan-reviewer single-pass APPROVE 2026-05-08 (7-item Write-time guidance) → drift-checker ON TRACK (5 staged files, +12% LOC vs estimate, 7/7 WG verified) → brief-reviewer SHIP (7/7 WG; 4 feat-staged, 3 chore-deferred per AC-14/OQ-3) → math-validator VERIFIED (out-of-scope per Gate 4 fast no-op; composition-only field add + set-membership skip).
+- **Bug**: PaperExchange's `stream_executions` emits ExecutionEvent on every fill (open `paper/adapter.py:820`, close `:930`, synthetic SL/TP `:1185`). ExecutionDispatcher consumes those events but processes them via LIVE tables (`orders` / `trades` / `position_state`). For paper bots, LIVE-table lookups always return None → `_derive_exec_type` returns `('unknown', None, None)` → `dispatcher.py:188 RuntimeError("unattributable fill")` → dispatcher task dies silently. Paper bots simply never received functional dispatcher service from app start.
+- **Real-world impact**: Operator's primary mode is paper per memory `deployment.md`; full v2 multi-service NIE JE deployed yet, so kill-path was never observed at runtime. In live deployment, paper bots running alongside live bots in same execution-service process would have BOTH paper dispatcher (crash) AND live dispatchers (functional) — paper events silently lost while live continues.
+- **Why not surfaced earlier**: T-218b plan analysis 2026-05-08 incorrectly claimed "PaperExchange synthetic-fill flow does NOT emit ExecutionEvent for open fills via stream_executions (only SL/TP synthetic fills emit). Bug dormant in paper mode" — this was reasoning, NOT code-cited evidence. Direct reading of `paper/adapter.py:820-831` shows `_persist_open` does emit on open. Paper had its own (different) crash path. T-218c addresses paper-mode independently of T-218b's H-030 live-mode fix.
+- **Fix shape per operator OQ-1=A + OQ-2=A + OQ-3=A**: `services/execution/app/pool.py` extends `AdapterPoolResult` dataclass with `paper_bot_ids: frozenset[BotId]` field; `build_adapter_pool` populates it during the existing per-bot loop when `bot_row.exchange_mode == "paper"`. `services/execution/app/main.py` dispatcher creation block consults this set via `if bot_id in adapter_pool.paper_bot_ids: continue`. The `orders.requests.<bot_id>` subscriber STAYS for paper bots (placement handler routes paper orders via PaperExchange independently).
+- **Tests**: NEW `test_build_adapter_pool_populates_paper_bot_ids` (positive build path) + NEW `test_lifespan_does_not_create_dispatcher_task_for_paper_bots` (lifespan regression guard with 4 explicit assertions: live dispatcher created + paper dispatcher NOT created + orders.requests subscribers preserved for both bots). 13 fake_pool_result fixture sites in test_app_factory.py updated with `paper_bot_ids = frozenset()` default. mock_adapter_pool_result conftest fixture updated.
+- **Repo baseline 2089 → 2091** (+2 net new tests; 0 regressions).
+- **§0.3 LOC**: ~13 src + ~138 tests = ~151 LOC delta in feat; far under cap.
+- **NEW H-031 hazard entry** in BRIEF §20 (after H-030; paired sibling — H-030 covers live-mode dispatcher contract, H-031 covers paper-mode contract; together complete dispatcher safety contract for both modes).
+- **NEW L-018 lesson** in `docs/review-lessons.md`: plan analysis claiming "bug dormant in <mode>" or "<mode> not affected by this issue" requires code-citation evidence (file:line + grep), NOT reasoning. Active control: plan-reviewer Gate 1 must BLOCK any "no-impact" claim about a code path without grep evidence; brief-reviewer + math-validator should similarly verify at commit time. Operator-driven audit caught this; review system should catch earlier at plan time.
+- **T-218b retrospective correction**: T-218b row in TASKS.md amended to flag the "bug dormant in paper mode" claim as INCORRECT and document the actual paper-mode crash path (per operator OQ-3 — single-line append within original T-218b row, not a new task entry).
+- **Plan**: `docs/plans/T-218c-fix-paper-dispatcher-skip.md` (APPROVED single-pass with 7 WG verbatim).
+- **Commits**: feat `c84c65b` on `fix/T-218c-paper-dispatcher-skip`; chore close pending.
+
+### 7-bug operator audit (2026-05-08) — progress tracker
+
+Operator submitted 7-item shipped-code bug audit 2026-05-08; chose Item 1 first per recommendation.
+
+| # | Title | Severity | Status |
+|---|-------|----------|--------|
+| 1 | Paper mode silent dispatcher kill | CRITICAL | DONE — `fix(T-218c-paper-dispatcher-skip)` shipped |
+| 2 | Signal-loss between dedup-check and publish | HIGH | DEFERRED → NEW T-537 outbox pattern (per OQ; combined with Item 7) |
+| 3 | position_state row identity could mismatch trade_id | HIGH | NEXT — `fix(T-217c-position-state-trade-id-guard)` |
+| 4 | Fill-price uses last-trade close (not VWAP) | MEDIUM | DEFERRED → NEW T-538 VWAP fill price |
+| 5 | Fill-price-fetch retry exception swallowing | HIGH | NEXT — `fix(T-216c-fill-price-retry-exception)` |
+| 6 | Reserved (audit detail not yet pulled) | TBD | TBD |
+| 7 | Outbox-publish reliability gap | HIGH | DEFERRED → NEW T-537 outbox pattern (combined with Item 2) |
+
+Operator-chosen fix order: Item 1 first (DONE this commit), then Item 5 (`fix(T-216c)` — fill-price retry exception swallowing), then Item 3 (`fix(T-217c)` — position_state trade_id guard). Items 2 + 7 → NEW T-537 outbox pattern (full F5 task; not a fix). Item 4 → NEW T-538 VWAP fill price (full F5 task; not a fix).
+
+### Next session pickup
+
+- **Next critical fix**: `fix(T-216c-fill-price-retry-exception)` for Item 5 (fill-price-fetch retry exception swallowing). Plan stage → plan-reviewer → implement → 4 gates → ff-merge.
+- **After T-216c**: `fix(T-217c-position-state-trade-id-guard)` for Item 3.
+- **After all 3 fixes**: NEW T-537 + T-538 plan stages (full F5 tasks; will count toward F5 phase counter as 27/47 + 28/47 — actual numbering depends on TASKS.md insertion order and operator OQ at plan time).
+- **F5 numbered tasks remaining** (separate from fixes): T-516a2 (UI routes for paper trades), T-516b (shadow variants section), T-518..T-521 (existing F5 backend polish), T-524..T-536 (pre-live operational hardening per ADR-0011), T-522 close-out + Live-ready sign-off. Most can resume after current fix cluster lands.
+
 ## 2026-05-08 (late-night X — fix(T-218b-open-fill-qty-bug) CRITICAL pre-live blocker shipped; H-030 NEW hazard + L-017 NEW lesson)
 
 **F5 phase counter UNCHANGED at 26/47** (fix() commits don't count toward F5 numbered task counter; mirror `fix(T-511b2a)` precedent).
