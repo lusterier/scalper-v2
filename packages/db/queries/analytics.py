@@ -66,7 +66,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, cast
 
 from packages.core import idempotent, non_idempotent
 from packages.core.types import (
@@ -82,7 +83,6 @@ from packages.core.types import (
 
 if TYPE_CHECKING:
     from datetime import datetime
-    from decimal import Decimal
     from uuid import UUID
 
     import asyncpg
@@ -1901,6 +1901,132 @@ async def copy_paper_trades_to_backtest(
     )
     # asyncpg returns "INSERT 0 N" command tag.
     return int(result.split()[-1])
+
+
+# ---------------------------------------------------------------------------
+# T-508 — `--compare run_A run_B` mode read helpers (BRIEF §12.2:1969-1970)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DivergingTradeRow:
+    """Per-trade diff projection for `--compare`: signal_id + (close_reason,
+    realized_pnl) for both runs. Per OQ-2=A diff scope is close_reason +
+    realized_pnl ONLY.
+    """
+
+    signal_id: int
+    a_close_reason: str | None
+    a_realized_pnl: Decimal | None
+    b_close_reason: str | None
+    b_realized_pnl: Decimal | None
+
+
+_SELECT_BACKTEST_RUN_SUMMARY_SQL = """
+    SELECT summary FROM backtest_runs WHERE id = $1
+"""
+
+_SELECT_DIVERGING_TRADES_SQL = """
+    SELECT
+        a.signal_id,
+        a.close_reason AS a_close_reason,
+        a.realized_pnl AS a_realized_pnl,
+        b.close_reason AS b_close_reason,
+        b.realized_pnl AS b_realized_pnl
+    FROM backtest_trades a
+    INNER JOIN backtest_trades b ON a.signal_id = b.signal_id
+    WHERE a.run_id = $1
+      AND b.run_id = $2
+      AND a.signal_id IS NOT NULL
+      AND (
+          COALESCE(a.close_reason, '') != COALESCE(b.close_reason, '')
+          OR a.realized_pnl IS DISTINCT FROM b.realized_pnl
+      )
+    ORDER BY a.signal_id
+"""
+
+_COUNT_COMMON_SIGNALS_SQL = """
+    SELECT COUNT(*) AS n
+    FROM backtest_trades a
+    INNER JOIN backtest_trades b ON a.signal_id = b.signal_id
+    WHERE a.run_id = $1
+      AND b.run_id = $2
+      AND a.signal_id IS NOT NULL
+"""
+
+
+async def select_backtest_run_summary(
+    conn: _DbExecutor,
+    *,
+    run_id: UUID,
+) -> dict[str, Any] | None:
+    """T-508: Return parsed ``backtest_runs.summary`` JSONB for run_id, or None.
+
+    Read-only; no idempotency decorator (matches existing read-helper convention
+    `select_backtest_run_by_id`). Returns None on missing row OR NULL summary;
+    caller (CLI) emits SystemExit(1) with operator-actionable message.
+
+    L-013 read-side N/A: CLI does NOT register JSONB codec; asyncpg returns
+    summary as `str` (text-mode); helper parses via `json.loads` to return
+    dict per public API contract. (Codec-registered consumer like
+    analytics-api would receive dict directly — handled defensively.)
+    """
+    row = await conn.fetchrow(_SELECT_BACKTEST_RUN_SUMMARY_SQL, run_id)
+    if row is None or row["summary"] is None:
+        return None
+    summary = row["summary"]
+    if isinstance(summary, str):
+        return cast("dict[str, Any]", json.loads(summary))
+    return cast("dict[str, Any]", summary)
+
+
+async def select_diverging_trades_for_compare(
+    conn: _DbExecutor,
+    *,
+    run_a: UUID,
+    run_b: UUID,
+) -> list[DivergingTradeRow]:
+    """T-508 OQ-2=A: SELECT JOIN backtest_trades by signal_id where outcome differs.
+
+    Outcome scope per OQ-2=A: close_reason OR realized_pnl. Decimal exact
+    equality (no tolerance). ``IS DISTINCT FROM`` handles NULL semantics
+    correctly (NULL == NULL via IS DISTINCT FROM; NULL != NULL via plain !=).
+
+    Read-only; no idempotency decorator. Returns list of DivergingTradeRow
+    ordered by signal_id ascending.
+    """
+    rows = await conn.fetch(_SELECT_DIVERGING_TRADES_SQL, run_a, run_b)
+    return [
+        DivergingTradeRow(
+            signal_id=int(r["signal_id"]),
+            a_close_reason=r["a_close_reason"],
+            a_realized_pnl=(
+                Decimal(r["a_realized_pnl"]) if r["a_realized_pnl"] is not None else None
+            ),
+            b_close_reason=r["b_close_reason"],
+            b_realized_pnl=(
+                Decimal(r["b_realized_pnl"]) if r["b_realized_pnl"] is not None else None
+            ),
+        )
+        for r in rows
+    ]
+
+
+async def count_common_signals_for_compare(
+    conn: _DbExecutor,
+    *,
+    run_a: UUID,
+    run_b: UUID,
+) -> int:
+    """T-508 WG#3: count common signal_ids between two runs (M for "N of M diverged").
+
+    M=0 → CLI emits "No common signals between run_A and run_B" message
+    instead of misleading "N of 0 common signals diverged" header.
+    """
+    row = await conn.fetchrow(_COUNT_COMMON_SIGNALS_SQL, run_a, run_b)
+    if row is None:
+        return 0
+    return int(row["n"])
 
 
 # ---------------------------------------------------------------------------

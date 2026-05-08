@@ -46,7 +46,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import yaml
 
@@ -59,7 +59,10 @@ from packages.core.types import BacktestStatus
 from packages.db.pool import create_pool
 from packages.db.queries.analytics import (
     copy_paper_trades_to_backtest,
+    count_common_signals_for_compare,
     insert_backtest_run,
+    select_backtest_run_summary,
+    select_diverging_trades_for_compare,
     update_backtest_run_completion,
     update_backtest_run_to_running,
 )
@@ -75,8 +78,6 @@ from services.execution.app.placement import make_per_bot_handler
 from services.strategy_engine.app.consumer import make_signal_handler
 
 if TYPE_CHECKING:
-    from uuid import UUID
-
     from packages.bus import BusProtocol
     from packages.exchange.paper.adapter import SlippageModel
     from packages.scoring import BotConfig
@@ -97,25 +98,36 @@ _DEFAULT_SLIPPAGE_PARAMS: dict[str, Decimal] = {"fixed_slippage_pct": Decimal("0
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="backtest",
-        description="Run a single-bot backtest replay (BRIEF §12.2:1949).",
+        description="Run a single-bot backtest replay or compare 2 runs (BRIEF §12.2:1949).",
     )
-    parser.add_argument("--bot", required=True, help="bot_id matching bots row")
+    # T-508: --compare mode flag (mutually exclusive with run-mode flags;
+    # validated manually in cli_main since argparse mutually_exclusive_group
+    # doesn't support multi-flag groups cleanly).
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("RUN_A_UUID", "RUN_B_UUID"),
+        default=None,
+        help="Compare 2 backtest runs by UUID (BRIEF §12.2:1969-1970)",
+    )
+    # Run-mode flags: NOT required at argparse level (T-508 dispatch logic).
+    parser.add_argument("--bot", default=None, help="bot_id matching bots row")
     parser.add_argument(
         "--from",
         dest="from_at",
-        required=True,
+        default=None,
         help="ISO-8601 UTC start (e.g. 2026-04-01T00:00:00+00:00)",
     )
     parser.add_argument(
         "--to",
         dest="to_at",
-        required=True,
+        default=None,
         help="ISO-8601 UTC end (must be > --from; tzinfo must be UTC)",
     )
     parser.add_argument(
         "--config-path",
         dest="config_path",
-        required=True,
+        default=None,
         type=Path,
         help="Path to bot YAML config file",
     )
@@ -164,6 +176,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional freeform notes column",
     )
     return parser
+
+
+def _parse_uuid(label: str, raw: str) -> UUID:
+    """T-508 WG#2: validate UUID syntax; SystemExit(2) with stderr on invalid."""
+    try:
+        return UUID(raw)
+    except ValueError as exc:
+        sys.stderr.write(f"--compare {label} value {raw!r} is not valid UUID\n")
+        raise SystemExit(2) from exc
 
 
 def _parse_utc_datetime(label: str, raw: str) -> datetime:
@@ -549,10 +570,173 @@ def _require_env(name: str) -> str:
     return value
 
 
+# --- T-508 --compare mode helpers + main_compare -------------------------------
+
+
+def _format_metric_delta(
+    a: Any,
+    b: Any,
+    *,
+    is_decimal: bool,
+    is_proportion: bool = False,
+) -> str:
+    """Format delta column cell: signed delta or 'n/a' (PF=None per ADR-0008)."""
+    if a is None or b is None:
+        return "n/a"
+    if is_decimal:
+        delta_dec = Decimal(str(b)) - Decimal(str(a))
+        sign = "+" if delta_dec >= 0 else ""
+        return f"{sign}{delta_dec}"
+    if is_proportion:
+        delta_f = float(b) - float(a)
+        sign = "+" if delta_f >= 0 else ""
+        return f"{sign}{round(delta_f, 4):.4f}"
+    # int (total_trades)
+    delta_i = int(b) - int(a)
+    sign = "+" if delta_i >= 0 else ""
+    return f"{sign}{delta_i}"
+
+
+def _format_metric_value(value: Any, *, is_proportion: bool = False) -> str:
+    """Render summary value: '—' for None (PF), formatted for type otherwise."""
+    if value is None:
+        return "—"
+    if is_proportion:
+        return f"{round(float(value), 4):.4f}"
+    return str(value)
+
+
+def _format_aggregate_diff(summary_a: dict[str, Any], summary_b: dict[str, Any]) -> str:
+    """T-508: 5-row aggregate metrics text-table (A / B / Δ).
+
+    Per ADR-0008: PF=None → '—' value cell, 'n/a' delta cell.
+    Per OQ-1=A text-only output.
+    """
+    rows = [
+        (
+            "total_trades",
+            summary_a.get("total_trades", 0),
+            summary_b.get("total_trades", 0),
+            False,
+            False,
+        ),
+        ("wr", summary_a.get("wr"), summary_b.get("wr"), False, True),
+        ("pnl", summary_a.get("pnl", "0"), summary_b.get("pnl", "0"), True, False),
+        ("pf", summary_a.get("pf"), summary_b.get("pf"), False, True),
+        ("mdd", summary_a.get("mdd", "0"), summary_b.get("mdd", "0"), True, False),
+    ]
+    lines = ["Aggregate metrics:"]
+    lines.append(f"  {'Metric':<14}  {'A':<12}  {'B':<12}  {'Δ (B-A)':<12}")
+    lines.append(f"  {'-' * 14}  {'-' * 12}  {'-' * 12}  {'-' * 12}")
+    for name, a, b, is_dec, is_prop in rows:
+        a_cell = _format_metric_value(a, is_proportion=is_prop)
+        b_cell = _format_metric_value(b, is_proportion=is_prop)
+        delta_cell = _format_metric_delta(a, b, is_decimal=is_dec, is_proportion=is_prop)
+        lines.append(f"  {name:<14}  {a_cell:<12}  {b_cell:<12}  {delta_cell:<12}")
+    return "\n".join(lines) + "\n"
+
+
+def _format_per_trade_diff(rows: list[Any], common_count: int) -> str:
+    """T-508 WG#3: per-trade diff text-table.
+
+    M=0 (no common signals) → "No common signals between run_A and run_B" line.
+    M>0, N=0 (rows match) → "No diverging trades found." line.
+    M>0, N>0 → header + table rows.
+    """
+    if common_count == 0:
+        return "No common signals between run_A and run_B; per-trade diff not applicable.\n"
+    n = len(rows)
+    if n == 0:
+        return "No diverging trades found.\n"
+    lines = [f"Per-trade differences ({n} of {common_count} common signals diverged):"]
+    lines.append(
+        f"  {'signal_id':<10}  {'A.close_reason':<15}  {'A.realized_pnl':<15}  "
+        f"{'B.close_reason':<15}  {'B.realized_pnl':<15}"
+    )
+    lines.append(f"  {'-' * 10}  {'-' * 15}  {'-' * 15}  {'-' * 15}  {'-' * 15}")
+    for r in rows:
+        a_reason = r.a_close_reason or ""
+        b_reason = r.b_close_reason or ""
+        a_pnl = str(r.a_realized_pnl) if r.a_realized_pnl is not None else ""
+        b_pnl = str(r.b_realized_pnl) if r.b_realized_pnl is not None else ""
+        lines.append(
+            f"  {r.signal_id:<10}  {a_reason:<15}  {a_pnl:<15}  {b_reason:<15}  {b_pnl:<15}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+async def main_compare(args: argparse.Namespace) -> int:
+    """T-508 composition root for --compare mode (read-only)."""
+    configure(level="INFO")
+    system_logger = get_logger("backtest", "system")
+
+    # WG#2: parse UUIDs BEFORE opening pool (syntax-only check).
+    run_a_id = _parse_uuid("run_A_uuid", args.compare[0])
+    run_b_id = _parse_uuid("run_B_uuid", args.compare[1])
+
+    db_url = args.db_url or _require_env("DATABASE_URL")
+    pool = await create_pool(db_url, application_name="backtest-cli-compare")
+    try:
+        async with pool.acquire() as conn:
+            summary_a = await select_backtest_run_summary(conn, run_id=run_a_id)
+            summary_b = await select_backtest_run_summary(conn, run_id=run_b_id)
+            if summary_a is None:
+                sys.stderr.write(f"run_id {run_a_id} not found in backtest_runs\n")
+                return 1
+            if summary_b is None:
+                sys.stderr.write(f"run_id {run_b_id} not found in backtest_runs\n")
+                return 1
+            diverging = await select_diverging_trades_for_compare(
+                conn,
+                run_a=run_a_id,
+                run_b=run_b_id,
+            )
+            common_count = await count_common_signals_for_compare(
+                conn,
+                run_a=run_a_id,
+                run_b=run_b_id,
+            )
+
+        sys.stdout.write(f"Backtest comparison: A={str(run_a_id)[:8]} vs B={str(run_b_id)[:8]}\n")
+        sys.stdout.write("=" * 64 + "\n\n")
+        sys.stdout.write(_format_aggregate_diff(summary_a, summary_b))
+        sys.stdout.write("\n")
+        sys.stdout.write(_format_per_trade_diff(diverging, common_count))
+        return 0
+
+    except Exception as exc:
+        system_logger.error("backtest.compare_failed", error=str(exc), exc_info=True)
+        return 1
+    finally:
+        await pool.close()
+
+
 def cli_main() -> int:
-    """argparse entry; parse args, run async loop, return exit code."""
+    """argparse entry; parse args, dispatch run-mode or compare-mode."""
     parser = _build_parser()
     args = parser.parse_args()
+    # T-508 dispatch.
+    if args.compare:
+        # WG#1: hard-fail on mode conflict (compare + any run-mode flag set).
+        run_mode_flags = (args.bot, args.from_at, args.to_at, args.config_path)
+        if any(f is not None for f in run_mode_flags):
+            sys.stderr.write(
+                "--compare is mutually exclusive with --bot/--from/--to/"
+                "--config-path; pick one mode\n"
+            )
+            return 2
+        # WG#1: same UUID twice → reject.
+        if args.compare[0] == args.compare[1]:
+            sys.stderr.write("--compare run_A_uuid must differ from run_B_uuid\n")
+            return 2
+        return asyncio.run(main_compare(args))
+    # Run-mode: validate all 4 required flags.
+    if not (args.bot and args.from_at and args.to_at and args.config_path):
+        sys.stderr.write(
+            "Run mode requires --bot, --from, --to, --config-path "
+            "(or use --compare for comparison mode)\n"
+        )
+        return 2
     args.from_at = _parse_utc_datetime("from", args.from_at)
     args.to_at = _parse_utc_datetime("to", args.to_at)
     if args.to_at <= args.from_at:
