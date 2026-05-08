@@ -83,7 +83,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     secrets: !reset null
     ports:
-      - "127.0.0.1:5432:5432"
+      # LAN-bound 0.0.0.0 (operator-led 2026-05-08): home LAN is trusted, no
+      # router port-forward exposes to internet, so direct pgAdmin access from
+      # other LAN PCs avoids SSH tunnel friction. NATS / analytics-api / Vite
+      # remain operator-discretion: NATS + analytics-api stay loopback (no
+      # external client need); Vite already LAN-bound via vite.config.ts host:
+      # "0.0.0.0" per chore(devx) 868e35b.
+      - "0.0.0.0:5432:5432"
 
   nats:
     volumes: !override

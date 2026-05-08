@@ -10,12 +10,24 @@ Local development orchestration: PostgreSQL + NATS (Docker Compose) + analytics-
 ```
 
 After `dev-up.sh`:
-- PostgreSQL — `127.0.0.1:5432` (user `scalper`, password from `.env` `POSTGRES_PASSWORD` — fallback `devpass`, DB `scalper`)
-- NATS — `127.0.0.1:4222`
-- analytics-api — `http://127.0.0.1:8000` (FastAPI + SSE)
+- PostgreSQL — `0.0.0.0:5432` (LAN-accessible per operator decision 2026-05-08 — home LAN trusted, no router port-forward; user `scalper`, password from `.env` `POSTGRES_PASSWORD` — fallback `devpass`, DB `scalper`)
+- NATS — `127.0.0.1:4222` (loopback — no external client need today)
+- analytics-api — `http://127.0.0.1:8000` (loopback — FastAPI + SSE; Vite proxies)
 - Vite — `http://127.0.0.1:5173` (local) **and** `http://192.168.100.100:5173` (LAN; per chore(devx) `868e35b` LAN-bind)
 
-Vite proxies `/api` + `/events` server-side to `127.0.0.1:8000` (per `ui/vite.config.ts`); backend is loopback-only per BRIEF §16.6.
+Vite proxies `/api` + `/events` server-side to `127.0.0.1:8000` (per `ui/vite.config.ts`); analytics-api + NATS stay loopback per BRIEF §16.6 (no public listener; LAN-bound services are operator discretion based on the trusted-LAN constraint).
+
+## Remote DB access (pgAdmin / DBeaver / psql from another LAN host)
+
+PostgreSQL is bound to `0.0.0.0:5432` so any host on the home LAN can connect directly without an SSH tunnel. Connection details:
+
+- Host: `192.168.100.100` (laborka LAN IP — verify with `ip -4 addr show eno1` if it shifts on DHCP renewal)
+- Port: `5432`
+- Database: `scalper`
+- Username: `scalper`
+- Password: value of `POSTGRES_PASSWORD` in `.env` (typically `devpass`)
+
+**Security note**: this stance assumes the LAN is trusted (no untrusted devices, no router port-forward to 5432). If the trust model changes (guest WiFi, port-forward), revert to `127.0.0.1:5432:5432` in `compose.dev.yaml` and use SSH tunnel via pgAdmin's Tunnel tab (host `192.168.100.100`, port `22`, OS user `luster`).
 
 ## Why a wrapper instead of full compose
 
