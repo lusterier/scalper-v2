@@ -77,8 +77,10 @@ from datetime import datetime  # noqa: TC003 — runtime annotation on frozen da
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
+from packages.bus import MessageEnvelope
+from packages.bus.payloads import TradeClosedPayload, subject_for_trade_closed
 from packages.bus.schemas import OhlcCandlePayload
-from packages.core import idempotent, non_idempotent, now_utc
+from packages.core import CorrelationId, idempotent, non_idempotent, now_utc
 from packages.exchange.errors import OrderRejected
 from packages.exchange.types import ExecutionEvent, OrderPlaceResult, Position, PositionEvent
 
@@ -90,7 +92,7 @@ if TYPE_CHECKING:
 
     import asyncpg
 
-    from packages.bus import BusProtocol, MessageEnvelope
+    from packages.bus import BusProtocol
     from packages.core import BotId
     from packages.core.replay_clock import ReplayClock
 
@@ -210,6 +212,7 @@ class PaperExchange:
         replay_clock: ReplayClock | None = None,
         seed_open_state: dict[str, Any] | None = None,
         terminal_callback: Callable[[TerminalEvent], Awaitable[None]] | None = None,
+        emit_parent_lifecycle: bool = False,
     ) -> None:
         if slippage_model not in _SLIPPAGE_MODELS:
             raise ValueError(
@@ -256,6 +259,13 @@ class PaperExchange:
         # persist + post-emit; shadow worker registers per-variant callback
         # for outcome classification. Live mode default None → no-op.
         self._terminal_callback = terminal_callback
+        # T-511b2 / ADR-0010: when True, _persist_close publishes
+        # TradeClosedPayload to ``trade.closed.<bot_id>`` (paper-side H-016
+        # cancel hook signal). Default False — variant PE in
+        # ``shadow_worker._run_shadow_variant`` MUST stay False (variant
+        # closing would loop back to ShadowWorker._on_parent_close cancel-
+        # ling itself). Primary bot PE in ``execution.app.pool`` wires True.
+        self._emit_parent_lifecycle = emit_parent_lifecycle
         # Per-instance state (§N6: not module-level globals).
         self._last_price: dict[str, Decimal] = {}
         self._last_candle: dict[str, OhlcCandlePayload] = {}
@@ -681,6 +691,7 @@ class PaperExchange:
         exchange_exec_id = f"paper-exec-{uuid.uuid4()}"
         correlation_id = f"paper-corr-{uuid.uuid4()}"
 
+        paper_trade_id: int | None = None
         if reduce_only:
             await self._persist_close(
                 symbol=symbol,
@@ -694,7 +705,7 @@ class PaperExchange:
                 correlation_id=correlation_id,
             )
         else:
-            await self._persist_open(
+            paper_trade_id = await self._persist_open(
                 symbol=symbol,
                 side=side,
                 qty=qty,
@@ -709,6 +720,7 @@ class PaperExchange:
         return OrderPlaceResult(
             exchange_order_id=exchange_order_id,
             placed_at=placed_at,
+            paper_trade_id=paper_trade_id,
         )
 
     async def _persist_open(
@@ -723,8 +735,13 @@ class PaperExchange:
         exchange_order_id: str,
         exchange_exec_id: str,
         correlation_id: str,
-    ) -> None:
-        """Decision #7 OPEN flow: single-tx INSERT chain across paper_* tables."""
+    ) -> int:
+        """Decision #7 OPEN flow: single-tx INSERT chain across paper_* tables.
+
+        Returns ``paper_trades.id`` (BIGSERIAL) so callers (T-511b2 / ADR-0010)
+        can populate ``OrderPlaceResult.paper_trade_id`` for paper-aware
+        shadow runtime parent_trade_id sourcing.
+        """
         existing = self._active_positions.get(symbol)
         if existing is not None and existing.get("side") is not None:
             raise OrderRejected("position_already_open")
@@ -823,6 +840,7 @@ class PaperExchange:
                 occurred_at=placed_at,
             )
         )
+        return trade_id
 
     async def _persist_close(
         self,
@@ -931,6 +949,37 @@ class PaperExchange:
                 occurred_at=placed_at,
             )
         )
+        # T-511b2 / ADR-0010: paper-side H-016 cancel hook signal. Variant PE
+        # (shadow_worker._run_shadow_variant) keeps default emit_parent_lifecycle=False
+        # so variant terminal does NOT emit (would loop back to ShadowWorker
+        # cancelling itself). Primary bot PE in pool.py:198 wires True.
+        if self._emit_parent_lifecycle:
+            try:
+                payload = TradeClosedPayload(
+                    parent_trade_id=trade_id,
+                    parent_kind="paper",
+                    bot_id=str(self._bot_id),
+                    closed_at=placed_at,
+                )
+                envelope = MessageEnvelope(
+                    correlation_id=CorrelationId(correlation_id),
+                    publisher="paper-exchange",
+                    payload=payload.model_dump(mode="json"),
+                )
+                await self._bus.publish(
+                    subject_for_trade_closed(str(self._bot_id)),
+                    envelope,
+                )
+            except Exception as exc:
+                logger.error(
+                    "paper.trade_closed_publish_failed",
+                    extra={
+                        "event": "paper.trade_closed_publish_failed",
+                        "bot_id": str(self._bot_id),
+                        "parent_trade_id": trade_id,
+                        "error": str(exc),
+                    },
+                )
 
     @staticmethod
     def _compute_realized_pnl(

@@ -34,10 +34,12 @@ not consumer concern). H-008 (signal TTL) bound by step 3a verbatim.
 from __future__ import annotations
 
 from datetime import timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from packages.bus import MessageEnvelope
 from packages.bus.errors import NotConnectedError, PublishError
+from packages.bus.payloads import VariantSpec
 from packages.bus.schemas import (
     OrderRequest,
     SignalRejected,
@@ -244,6 +246,22 @@ async def _publish_order_request(
 ) -> None:
     """Build OrderRequest from BotConfig.execution + signal; publish to orders.requests.<bot_id>."""
     side = _ACTION_TO_SIDE[signal.action]
+    # T-511b2 / ADR-0010: populate shadow runtime config when bot_config.shadow
+    # is enabled. Maps ShadowVariant (packages.scoring.types) → VariantSpec
+    # (packages.bus.payloads) — different types, identical structure.
+    # Float→Decimal cast on max_duration_hours via Decimal(str(value)) avoids
+    # binary-float roundoff per §5.3 / §N1. parent_kind mapping (BotConfig.exchange.mode
+    # → "live"/"paper") happens at execution-service emit site (placement_persist.py
+    # for live, placement.py paper-fork for paper) — NOT here; OrderRequest does
+    # not carry parent_kind.
+    shadow_variants_payload: list[VariantSpec] = []
+    shadow_max_duration_hours: Decimal | None = None
+    if bot_config.shadow is not None and bot_config.shadow.enabled:
+        shadow_variants_payload = [
+            VariantSpec(name=v.name, overrides=dict(v.overrides))
+            for v in bot_config.shadow.variants
+        ]
+        shadow_max_duration_hours = Decimal(str(bot_config.shadow.max_duration_hours))
     request = OrderRequest(
         bot_id=bot_id,
         signal_id=signal_id,
@@ -258,6 +276,8 @@ async def _publish_order_request(
         be_sl_level=bot_config.execution.be_sl_level,
         trail_pct=bot_config.execution.trail_pct,
         exchange_mode=bot_config.exchange.mode,
+        shadow_variants=shadow_variants_payload,
+        shadow_max_duration_hours=shadow_max_duration_hours,
     )
     out_envelope = MessageEnvelope(
         correlation_id=CorrelationId(envelope.correlation_id),

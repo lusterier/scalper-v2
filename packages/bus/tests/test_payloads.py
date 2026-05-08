@@ -1,4 +1,4 @@
-"""§N4 unit tests for :mod:`packages.bus.payloads` (T-511b2a / ADR-0010).
+"""§N4 unit tests for :mod:`packages.bus.payloads` (T-511b2a / T-511b2 / ADR-0010).
 
 Pin the wire-envelope contracts:
 
@@ -6,16 +6,27 @@ Pin the wire-envelope contracts:
   per T-511b2a (no default — strategy-engine producer MUST specify).
 * Pydantic Literal validation rejects unknown ``parent_kind`` values.
 * ``VariantSpec`` continues to round-trip Decimal overrides verbatim.
+* ``TradeClosedPayload`` requires ``parent_kind`` per T-511b2 H-016 hook
+  (symmetric s ShadowStartPayload per ADR-0010); ``closed_at`` UTC-validated.
+* L-002 active control: ``subject_for_shadow_start`` + ``subject_for_trade_closed``
+  helpers must be importable + correct.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 
-from packages.bus.payloads import ShadowStartPayload, VariantSpec
+from packages.bus.payloads import (
+    ShadowStartPayload,
+    TradeClosedPayload,
+    VariantSpec,
+    subject_for_shadow_start,
+    subject_for_trade_closed,
+)
 
 
 def test_shadow_start_payload_parent_kind_required() -> None:
@@ -64,3 +75,67 @@ def test_shadow_start_payload_parent_kind_round_trip(parent_kind: str) -> None:
     restored = ShadowStartPayload.model_validate(raw)
     assert restored.parent_kind == parent_kind
     assert restored.parent_trade_id == 42
+
+
+# ---------------------------------------------------------------------------
+# T-511b2 / ADR-0010 — TradeClosedPayload (H-016 cancel hook envelope)
+# ---------------------------------------------------------------------------
+
+
+def test_subject_helpers_build_correct_subjects() -> None:
+    """L-002 active control: helper output verbatim correct."""
+    assert subject_for_shadow_start("alpha") == "shadow.start.alpha"
+    assert subject_for_trade_closed("alpha") == "trade.closed.alpha"
+
+
+@pytest.mark.parametrize("parent_kind", ["live", "paper"])
+def test_trade_closed_payload_round_trip(parent_kind: str) -> None:
+    """TradeClosedPayload round-trips through model_dump(mode='json') + model_validate;
+    closed_at preserves UTC offset."""
+    closed_at = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    original = TradeClosedPayload(
+        parent_trade_id=42,
+        parent_kind=parent_kind,  # type: ignore[arg-type]
+        bot_id="alpha",
+        closed_at=closed_at,
+    )
+    raw = original.model_dump(mode="json")
+    restored = TradeClosedPayload.model_validate(raw)
+    assert restored.parent_trade_id == 42
+    assert restored.parent_kind == parent_kind
+    assert restored.closed_at == closed_at
+    assert restored.closed_at.utcoffset() == closed_at.utcoffset()
+
+
+def test_trade_closed_payload_parent_kind_required() -> None:
+    """parent_kind has no default — Pydantic ValidationError when omitted."""
+    with pytest.raises(ValidationError, match="parent_kind"):
+        TradeClosedPayload(  # type: ignore[call-arg]
+            parent_trade_id=42,
+            bot_id="alpha",
+            closed_at=datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC),
+        )
+
+
+def test_trade_closed_payload_rejects_naive_datetime() -> None:
+    """closed_at must be timezone-aware UTC (mirror :func:`_validate_utc`)."""
+    naive = datetime(2026, 5, 8, 12, 0, 0)  # noqa: DTZ001 — intentional for validation test
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        TradeClosedPayload(
+            parent_trade_id=42,
+            parent_kind="live",
+            bot_id="alpha",
+            closed_at=naive,
+        )
+
+
+def test_trade_closed_payload_rejects_non_utc_offset() -> None:
+    """closed_at non-zero UTC offset is rejected."""
+    cest = datetime(2026, 5, 8, 14, 0, 0, tzinfo=timezone(timedelta(hours=2)))
+    with pytest.raises(ValidationError, match="UTC"):
+        TradeClosedPayload(
+            parent_trade_id=42,
+            parent_kind="live",
+            bot_id="alpha",
+            closed_at=cest,
+        )

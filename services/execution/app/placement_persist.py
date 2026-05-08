@@ -34,9 +34,10 @@ T-216b2 surface (this revision):
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from packages.bus.dedup import DedupingConsumer
+from packages.bus.payloads import VariantSpec  # noqa: TC001 — runtime use in helper signature
 from packages.bus.schemas.orders import (
     OrderClosed,
     OrderPlaced,
@@ -75,6 +76,7 @@ __all__ = [
     "compute_tp_size",
     "emergency_close",
     "emit_post_commit_events",
+    "emit_post_commit_shadow_start_event",
     "opposite_side",
     "persist_placement_tx",
 ]
@@ -498,3 +500,55 @@ async def emit_post_commit_events(
                 event_type=event_type,
                 error=str(exc),
             )
+
+
+async def emit_post_commit_shadow_start_event(
+    *,
+    bus: BusProtocol,
+    bot_id: BotId,
+    correlation_id: CorrelationId,
+    parent_trade_id: int,
+    parent_kind: Literal["live", "paper"],
+    symbol: str,
+    side: Literal["buy", "sell"],
+    entry_price: Decimal,
+    qty: Decimal,
+    shadow_variants: list[VariantSpec],
+    bound_logger: BoundLogger,
+) -> None:
+    """Post-commit publisher for :class:`ShadowStartPayload` (T-511b2 / ADR-0010).
+
+    Best-effort: publish failure logged but does NOT raise — DB tx already
+    committed. ``parent_kind`` discriminator routes ``parent_trade_id`` to
+    either ``trades.id`` (live) or ``paper_trades.id`` (paper) per ADR-0010
+    + T-511b2a foundation. Mirror :func:`emit_post_commit_events` style
+    (no decorator; doc-comment idempotency note per existing convention).
+    """
+    from packages.bus import MessageEnvelope as _Env
+    from packages.bus.payloads import ShadowStartPayload, subject_for_shadow_start
+
+    payload = ShadowStartPayload(
+        parent_trade_id=parent_trade_id,
+        parent_kind=parent_kind,
+        bot_id=str(bot_id),
+        symbol=symbol,
+        side=side,
+        entry_price=entry_price,
+        qty=qty,
+        variants=shadow_variants,
+    )
+    try:
+        publish_envelope = _Env(
+            correlation_id=correlation_id,
+            publisher="execution-service",
+            payload=payload.model_dump(mode="json"),
+        )
+        await bus.publish(subject_for_shadow_start(str(bot_id)), publish_envelope)
+    except Exception as exc:
+        bound_logger.error(
+            "execution.shadow_start_publish_failed",
+            bot_id=bot_id,
+            parent_trade_id=parent_trade_id,
+            parent_kind=parent_kind,
+            error=str(exc),
+        )

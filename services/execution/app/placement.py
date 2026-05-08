@@ -71,6 +71,7 @@ from .placement_persist import (
     compute_tp_size,
     emergency_close,
     emit_post_commit_events,
+    emit_post_commit_shadow_start_event,
     persist_placement_tx,
 )
 
@@ -249,6 +250,25 @@ def make_per_bot_handler(
                 tp_price=tp_price,
                 tp_size=tp_size,
             )
+            # T-511b2 / ADR-0010: paper-mode shadow.start emit pred early-return.
+            # parent_trade_id sourced z OrderPlaceResult.paper_trade_id (PaperExchange
+            # populates v _persist_open). Conditional guard: empty variants list OR
+            # missing paper_trade_id (defenzívne pre Bybit-cross-contamination ktorá
+            # by sa nemala stať lebo Bybit nemal by ísť do paper-fork) skipuje emit.
+            if request.shadow_variants and place_result.paper_trade_id is not None:
+                await emit_post_commit_shadow_start_event(
+                    bus=bus,
+                    bot_id=bot_id,
+                    correlation_id=envelope.correlation_id,
+                    parent_trade_id=place_result.paper_trade_id,
+                    parent_kind="paper",
+                    symbol=request.symbol,
+                    side=request.side,
+                    entry_price=fill_price,
+                    qty=request.qty,
+                    shadow_variants=list(request.shadow_variants),
+                    bound_logger=logger,
+                )
             return
 
         # 8. SL set (§9.5 step 6, H-013 explicit Full). On any failure:
@@ -333,6 +353,24 @@ def make_per_bot_handler(
             sl_moved_payload=sl_moved_payload,
             bound_logger=logger,
         )
+
+        # 11.5 T-511b2 / ADR-0010 — live-mode shadow.start emit when bot_config
+        # has shadow.enabled (request.shadow_variants populated by strategy-engine
+        # consumer.py). parent_kind='live' — parent_trade_id references trades.id.
+        if request.shadow_variants:
+            await emit_post_commit_shadow_start_event(
+                bus=bus,
+                bot_id=bot_id,
+                correlation_id=envelope.correlation_id,
+                parent_trade_id=trade_id,
+                parent_kind="live",
+                symbol=request.symbol,
+                side=request.side,
+                entry_price=fill_price,
+                qty=request.qty,
+                shadow_variants=list(request.shadow_variants),
+                bound_logger=logger,
+            )
 
         # 12. T-217a — spawn PositionLifecycle monitor task post-emit (§9.5:1585-1592).
         # T-217b — adapter threaded for BE/trail set_trading_stop calls.

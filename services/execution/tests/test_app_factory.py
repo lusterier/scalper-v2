@@ -148,7 +148,87 @@ def test_lifespan_subscribes_to_orders_requests_per_bot(
     assert "orders.requests.alpha" in subscribe_subjects
     assert "orders.requests.beta" in subscribe_subjects
     assert "orders.requests.>" not in subscribe_subjects
-    assert mock_bus.subscribe.await_count == 2
+    # T-511b2 / ADR-0010: ShadowWorker.start() adds 2 wildcard subscriptions for
+    # H-016 (parent-close) + ShadowStartPayload (open emit) consumers.
+    assert "shadow.start.>" in subscribe_subjects
+    assert "trade.closed.>" in subscribe_subjects
+    assert mock_bus.subscribe.await_count == 4
+
+
+def test_lifespan_attaches_shadow_worker_and_orders_shutdown_correctly(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-511b2 / ADR-0010 (plan test #15 + acceptance #12 BLOCKER 2 fix):
+    ShadowWorker constructed + state-attached + stop() runs AFTER bus.close()
+    in lifespan finally per main.py:300-330 existing convention."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+    from unittest.mock import call as _call
+
+    from services.execution.app.main import create_app
+
+    def _adapter() -> _MagicMock:
+        a = _MagicMock()
+        a.close = _AsyncMock()
+        return a
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _adapter()}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    # Track shutdown order via a shared call recorder. ShadowWorker is real
+    # (not mocked) so we assert on bus.close() vs shadow_worker.stop sequencing.
+    shutdown_order: list[str] = []
+    original_bus_close = mock_bus.close
+
+    async def _bus_close_recorder(*args: object, **kwargs: object) -> object:
+        shutdown_order.append("bus.close")
+        return await original_bus_close(*args, **kwargs)
+
+    mock_bus.close = _AsyncMock(side_effect=_bus_close_recorder)
+
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        # During lifespan-startup ShadowWorker is constructed + start()ed.
+        assert hasattr(app.state, "shadow_worker")
+        assert app.state.shadow_worker is not None
+        # Patch shadow_worker.stop to record its invocation order.
+        original_stop = app.state.shadow_worker.stop
+
+        async def _stop_recorder() -> None:
+            shutdown_order.append("shadow_worker.stop")
+            await original_stop()
+
+        app.state.shadow_worker.stop = _stop_recorder
+    # After context manager exit, lifespan finally has run.
+    assert "bus.close" in shutdown_order
+    assert "shadow_worker.stop" in shutdown_order
+    # BLOCKER 2 fix: bus.close runs BEFORE shadow_worker.stop.
+    assert shutdown_order.index("bus.close") < shutdown_order.index("shadow_worker.stop"), (
+        f"shadow_worker.stop must run AFTER bus.close; got order {shutdown_order}"
+    )
+    _call  # silence unused import
 
 
 def test_lifespan_subscribes_each_bot_with_handler_wrapped_in_OrderRequestDedupConsumer(
@@ -194,10 +274,18 @@ def test_lifespan_subscribes_each_bot_with_handler_wrapped_in_OrderRequestDedupC
     app = create_app(settings=settings)  # type: ignore[arg-type]
     with TestClient(app):
         pass
-    # Each subscribe call carries a handler whose __self__ is OrderRequestDedupConsumer.
-    handlers = [call.args[1] for call in mock_bus.subscribe.await_args_list]
-    assert len(handlers) == 2
-    for handler in handlers:
+    # Each per-bot orders.requests subscribe call carries a handler whose
+    # __self__ is OrderRequestDedupConsumer. T-511b2 / ADR-0010: ShadowWorker
+    # wildcard subscriptions (shadow.start.> + trade.closed.>) carry bound
+    # methods on ShadowWorker, NOT OrderRequestDedupConsumer — filter to
+    # orders.requests.* subjects only for this assertion.
+    orders_handlers = [
+        call.args[1]
+        for call in mock_bus.subscribe.await_args_list
+        if call.args[0].startswith("orders.requests.")
+    ]
+    assert len(orders_handlers) == 2
+    for handler in orders_handlers:
         assert isinstance(handler.__self__, OrderRequestDedupConsumer)
         assert handler.__name__ == "consume"
 

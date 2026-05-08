@@ -46,10 +46,14 @@ def _make_paper_exchange(
     pool: MagicMock | None = None,
     event_queue_maxsize: int = 1000,
     now: datetime | None = None,
+    emit_parent_lifecycle: bool = False,
+    bus: MagicMock | None = None,
 ) -> PaperExchange:
     """Construct PaperExchange with mock pool + frozen-time now_fn."""
-    bus = MagicMock()
-    bus.subscribe = AsyncMock()
+    if bus is None:
+        bus = MagicMock()
+        bus.subscribe = AsyncMock()
+        bus.publish = AsyncMock()
     fixed_now = now or datetime(2026, 4, 28, 12, 0, 0, tzinfo=UTC)
     return PaperExchange(
         seed_balance=Decimal("10000"),
@@ -61,6 +65,7 @@ def _make_paper_exchange(
         now_fn=lambda: fixed_now,
         pool=pool or _make_pool_mock(),
         event_queue_maxsize=event_queue_maxsize,
+        emit_parent_lifecycle=emit_parent_lifecycle,
     )
 
 
@@ -445,3 +450,171 @@ async def test_get_closed_pnl_cumulative_returns_decimal_zero_when_no_closed_tra
     total = await pe.get_closed_pnl_cumulative("test-bot")
     assert total == Decimal("0")
     assert isinstance(total, Decimal)
+
+
+# ---------------------------------------------------------------------------
+# T-511b2 / ADR-0010 — emit_parent_lifecycle ctor flag (paper close emit)
+# ---------------------------------------------------------------------------
+
+
+def test_paper_exchange_emit_parent_lifecycle_default_false() -> None:
+    """T-511b2 / ADR-0010: ctor flag defaults False — variant PE in shadow_worker
+    stays False; primary bot PE in pool.py:198 wires True."""
+    pe = _make_paper_exchange()
+    # Private state pin — variant PE must keep this False to avoid self-cancel
+    # loop where variant terminal triggers ShadowWorker._on_parent_close on
+    # the variant's own parent_trade_id.
+    assert pe._emit_parent_lifecycle is False
+
+
+async def test_paper_exchange_persist_close_publishes_trade_closed_when_flag_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-511b2 / ADR-0010: primary bot PE (emit_parent_lifecycle=True) publishes
+    TradeClosedPayload(parent_kind='paper') to ``trade.closed.<bot_id>`` post-commit."""
+    from packages.exchange.paper import persistence as paper_persistence
+
+    bus = MagicMock()
+    bus.subscribe = AsyncMock()
+    bus.publish = AsyncMock()
+    pe = _make_paper_exchange(emit_parent_lifecycle=True, bus=bus)
+    # Seed _active_positions so _persist_close finds an open position.
+    pe._active_positions["BTCUSDT"] = {
+        "trade_id": 99,
+        "side": "buy",
+        "qty": Decimal("0.001"),
+        "entry_price": Decimal("65000"),
+        "entry_fee": Decimal("0"),
+        "fees_paid": Decimal("0"),
+        "sl_price": None,
+        "tp_price": None,
+        "tp_size": None,
+        "tpsl_mode": "Full",
+        "tp_hit": False,
+        "realized_pnl": Decimal("0"),
+    }
+    # Stub persistence calls so _persist_close reaches the publish branch.
+    monkeypatch.setattr(paper_persistence, "insert_paper_order", AsyncMock(return_value=200))
+    monkeypatch.setattr(paper_persistence, "insert_paper_execution", AsyncMock())
+    monkeypatch.setattr(paper_persistence, "close_paper_trade", AsyncMock())
+    monkeypatch.setattr(paper_persistence, "delete_paper_position", AsyncMock())
+    closed_at = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    await pe._persist_close(
+        symbol="BTCUSDT",
+        side="sell",
+        qty=Decimal("0.001"),
+        fill_price=Decimal("65500"),
+        fee=Decimal("0"),
+        placed_at=closed_at,
+        exchange_order_id="paper-close-1",
+        exchange_exec_id="paper-exec-1",
+        correlation_id="paper-corr-1",
+    )
+    # Assert publish to trade.closed.<bot_id> with parent_kind='paper'.
+    publish_calls = bus.publish.await_args_list
+    matching = [c for c in publish_calls if c.args[0] == "trade.closed.test-bot"]
+    assert len(matching) == 1, f"expected 1 trade.closed publish; got {len(matching)}"
+    envelope = matching[0].args[1]
+    assert envelope.payload["parent_trade_id"] == 99
+    assert envelope.payload["parent_kind"] == "paper"
+    assert envelope.publisher == "paper-exchange"
+    # WG#8 negative assertion: dispatcher's reconcile_close path queries live-only
+    # `position_state` table → returns None pre paper-bot trade → close-trigger
+    # blok v dispatcher.py:237-256 sa nedosiahne → `emit_post_commit_close_event`
+    # NEemituje TradeClosedPayload(parent_kind='live'). Architectural bypass
+    # pin: ak by sa to v budúcnosti zmenilo, paper-bot trade close by produkoval
+    # duplicate event (jeden z PE _persist_close + jeden z dispatcher path).
+    live_calls = [
+        c
+        for c in publish_calls
+        if c.args[0] == "trade.closed.test-bot" and c.args[1].payload.get("parent_kind") == "live"
+    ]
+    assert live_calls == [], (
+        "duplicate TradeClosedPayload publish — paper bot reached dispatcher "
+        "path AND PE _persist_close (architectural bypass regression)"
+    )
+
+
+async def test_paper_exchange_place_market_order_populates_paper_trade_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-511b2 / ADR-0010 (acceptance #4 + plan test #18): place_market_order returns
+    OrderPlaceResult.paper_trade_id sourced from insert_paper_trade — used at
+    placement.py:240-252 paper-fork to seed ShadowStartPayload.parent_trade_id."""
+    from packages.exchange.paper import persistence as paper_persistence
+
+    pe = _make_paper_exchange()
+    # Seed _last_price + _last_candle so place_market_order doesn't ValueError.
+    pe._last_price["BTCUSDT"] = Decimal("65000")
+    from packages.bus.schemas import OhlcCandlePayload
+
+    pe._last_candle["BTCUSDT"] = OhlcCandlePayload(
+        symbol="BTCUSDT",
+        bucket_start=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+        open=Decimal("64950"),
+        high=Decimal("65010"),
+        low=Decimal("64940"),
+        close=Decimal("65000"),
+        volume=Decimal("100"),
+        is_closed=True,
+    )
+    # Stub paper persistence; insert_paper_trade returns fixed id.
+    monkeypatch.setattr(paper_persistence, "insert_paper_order", AsyncMock(return_value=200))
+    monkeypatch.setattr(paper_persistence, "insert_paper_trade", AsyncMock(return_value=777))
+    monkeypatch.setattr(paper_persistence, "insert_paper_execution", AsyncMock())
+    monkeypatch.setattr(paper_persistence, "insert_paper_position", AsyncMock())
+    result = await pe.place_market_order(
+        symbol="BTCUSDT",
+        side="buy",
+        qty=Decimal("0.001"),
+    )
+    assert result.paper_trade_id == 777
+
+
+async def test_paper_exchange_persist_close_no_publish_when_flag_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-511b2 / ADR-0010: variant PE (default emit_parent_lifecycle=False) does
+    NOT publish — prevents shadow self-cancel loop where variant's own
+    terminal would trigger _on_parent_close cancelling itself."""
+    from packages.exchange.paper import persistence as paper_persistence
+
+    bus = MagicMock()
+    bus.subscribe = AsyncMock()
+    bus.publish = AsyncMock()
+    pe = _make_paper_exchange(emit_parent_lifecycle=False, bus=bus)
+    pe._active_positions["BTCUSDT"] = {
+        "trade_id": 99,
+        "side": "buy",
+        "qty": Decimal("0.001"),
+        "entry_price": Decimal("65000"),
+        "entry_fee": Decimal("0"),
+        "fees_paid": Decimal("0"),
+        "sl_price": None,
+        "tp_price": None,
+        "tp_size": None,
+        "tpsl_mode": "Full",
+        "tp_hit": False,
+        "realized_pnl": Decimal("0"),
+    }
+    monkeypatch.setattr(paper_persistence, "insert_paper_order", AsyncMock(return_value=200))
+    monkeypatch.setattr(paper_persistence, "insert_paper_execution", AsyncMock())
+    monkeypatch.setattr(paper_persistence, "close_paper_trade", AsyncMock())
+    monkeypatch.setattr(paper_persistence, "delete_paper_position", AsyncMock())
+    closed_at = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    await pe._persist_close(
+        symbol="BTCUSDT",
+        side="sell",
+        qty=Decimal("0.001"),
+        fill_price=Decimal("65500"),
+        fee=Decimal("0"),
+        placed_at=closed_at,
+        exchange_order_id="paper-close-1",
+        exchange_exec_id="paper-exec-1",
+        correlation_id="paper-corr-1",
+    )
+    # NO trade.closed publish — variant PE silent.
+    trade_closed_calls = [
+        c for c in bus.publish.await_args_list if c.args[0] == "trade.closed.test-bot"
+    ]
+    assert trade_closed_calls == []

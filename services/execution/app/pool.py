@@ -203,6 +203,11 @@ def _construct_paper_adapter(
         bus=bus,
         slippage_params=slippage_params,
         pool=pool,
+        # T-511b2 / ADR-0010: primary bot PE emits TradeClosedPayload on
+        # paper-side close → ShadowWorker._on_parent_close cancels variants
+        # (H-016 hook). Variant PE in shadow_worker._run_shadow_variant
+        # keeps default False (avoids self-cancel loop).
+        emit_parent_lifecycle=True,
     )
     consumer_task = asyncio.create_task(
         adapter.start_consuming(),

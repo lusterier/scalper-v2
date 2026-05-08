@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from packages.bus import MessageEnvelope  # noqa: TC001 — runtime use in handler dispatch
-from packages.bus.payloads import ShadowStartPayload, VariantSpec
+from packages.bus.payloads import ShadowStartPayload, TradeClosedPayload, VariantSpec
 from packages.bus.schemas import OhlcCandlePayload
 from packages.core import BotId
 from packages.core.types import ShadowVariantTerminal
@@ -118,25 +118,68 @@ class ShadowWorker:
         self._clock = clock
         self._active_tasks: dict[int, list[asyncio.Task[None]]] = {}
         self._shadow_start_sub: object | None = None
+        # T-511b2 / ADR-0010: H-016 parent-close cancellation hook subscription.
+        # Subscribed in start(); torn down in stop(). Mode-agnostic — both
+        # live (reconcile.emit_post_commit_close_event) and paper
+        # (PaperExchange._persist_close) producers publish on this topic.
+        self._trade_closed_sub: object | None = None
 
     async def start(self) -> None:
-        """Subscribe to ``shadow.start.>`` wildcard. Idempotent."""
-        if self._shadow_start_sub is not None:
-            return
-        self._shadow_start_sub = await self._bus.subscribe(
-            "shadow.start.>", self._on_shadow_start_envelope
-        )
+        """Subscribe to ``shadow.start.>`` + ``trade.closed.>`` wildcards. Idempotent.
+
+        L-002 exempt: consumer-side wildcard subscriptions ('.>' subjects) sú
+        concrete usage, NOT f-string interpolation. Helpers (subject_for_*) sú
+        vyžadované len pre producer-side per-bot subject construction.
+        """
+        if self._shadow_start_sub is None:
+            self._shadow_start_sub = await self._bus.subscribe(
+                "shadow.start.>", self._on_shadow_start_envelope
+            )
+        if self._trade_closed_sub is None:
+            self._trade_closed_sub = await self._bus.subscribe(
+                "trade.closed.>", self._on_parent_close_envelope
+            )
 
     async def stop(self) -> None:
         """Bus-unsubscribe + cancel all in-flight variant tasks. Idempotent."""
         if self._shadow_start_sub is not None:
             await _unsubscribe(self._shadow_start_sub)
             self._shadow_start_sub = None
+        if self._trade_closed_sub is not None:
+            await _unsubscribe(self._trade_closed_sub)
+            self._trade_closed_sub = None
         for tasks in list(self._active_tasks.values()):
             for task in tasks:
                 if not task.done():
                     task.cancel()
         self._active_tasks.clear()
+
+    async def _on_parent_close_envelope(self, envelope: MessageEnvelope) -> None:
+        """NATS handler: parse :class:`TradeClosedPayload` → dispatch typed handler."""
+        payload = TradeClosedPayload.model_validate(envelope.payload)
+        await self._on_parent_close(payload)
+
+    async def _on_parent_close(self, payload: TradeClosedPayload) -> None:
+        """Cancel all in-flight variant tasks for the closing parent trade.
+
+        Per BRIEF §20 H-016 policy: when parent trade closes, cancel all child
+        variant tasks. Each cancelled task's H-016 try/finally finalizer
+        (T-511b1 shipped at :meth:`_run_shadow_variant`) handles its own
+        bus_unsubscribe + registry cleanup. Cancel-only (no await) — duplicate
+        close events fire ``.cancel()`` on already-cancelled tasks (no-op).
+        Single-thread asyncio invariant — no locking needed (registry mutation
+        in finally vs. iteration here is atomic at the event-loop scheduler
+        boundary).
+
+        ``payload.parent_kind`` is informational only (logging/metrics);
+        cancellation logic depends only on ``parent_trade_id`` (registry key).
+        """
+        tasks = self._active_tasks.get(payload.parent_trade_id)
+        if not tasks:
+            return
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
     async def _on_shadow_start_envelope(self, envelope: MessageEnvelope) -> None:
         """NATS handler: parse envelope → dispatch to typed handler."""

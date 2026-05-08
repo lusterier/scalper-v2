@@ -33,7 +33,9 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal  # noqa: TC003 — runtime annotation on Pydantic Decimal fields
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+
+from packages.bus.payloads import VariantSpec  # noqa: TC001 — runtime use in Pydantic validation
 
 __all__ = [
     "OrderClosed",
@@ -73,7 +75,14 @@ def _validate_utc(value: datetime) -> datetime:
 
 
 class OrderRequest(BaseModel):
-    """§8.4 line 1319 ``orders.requests.<bot_id>`` payload, frozen."""
+    """§8.4 line 1319 ``orders.requests.<bot_id>`` payload, frozen.
+
+    ``schema_version`` stays ``"1.0"`` despite T-511b2 additive
+    ``shadow_variants`` + ``shadow_max_duration_hours`` fields — defaults
+    are present, no ``extra="forbid"`` on this model so old payloads still
+    validate. Future breaking changes (rename / type narrow / required
+    field) bump to ``"2.0"``.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -92,6 +101,14 @@ class OrderRequest(BaseModel):
     be_sl_level: Decimal
     trail_pct: Decimal
     exchange_mode: Literal["live", "testnet", "paper"]
+    # T-511b2 / ADR-0010: shadow runtime config carried from strategy-engine
+    # producer (which reads BotConfig.shadow). Empty list = shadow disabled.
+    shadow_variants: list[VariantSpec] = Field(default_factory=list)
+    # Per-bot ceiling; consumed in T-512+ for restart-recovery TTL bound.
+    # T-511b2 plumbs the field through wire schema; per-variant
+    # max_duration_hours from VariantSpec.overrides remains the active
+    # ceiling source at shadow_worker.py:171.
+    shadow_max_duration_hours: Decimal | None = None
 
 
 class OrderEventBase(BaseModel):

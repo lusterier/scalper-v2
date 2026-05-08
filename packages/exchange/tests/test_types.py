@@ -47,8 +47,15 @@ def test_order_place_result_uses_slots() -> None:
 
 
 def test_order_place_result_field_set() -> None:
+    """T-511b2 / ADR-0010: paper_trade_id added (default None; PaperExchange populates)."""
     fields = {f.name for f in dataclasses.fields(OrderPlaceResult)}
-    assert fields == {"exchange_order_id", "placed_at"}
+    assert fields == {"exchange_order_id", "placed_at", "paper_trade_id"}
+
+
+def test_order_place_result_paper_trade_id_default_none() -> None:
+    """Bybit-side construction (no paper_trade_id arg) → default None per ADR-0010."""
+    r = OrderPlaceResult(exchange_order_id="bybit-ord-1", placed_at=_now())
+    assert r.paper_trade_id is None
 
 
 # --- Position ---------------------------------------------------------------

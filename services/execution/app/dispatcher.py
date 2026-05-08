@@ -259,12 +259,19 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
 
         # AFTER tx commits — emit OrderClosed wrapped in MessageEnvelope per Q2
         # publish-after-persist (T-216b2 vzor; mirror placement.py:324-331).
+        # T-511b2 / ADR-0010: also publishes TradeClosedPayload for H-016 cancel hook.
         if close_event_payload is not None and close_event_correlation_id is not None:
+            # Narrow trade_id: close_event_payload is set only inside the
+            # close-trigger block which raises if trade_id is None, so reaching
+            # here implies trade_id is int. Assert pins the invariant for mypy.
+            assert trade_id is not None
             await emit_post_commit_close_event(
                 bus=self._bus,
                 bot_id=self._bot_id,
                 correlation_id=close_event_correlation_id,
                 order_closed_payload=close_event_payload,
+                trade_id=trade_id,
+                closed_at=message.executed_at,
                 bound_logger=self._bound_logger,
             )
 

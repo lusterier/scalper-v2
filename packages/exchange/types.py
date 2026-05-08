@@ -45,10 +45,17 @@ class OrderPlaceResult:
     way to read it. The client-side ``correlation_id`` from the upper
     layer is the canonical client-side key; ``order_link_id`` from the
     exchange ack is informational and intentionally not surfaced.
+
+    ``paper_trade_id`` is populated by :class:`PaperExchange` from
+    ``insert_paper_trade`` return (T-511b2 / ADR-0010 paper-aware shadow
+    runtime); Bybit adapter leaves the default ``None``. Consumed by
+    ``placement.py:240-252`` paper-fork to source ``parent_trade_id`` for
+    ``ShadowStartPayload`` per ADR-0010 parent_kind discriminator.
     """
 
     exchange_order_id: str
     placed_at: datetime  # UTC; adapter constructs via packages.core.now_utc()
+    paper_trade_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

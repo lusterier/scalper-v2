@@ -267,7 +267,12 @@ async def test_reconcile_close_order_meta_missing_raises_runtime_error(
 
 
 async def test_emit_post_commit_close_event_wraps_payload_in_message_envelope() -> None:
-    """BLOCKER #2 fix — MessageEnvelope wrapping with correlation_id + publisher."""
+    """BLOCKER #2 fix — MessageEnvelope wrapping with correlation_id + publisher.
+
+    T-511b2 / ADR-0010: now publishes TWO envelopes — OrderClosed to
+    ``orders.events.<bot_id>`` (production wire) + TradeClosedPayload to
+    ``trade.closed.<bot_id>`` (internal H-016 cancel hook).
+    """
     bus = MagicMock()
     bus.publish = AsyncMock()
     payload = OrderClosed(
@@ -284,22 +289,34 @@ async def test_emit_post_commit_close_event_wraps_payload_in_message_envelope() 
         bot_id="alpha",
         correlation_id=CorrelationId("cid-1"),
         order_closed_payload=payload,
+        trade_id=42,
+        closed_at=_FIXED_NOW,
         bound_logger=MagicMock(),
     )
-    bus.publish.assert_awaited_once()
-    subject, envelope = bus.publish.await_args.args
-    assert subject == "orders.events.alpha"
-    # Envelope is MessageEnvelope wrapping payload + correlation_id + publisher.
+    assert bus.publish.await_count == 2
     from packages.bus import MessageEnvelope
 
-    assert isinstance(envelope, MessageEnvelope)
-    assert str(envelope.correlation_id) == "cid-1"
-    assert envelope.publisher == "execution-service"
-    assert envelope.payload["realized_pnl"] == "12.50"
+    # Publish 1: orders.events.<bot_id> with OrderClosed payload.
+    subject_1, envelope_1 = bus.publish.await_args_list[0].args
+    assert subject_1 == "orders.events.alpha"
+    assert isinstance(envelope_1, MessageEnvelope)
+    assert str(envelope_1.correlation_id) == "cid-1"
+    assert envelope_1.publisher == "execution-service"
+    assert envelope_1.payload["realized_pnl"] == "12.50"
+    # Publish 2: trade.closed.<bot_id> with TradeClosedPayload (H-016 cancel hook).
+    subject_2, envelope_2 = bus.publish.await_args_list[1].args
+    assert subject_2 == "trade.closed.alpha"
+    assert isinstance(envelope_2, MessageEnvelope)
+    assert envelope_2.payload["parent_trade_id"] == 42
+    assert envelope_2.payload["parent_kind"] == "live"
 
 
 async def test_emit_post_commit_close_event_publish_failure_logs_does_not_raise() -> None:
-    """Best-effort emit — publish failure logged but does NOT raise."""
+    """Best-effort emit — publish failure logged but does NOT raise.
+
+    T-511b2: per-publish try/except — first publish failure does NOT short-
+    circuit second; both error-event names land in logger.
+    """
     bus = MagicMock()
     bus.publish = AsyncMock(side_effect=RuntimeError("nats down"))
     logger = MagicMock()
@@ -318,7 +335,10 @@ async def test_emit_post_commit_close_event_publish_failure_logs_does_not_raise(
         bot_id="alpha",
         correlation_id=CorrelationId("cid-1"),
         order_closed_payload=payload,
+        trade_id=42,
+        closed_at=_FIXED_NOW,
         bound_logger=logger,
     )
     error_event_names = [c.args[0] for c in logger.error.call_args_list]
     assert "execution.event_publish_failed" in error_event_names
+    assert "execution.trade_closed_publish_failed" in error_event_names

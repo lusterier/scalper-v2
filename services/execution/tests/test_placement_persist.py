@@ -699,3 +699,89 @@ async def test_emit_post_commit_events_first_publish_failure_does_not_short_circ
     assert len(publish_calls) == 2
     log_keys = [call.args[0] for call in logger.error.call_args_list]
     assert "execution.event_publish_failed" in log_keys
+
+
+# ---------------------------------------------------------------------------
+# T-511b2 / ADR-0010 — emit_post_commit_shadow_start_event (live + paper)
+# ---------------------------------------------------------------------------
+
+
+async def test_emit_post_commit_shadow_start_publishes_envelope_live() -> None:
+    """T-511b2: emit publishes ShadowStartPayload(parent_kind='live') to shadow.start.<bot>."""
+    from packages.bus.payloads import VariantSpec
+    from services.execution.app.placement_persist import emit_post_commit_shadow_start_event
+
+    bus = _ok_bus()
+    await emit_post_commit_shadow_start_event(
+        bus=bus,
+        bot_id=BotId("alpha"),
+        correlation_id="cid-1",  # type: ignore[arg-type]
+        parent_trade_id=42,
+        parent_kind="live",
+        symbol="BTCUSDT",
+        side="buy",
+        entry_price=Decimal("65000"),
+        qty=Decimal("1"),
+        shadow_variants=[
+            VariantSpec(name="aggressive", overrides={"be_trigger": Decimal("0.003")})
+        ],
+        bound_logger=MagicMock(),
+    )
+    bus.publish.assert_awaited_once()
+    subject, envelope = bus.publish.await_args.args
+    assert subject == "shadow.start.alpha"
+    assert envelope.payload["parent_trade_id"] == 42
+    assert envelope.payload["parent_kind"] == "live"
+    assert envelope.payload["entry_price"] == "65000"
+    assert len(envelope.payload["variants"]) == 1
+
+
+async def test_emit_post_commit_shadow_start_publishes_envelope_paper() -> None:
+    """T-511b2: parent_kind='paper' for paper-mode parent trade."""
+    from packages.bus.payloads import VariantSpec
+    from services.execution.app.placement_persist import emit_post_commit_shadow_start_event
+
+    bus = _ok_bus()
+    await emit_post_commit_shadow_start_event(
+        bus=bus,
+        bot_id=BotId("alpha"),
+        correlation_id="cid-1",  # type: ignore[arg-type]
+        parent_trade_id=99,
+        parent_kind="paper",
+        symbol="BTCUSDT",
+        side="sell",
+        entry_price=Decimal("65000"),
+        qty=Decimal("1"),
+        shadow_variants=[VariantSpec(name="conservative", overrides={})],
+        bound_logger=MagicMock(),
+    )
+    bus.publish.assert_awaited_once()
+    _, envelope = bus.publish.await_args.args
+    assert envelope.payload["parent_trade_id"] == 99
+    assert envelope.payload["parent_kind"] == "paper"
+
+
+async def test_emit_post_commit_shadow_start_publish_failure_logs_does_not_raise() -> None:
+    """T-511b2: best-effort emit (DB tx already committed). Failure logged, NOT raised."""
+    from packages.bus.payloads import VariantSpec
+    from services.execution.app.placement_persist import emit_post_commit_shadow_start_event
+
+    bus = MagicMock()
+    bus.publish = AsyncMock(side_effect=RuntimeError("nats down"))
+    logger = MagicMock()
+    # Does NOT raise.
+    await emit_post_commit_shadow_start_event(
+        bus=bus,
+        bot_id=BotId("alpha"),
+        correlation_id="cid-1",  # type: ignore[arg-type]
+        parent_trade_id=42,
+        parent_kind="live",
+        symbol="BTCUSDT",
+        side="buy",
+        entry_price=Decimal("65000"),
+        qty=Decimal("1"),
+        shadow_variants=[VariantSpec(name="v1", overrides={})],
+        bound_logger=logger,
+    )
+    log_keys = [call.args[0] for call in logger.error.call_args_list]
+    assert "execution.shadow_start_publish_failed" in log_keys

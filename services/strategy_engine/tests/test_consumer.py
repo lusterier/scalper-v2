@@ -418,6 +418,50 @@ async def test_consumer_uses_bot_config_execution_section_for_order_request_fiel
     assert request.exchange_mode == bc.exchange.mode
 
 
+async def test_publish_order_request_empty_shadow_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-511b2 / ADR-0010: bot_config.shadow=None → OrderRequest.shadow_variants=[] +
+    shadow_max_duration_hours=None."""
+    bc = _bot_config()
+    assert bc.shadow is None  # default — no shadow block in fixture
+    handler, caps = _build_handler(bot_config=bc, monkeypatch=monkeypatch)
+    await handler(_envelope(_signal()))
+    request = OrderRequest.model_validate(caps["bus"].publish.await_args.args[1].payload)
+    assert request.shadow_variants == []
+    assert request.shadow_max_duration_hours is None
+
+
+async def test_publish_order_request_populates_shadow_fields_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-511b2 / ADR-0010: bot_config.shadow.enabled=True with 2 variants → 2 VariantSpec
+    entries on OrderRequest + shadow_max_duration_hours = Decimal("4")."""
+    from packages.scoring.types import ShadowConfig, ShadowVariant
+
+    bc = _bot_config().model_copy(
+        update={
+            "shadow": ShadowConfig(
+                enabled=True,
+                variants=[
+                    ShadowVariant(name="aggressive", overrides={"be_trigger": Decimal("0.003")}),
+                    ShadowVariant(name="conservative", overrides={"sl_pct": Decimal("0.01")}),
+                ],
+                max_duration_hours=4.0,
+            ),
+        },
+    )
+    handler, caps = _build_handler(bot_config=bc, monkeypatch=monkeypatch)
+    await handler(_envelope(_signal()))
+    request = OrderRequest.model_validate(caps["bus"].publish.await_args.args[1].payload)
+    assert len(request.shadow_variants) == 2
+    assert request.shadow_variants[0].name == "aggressive"
+    assert request.shadow_variants[0].overrides["be_trigger"] == Decimal("0.003")
+    assert request.shadow_variants[1].name == "conservative"
+    # Float→Decimal cast via Decimal(str(value)) per WG#5.3 idiom.
+    assert request.shadow_max_duration_hours == Decimal("4.0")
+
+
 async def test_invalid_envelope_payload_is_logged_and_dropped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

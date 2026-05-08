@@ -74,6 +74,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from apscheduler.events import EVENT_JOB_ERROR, JobExecutionEvent  # type: ignore[import-untyped]
@@ -98,6 +99,7 @@ from .health import router as health_router
 from .placement import make_per_bot_handler
 from .pool import build_adapter_pool
 from .restart import reconcile_on_startup
+from .shadow_worker import ShadowWorker
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -235,6 +237,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             dispatcher_tasks.append(task)
 
+        # 6.5. T-511b2 / ADR-0010 — ShadowWorker construction + start.
+        # Always-on (data-driven by per-bot bot_config.shadow.enabled YAML;
+        # bots without shadow emit no shadow.start.<bot_id> events → worker
+        # has zero work). Subscribes shadow.start.> + trade.closed.> wildcards.
+        # WG#9 / config.py: shadow_seed_balance_usd + shadow_fee_rate are
+        # service-wide (NOT per-bot) — shadow simulation isolated from paper-
+        # bot fee config. fixed_pct/0 slippage minimizes variant-vs-parent
+        # divergence (variant inherits parent's already-applied entry slippage
+        # via seed_open_state per T-511a).
+        shadow_worker = ShadowWorker(
+            bus=bus,
+            pool=pool,
+            seed_balance=settings.shadow_seed_balance_usd,
+            slippage_model="fixed_pct",
+            slippage_params={"fixed_slippage_pct": Decimal("0")},
+            fee_rate=settings.shadow_fee_rate,
+            clock=lambda: datetime.now(UTC),
+        )
+        await shadow_worker.start()
+
         # 7. T-220b — APScheduler-driven P&L audit (per ADR-0007 D1-D7).
         # Sub-account → adapter + bot_ids reverse mapping for audit job composition.
         sub_account_to_adapter: dict[str, object] = {}
@@ -288,6 +310,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.position_lifecycle_tasks = position_lifecycle_tasks
         app.state.closed_pnl_locks = closed_pnl_locks
         app.state.scheduler = scheduler
+        app.state.shadow_worker = shadow_worker
 
         logger.info(
             "service_started",
@@ -298,12 +321,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             # Reverse shutdown:
-            #   bus.close → position_lifecycle_tasks cancel (T-217a; monitors write
-            #   monitor-only fields, dispatcher writes fill-flow fields; column-disjoint
-            #   UPDATEs are MVCC-safe but ordering keeps shutdown's audit log monotonic) →
-            #   dispatcher_tasks cancel (consume from adapter.stream_*; must drain before
-            #   adapter.close pulls the WS) → ws_tasks cancel → adapter.close → pool.close.
+            #   bus.close → shadow_worker.stop (T-511b2 H-016 cancel hook
+            #   alongside lifecycle tasks; subscriptions drained by bus.close
+            #   so finalizer bus_unsubscribe is no-op) → position_lifecycle_tasks
+            #   cancel (T-217a; monitors write monitor-only fields, dispatcher
+            #   writes fill-flow fields; column-disjoint UPDATEs are MVCC-safe
+            #   but ordering keeps shutdown's audit log monotonic) →
+            #   dispatcher_tasks cancel (consume from adapter.stream_*; must
+            #   drain before adapter.close pulls the WS) → ws_tasks cancel →
+            #   adapter.close → pool.close.
             await bus.close()
+            await shadow_worker.stop()
             for task in position_lifecycle_tasks.values():
                 task.cancel()
             if position_lifecycle_tasks:

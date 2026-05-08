@@ -205,3 +205,63 @@ def test_subject_helpers_match_brief_section_8_format() -> None:
     assert subject_for_orders_request("alpha") == "orders.requests.alpha"
     assert subject_for_orders_event("alpha") == "orders.events.alpha"
     assert subject_for_orders_dlq("alpha") == "orders.dlq.alpha"
+
+
+# ---------------------------------------------------------------------------
+# T-511b2 / ADR-0010 — OrderRequest shadow_variants + shadow_max_duration_hours
+# ---------------------------------------------------------------------------
+
+
+def test_order_request_default_shadow_fields_empty() -> None:
+    """Bare ctor without shadow kwargs → shadow_variants=[] + shadow_max_duration_hours=None."""
+    request = OrderRequest(
+        bot_id="alpha",
+        signal_id=42,
+        symbol="BTCUSDT",
+        side="buy",
+        qty=Decimal("0.001"),
+        leverage=10,
+        sl_pct=Decimal("0.005"),
+        tp_pct=Decimal("0.015"),
+        tp_qty_pct=Decimal("0.5"),
+        be_trigger=Decimal("0.003"),
+        be_sl_level=Decimal("0.001"),
+        trail_pct=Decimal("0.002"),
+        exchange_mode="live",
+    )
+    assert request.shadow_variants == []
+    assert request.shadow_max_duration_hours is None
+    # Pre-existing schema_version stays "1.0" — additive non-breaking per WG#2.
+    assert request.schema_version == "1.0"
+
+
+def test_order_request_carries_shadow_variants_round_trip() -> None:
+    """OrderRequest with 2 VariantSpec entries round-trips preserving Decimal precision."""
+    from packages.bus.payloads import VariantSpec
+
+    request = OrderRequest(
+        bot_id="alpha",
+        signal_id=42,
+        symbol="BTCUSDT",
+        side="buy",
+        qty=Decimal("0.001"),
+        leverage=10,
+        sl_pct=Decimal("0.005"),
+        tp_pct=Decimal("0.015"),
+        tp_qty_pct=Decimal("0.5"),
+        be_trigger=Decimal("0.003"),
+        be_sl_level=Decimal("0.001"),
+        trail_pct=Decimal("0.002"),
+        exchange_mode="paper",
+        shadow_variants=[
+            VariantSpec(name="aggressive", overrides={"be_trigger": Decimal("0.003")}),
+            VariantSpec(name="conservative", overrides={"sl_pct": Decimal("0.010")}),
+        ],
+        shadow_max_duration_hours=Decimal("4.0"),
+    )
+    dumped = request.model_dump()
+    rebuilt = OrderRequest.model_validate(dumped)
+    assert len(rebuilt.shadow_variants) == 2
+    assert rebuilt.shadow_variants[0].name == "aggressive"
+    assert rebuilt.shadow_variants[0].overrides["be_trigger"] == Decimal("0.003")
+    assert rebuilt.shadow_max_duration_hours == Decimal("4.0")

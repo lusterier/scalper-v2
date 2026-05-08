@@ -107,3 +107,10 @@ class Settings(BaseSettings):
 
     # T-221 — post-restart reconciliation race-window (H-026 spec literal 60s).
     execution_reconcile_race_window_seconds: int = 60
+
+    # T-511b2 / ADR-0010 — ShadowWorker per-variant PaperExchange seed.
+    # NOT per-bot per BotConfig.shadow.fee_rate (deliberate — shadow simulation
+    # isolated from paper-bot fee config; allows shadow-only fee scenario
+    # testing). Future task can promote to per-bot YAML if a use case surfaces.
+    shadow_seed_balance_usd: Decimal = Decimal("10000")
+    shadow_fee_rate: Decimal = Decimal("0.0006")

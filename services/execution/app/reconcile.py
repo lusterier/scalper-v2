@@ -168,17 +168,24 @@ async def emit_post_commit_close_event(
     bot_id: str,
     correlation_id: CorrelationId,
     order_closed_payload: OrderClosed,
+    trade_id: int,
+    closed_at: datetime,
     bound_logger: BoundLogger,
 ) -> None:
-    """Post-commit publisher for ``OrderClosed`` (mirror T-216b2 ``emit_post_commit_events``).
+    """Post-commit publisher for ``OrderClosed`` + ``TradeClosedPayload`` (T-511b2).
 
-    Wraps payload in :class:`MessageEnvelope` with correlation_id + publisher
-    string per audit-grade event contract (§N2 / §8.4). Best-effort: publish
-    failure logged but does NOT raise — DB tx already committed; T-220 audit
-    catches missing event via DB-vs-NATS divergence.
+    Two publishes — OrderClosed to ``orders.events.<bot_id>`` (production wire)
+    + TradeClosedPayload to ``trade.closed.<bot_id>`` (internal H-016 cancel
+    hook per ADR-0010). Per-publish try/except (mirror placement_persist.py:466
+    WG#6) so first publish failure does NOT short-circuit second. Best-effort:
+    publish failures logged but do NOT raise — DB tx already committed; T-220
+    audit catches missing OrderClosed via DB-vs-NATS divergence.
     """
     from packages.bus import MessageEnvelope as _Env
+    from packages.bus.payloads import TradeClosedPayload, subject_for_trade_closed
 
+    # Publish 1: OrderClosed (production wire — analytics-api consumes for
+    # trading_events persistence + dashboard SSE).
     try:
         envelope = _Env(
             correlation_id=correlation_id,
@@ -191,5 +198,28 @@ async def emit_post_commit_close_event(
             "execution.event_publish_failed",
             bot_id=bot_id,
             event_type="order_closed",
+            error=str(exc),
+        )
+
+    # Publish 2: TradeClosedPayload (T-511b2 internal H-016 hook;
+    # parent_kind='live' — paper close emit lives in PaperExchange._persist_close).
+    try:
+        trade_closed_payload = TradeClosedPayload(
+            parent_trade_id=trade_id,
+            parent_kind="live",
+            bot_id=str(bot_id),
+            closed_at=closed_at,
+        )
+        trade_closed_envelope = _Env(
+            correlation_id=correlation_id,
+            publisher="execution-service",
+            payload=trade_closed_payload.model_dump(mode="json"),
+        )
+        await bus.publish(subject_for_trade_closed(str(bot_id)), trade_closed_envelope)
+    except Exception as exc:
+        bound_logger.error(
+            "execution.trade_closed_publish_failed",
+            bot_id=bot_id,
+            trade_id=trade_id,
             error=str(exc),
         )

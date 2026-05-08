@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from packages.bus import MessageEnvelope
-from packages.bus.payloads import ShadowStartPayload, VariantSpec
+from packages.bus.payloads import ShadowStartPayload, TradeClosedPayload, VariantSpec
 from packages.bus.schemas import OhlcCandlePayload
 from packages.core import BotId, CorrelationId
 from packages.core.types import ShadowVariantTerminal
@@ -544,3 +544,109 @@ def test_compute_trail_sl_price_long() -> None:
     assert _compute_trail_sl_price("buy", Decimal("66000"), Decimal("0.003")) == Decimal(
         "65802.000"
     )
+
+
+# ---------------------------------------------------------------------------
+# T-511b2 / ADR-0010 — parent-close H-016 cancellation hook
+# ---------------------------------------------------------------------------
+
+
+async def test_start_subscribes_to_trade_closed_wildcard() -> None:
+    """T-511b2: ShadowWorker.start() subscribes to ``trade.closed.>`` (in addition to T-511b1's
+    ``shadow.start.>``)."""
+    bus, subs_log, _ = _make_bus_with_log()
+    pool = MagicMock()
+    worker = ShadowWorker(
+        bus=bus,
+        pool=pool,
+        seed_balance=Decimal("10000"),
+        slippage_model="fixed_pct",
+        slippage_params={"fixed_slippage_pct": Decimal("0")},
+        fee_rate=Decimal("0.0006"),
+        clock=lambda: datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    await worker.start()
+    subjects = [subject for subject, _handler in subs_log]
+    assert "shadow.start.>" in subjects
+    assert "trade.closed.>" in subjects
+
+
+async def test_on_parent_close_cancels_active_tasks_for_trade_id() -> None:
+    """T-511b2: _on_parent_close fires .cancel() on every task in _active_tasks[trade_id]."""
+    bus, _, _ = _make_bus_with_log()
+    pool = MagicMock()
+    worker = ShadowWorker(
+        bus=bus,
+        pool=pool,
+        seed_balance=Decimal("10000"),
+        slippage_model="fixed_pct",
+        slippage_params={"fixed_slippage_pct": Decimal("0")},
+        fee_rate=Decimal("0.0006"),
+        clock=lambda: datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    task_a = MagicMock()
+    task_a.done = MagicMock(return_value=False)
+    task_a.cancel = MagicMock()
+    task_b = MagicMock()
+    task_b.done = MagicMock(return_value=False)
+    task_b.cancel = MagicMock()
+    worker._active_tasks[42] = [task_a, task_b]
+    payload = TradeClosedPayload(
+        parent_trade_id=42,
+        parent_kind="live",
+        bot_id="alpha",
+        closed_at=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    await worker._on_parent_close(payload)
+    task_a.cancel.assert_called_once()
+    task_b.cancel.assert_called_once()
+
+
+async def test_on_parent_close_no_op_when_trade_id_not_in_registry() -> None:
+    """T-511b2: _on_parent_close on unknown trade_id → no exception, no cancel attempted."""
+    bus, _, _ = _make_bus_with_log()
+    pool = MagicMock()
+    worker = ShadowWorker(
+        bus=bus,
+        pool=pool,
+        seed_balance=Decimal("10000"),
+        slippage_model="fixed_pct",
+        slippage_params={"fixed_slippage_pct": Decimal("0")},
+        fee_rate=Decimal("0.0006"),
+        clock=lambda: datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    payload = TradeClosedPayload(
+        parent_trade_id=999,  # unknown
+        parent_kind="paper",
+        bot_id="alpha",
+        closed_at=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    # Does NOT raise.
+    await worker._on_parent_close(payload)
+
+
+async def test_on_parent_close_skips_already_done_tasks() -> None:
+    """T-511b2: idempotent — cancelled-already tasks are not re-cancelled."""
+    bus, _, _ = _make_bus_with_log()
+    pool = MagicMock()
+    worker = ShadowWorker(
+        bus=bus,
+        pool=pool,
+        seed_balance=Decimal("10000"),
+        slippage_model="fixed_pct",
+        slippage_params={"fixed_slippage_pct": Decimal("0")},
+        fee_rate=Decimal("0.0006"),
+        clock=lambda: datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    task_done = MagicMock()
+    task_done.done = MagicMock(return_value=True)
+    task_done.cancel = MagicMock()
+    worker._active_tasks[42] = [task_done]
+    payload = TradeClosedPayload(
+        parent_trade_id=42,
+        parent_kind="live",
+        bot_id="alpha",
+        closed_at=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    await worker._on_parent_close(payload)
+    task_done.cancel.assert_not_called()

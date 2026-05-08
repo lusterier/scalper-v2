@@ -156,15 +156,26 @@ def test_paper_and_bybit_flat_position_have_same_field_nullability() -> None:
 
 
 def test_paper_and_bybit_orderplaceresult_field_set_matches() -> None:
-    """OrderPlaceResult shape parity — both adapters populate exchange_order_id + placed_at(UTC)."""
+    """OrderPlaceResult shape parity — both adapters populate exchange_order_id + placed_at(UTC).
+
+    T-511b2 / ADR-0010: ``paper_trade_id`` is an optional field with default
+    ``None``. Bybit adapter never populates it (live trade_id lives in
+    ``trades.id`` set by execution-service); PaperExchange populates from
+    ``insert_paper_trade`` return so paper-mode shadow runtime can source
+    parent_trade_id at placement.py paper-fork emit site.
+    """
     placed_at = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
     paper_result = OrderPlaceResult(exchange_order_id="paper-ord-xyz", placed_at=placed_at)
     bybit_result = OrderPlaceResult(exchange_order_id="bybit-ord-7b1c", placed_at=placed_at)
     paper_fields = {f.name for f in dataclasses.fields(paper_result)}
     bybit_fields = {f.name for f in dataclasses.fields(bybit_result)}
     assert paper_fields == bybit_fields
-    assert paper_fields == {"exchange_order_id", "placed_at"}
+    assert paper_fields == {"exchange_order_id", "placed_at", "paper_trade_id"}
     assert paper_result.placed_at.utcoffset() == bybit_result.placed_at.utcoffset()
+    # Default for both bare-ctor cases — Bybit adapter never sets it; PaperExchange
+    # populates only from internal insert_paper_trade. Defensive verification.
+    assert paper_result.paper_trade_id is None
+    assert bybit_result.paper_trade_id is None
 
 
 def test_paper_and_bybit_positionevent_share_field_set_with_position() -> None:
