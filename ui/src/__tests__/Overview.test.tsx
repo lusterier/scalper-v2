@@ -133,19 +133,23 @@ describe("Overview route (T-412)", () => {
   });
 
   it("Virtual balance tile renders placeholder per OQ-A1", async () => {
+    // UI redesign: subtitle split into F4+ badge + 'Coming soon' text.
     mockFetch.mockImplementation(defaultFetchImpl);
     renderApp();
     const tile = await screen.findByTestId("overview-tile-virtual-balance");
     expect(tile.textContent).toContain("—");
-    expect(tile.textContent).toContain("Coming F4+");
+    expect(tile.textContent).toContain("F4+");
+    expect(tile.textContent).toContain("Coming soon");
   });
 
   it("Alerts tile renders placeholder per OQ-B1", async () => {
+    // UI redesign: subtitle split into F4+ badge + 'Coming soon' text.
     mockFetch.mockImplementation(defaultFetchImpl);
     renderApp();
     const tile = await screen.findByTestId("overview-tile-alerts-(24h)");
     expect(tile.textContent).toContain("—");
-    expect(tile.textContent).toContain("Coming F4+");
+    expect(tile.textContent).toContain("F4+");
+    expect(tile.textContent).toContain("Coming soon");
   });
 
   it("query URL for /api/signals/ uses Z-suffix UTC timestamps (§N1 + WG#3 URL regex)", async () => {

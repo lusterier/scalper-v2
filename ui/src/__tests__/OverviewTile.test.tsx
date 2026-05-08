@@ -17,9 +17,11 @@ describe("OverviewTile", () => {
     expect(screen.queryByText("ignored")).not.toBeInTheDocument();
   });
 
-  it("renders subtitle 'Coming F4+' by default when placeholder=true", () => {
+  it("renders 'F4+' badge + 'Coming soon' subtitle by default when placeholder=true", () => {
+    // UI redesign: subtitle split into F4+ badge + 'Coming soon' text per terminal aesthetic.
     render(<OverviewTile title="Virtual balance" placeholder />);
     expect(screen.getByText("—")).toBeInTheDocument();
-    expect(screen.getByText("Coming F4+")).toBeInTheDocument();
+    expect(screen.getByText("F4+")).toBeInTheDocument();
+    expect(screen.getByText("Coming soon")).toBeInTheDocument();
   });
 });

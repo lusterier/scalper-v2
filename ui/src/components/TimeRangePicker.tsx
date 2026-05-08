@@ -11,7 +11,6 @@
 
 import * as React from "react";
 
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -67,39 +66,50 @@ export function TimeRangePicker({ value, onChange }: TimeRangePickerProps): Reac
   };
 
   return (
-    <div className="flex items-center gap-2">
-      {PRESETS.map((p) => (
-        <Button
-          key={p.key}
-          variant={value.preset === p.key ? "default" : "outline"}
-          size="sm"
-          onClick={() => handlePresetClick(p.key)}
+    <div className="flex items-center gap-1.5">
+      <div className="flex items-center rounded-lg border border-border bg-secondary p-1 gap-0.5">
+        {PRESETS.map((p) => (
+          <button
+            key={p.key}
+            onClick={() => handlePresetClick(p.key)}
+            className={cn(
+              "rounded-md px-3 py-1 text-xs font-trading font-bold tracking-wider transition-all duration-150",
+              value.preset === p.key
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent",
+            )}
+          >
+            {p.label}
+          </button>
+        ))}
+        <button
+          onClick={handleCustomClick}
+          className={cn(
+            "rounded-md px-3 py-1 text-xs font-trading font-bold tracking-wider transition-all duration-150",
+            value.preset === "custom"
+              ? "bg-primary text-primary-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground hover:bg-accent",
+          )}
         >
-          {p.label}
-        </Button>
-      ))}
-      <Button
-        variant={value.preset === "custom" ? "default" : "outline"}
-        size="sm"
-        onClick={handleCustomClick}
-      >
-        Custom
-      </Button>
+          Custom
+        </button>
+      </div>
+
       {value.preset === "custom" && (
-        <div className={cn("flex items-center gap-2")}>
+        <div className="flex items-center gap-2">
           <Input
             type="datetime-local"
             defaultValue={toDateTimeLocal(value.from)}
             onBlur={handleFromBlur}
-            className="h-9 w-auto"
+            className="h-8 w-auto border-border bg-secondary text-xs font-trading"
             aria-label="from"
           />
-          <span className="text-muted-foreground">→</span>
+          <span className="text-muted-foreground text-xs">→</span>
           <Input
             type="datetime-local"
             defaultValue={toDateTimeLocal(value.to)}
             onBlur={handleToBlur}
-            className="h-9 w-auto"
+            className="h-8 w-auto border-border bg-secondary text-xs font-trading"
             aria-label="to"
           />
         </div>

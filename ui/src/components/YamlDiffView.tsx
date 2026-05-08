@@ -41,8 +41,10 @@ function diffLines(a: string[], b: string[]): DiffOp[] {
   const n = b.length;
   const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
   for (let i = 1; i <= m; i++) {
+    const dpRow = dp[i]!;
+    const dpPrev = dp[i - 1]!;
     for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+      dpRow[j] = a[i - 1] === b[j - 1] ? dpPrev[j - 1]! + 1 : Math.max(dpPrev[j]!, dpRow[j - 1]!);
     }
   }
   // Backtrack to ordered raw ops
@@ -54,7 +56,7 @@ function diffLines(a: string[], b: string[]): DiffOp[] {
       raw.unshift({ kind: "equal", aLine: a[i - 1]!, bLine: b[j - 1]! });
       i--;
       j--;
-    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+    } else if (dp[i - 1]![j]! >= dp[i]![j - 1]!) {
       raw.unshift({ kind: "removed", aLine: a[i - 1]! });
       i--;
     } else {

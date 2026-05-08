@@ -18,33 +18,42 @@
  */
 
 :root.dark {
-  --background: 222 47% 11%;
-  --foreground: 210 40% 98%;
+  /* Base surfaces */
+  --background:   222 47% 5%;      /* #080c10 — deepest bg */
+  --foreground:   210 40% 88%;     /* #c8d8e8 — body text */
 
-  --card: 222 47% 13%;
-  --card-foreground: 210 40% 98%;
+  /* Cards / panels */
+  --card:         222 47% 7%;      /* #0a1118 */
+  --card-foreground: 210 40% 88%;
 
-  --popover: 222 47% 13%;
-  --popover-foreground: 210 40% 98%;
+  /* Popovers */
+  --popover:      222 47% 7%;
+  --popover-foreground: 210 40% 88%;
 
-  --primary: 210 100% 56%;
-  --primary-foreground: 222 47% 11%;
+  /* Brand accent — electric teal */
+  --primary:      160 100% 45%;    /* #00e5a0 */
+  --primary-foreground: 160 60% 8%;
 
-  --secondary: 217 33% 18%;
-  --secondary-foreground: 210 40% 98%;
+  /* Secondary surfaces */
+  --secondary:    217 33% 11%;     /* #0d1621 */
+  --secondary-foreground: 210 40% 88%;
 
-  --muted: 217 33% 18%;
-  --muted-foreground: 215 20% 65%;
+  /* Muted */
+  --muted:        217 33% 11%;
+  --muted-foreground: 215 20% 40%;  /* #3a5068 — subdued labels */
 
-  --accent: 217 33% 18%;
-  --accent-foreground: 210 40% 98%;
+  /* Accent (hover states) */
+  --accent:       217 33% 9%;      /* #0a1420 */
+  --accent-foreground: 210 40% 88%;
 
-  --destructive: 0 63% 50%;
+  /* Semantic */
+  --destructive:  0 63% 55%;
   --destructive-foreground: 210 40% 98%;
 
-  --border: 217 33% 22%;
-  --input: 217 33% 22%;
-  --ring: 210 100% 56%;
+  /* Borders */
+  --border:       217 33% 15%;     /* #1a2332 */
+  --input:        217 33% 15%;
+  --ring:         160 100% 45%;
 
   --radius: 0.5rem;
 }

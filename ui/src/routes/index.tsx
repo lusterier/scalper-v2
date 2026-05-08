@@ -133,7 +133,7 @@ function OverviewPage(): React.JSX.Element {
 
   return (
     <div className="space-y-0">
-      <header className="flex items-center justify-between gap-4 border-b border-border p-4">
+      <header className="flex items-center justify-between gap-4 border-b border-border bg-card px-5 py-3">
         <div className="flex-shrink-0">
           <BotSelector
             multi
@@ -226,14 +226,16 @@ interface SignalCountsProps {
 function SignalCounts({ received, accepted, rejected }: SignalCountsProps): React.JSX.Element {
   const fmt = (n: number | undefined): string => (n === undefined ? "—" : String(n));
   return (
-    <span className="font-mono">
-      <span data-testid="signals-received">{fmt(received)}</span>
-      <span className="px-1 text-muted-foreground">/</span>
-      <span data-testid="signals-accepted" className="text-green-400">
+    <span className="font-trading flex items-baseline gap-1">
+      <span data-testid="signals-received" className="text-2xl font-bold text-foreground">
+        {fmt(received)}
+      </span>
+      <span className="text-muted-foreground/50 text-lg">/</span>
+      <span data-testid="signals-accepted" className="text-2xl font-bold text-primary">
         {fmt(accepted)}
       </span>
-      <span className="px-1 text-muted-foreground">/</span>
-      <span data-testid="signals-rejected" className="text-red-400">
+      <span className="text-muted-foreground/50 text-lg">/</span>
+      <span data-testid="signals-rejected" className="text-2xl font-bold text-destructive">
         {fmt(rejected)}
       </span>
     </span>

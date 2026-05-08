@@ -10,12 +10,6 @@
 
 import * as React from "react";
 
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 interface OverviewTileProps {
@@ -37,13 +31,13 @@ export function OverviewTile({
 }: OverviewTileProps): React.JSX.Element {
   const body: React.ReactNode = (() => {
     if (loading) {
-      return <span className="text-muted-foreground">Loading…</span>;
+      return <span className="text-muted-foreground text-sm">Loading…</span>;
     }
     if (error !== undefined) {
       return <span className="text-red-400 text-sm">{error}</span>;
     }
     if (placeholder) {
-      return <span className="text-muted-foreground">—</span>;
+      return <span className="text-muted-foreground/30 font-trading text-2xl">—</span>;
     }
     return value;
   })();
@@ -51,20 +45,39 @@ export function OverviewTile({
   const effectiveSubtitle = placeholder ? (subtitle ?? "Coming F4+") : subtitle;
 
   return (
-    <Card data-testid={`overview-tile-${title.toLowerCase().replace(/\s+/g, "-")}`}>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className={cn("text-2xl font-semibold", placeholder && "text-muted-foreground")}>
-          {body}
-        </div>
-        {effectiveSubtitle !== undefined && (
-          <div className="mt-1 text-xs text-muted-foreground">{effectiveSubtitle}</div>
+    <div
+      data-testid={`overview-tile-${title.toLowerCase().replace(/\s+/g, "-")}`}
+      className="relative overflow-hidden rounded-xl border border-border bg-card px-4 py-3"
+    >
+      {/* Top accent line */}
+      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
+
+      {/* Title */}
+      <div className="mb-2.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+        {title}
+      </div>
+
+      {/* Value */}
+      <div
+        className={cn(
+          "font-trading text-2xl font-bold leading-none",
+          placeholder ? "text-muted-foreground/30" : "text-foreground",
         )}
-      </CardContent>
-    </Card>
+      >
+        {body}
+      </div>
+
+      {/* Subtitle */}
+      {effectiveSubtitle !== undefined && (
+        <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          {placeholder && (
+            <span className="rounded border border-border bg-secondary px-1.5 py-0.5 text-[9px] font-trading tracking-wider text-muted-foreground">
+              F4+
+            </span>
+          )}
+          {placeholder ? "Coming soon" : effectiveSubtitle}
+        </div>
+      )}
+    </div>
   );
 }

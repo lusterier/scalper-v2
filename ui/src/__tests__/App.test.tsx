@@ -26,7 +26,8 @@ describe("UI scaffold smoke tests", () => {
     renderApp();
     // Layout shell from __root.tsx — left nav heading. TanStack Router
     // resolves the route asynchronously on first paint; await via findBy.
-    expect(await screen.findByText("scalper-v2")).toBeInTheDocument();
+    // UI redesign: logo uppercase per terminal aesthetic (font-trading + tracking-widest).
+    expect(await screen.findByText("SCALPER-V2")).toBeInTheDocument();
   });
 
   it("displays the Overview route heading (T-412 rewrite)", async () => {

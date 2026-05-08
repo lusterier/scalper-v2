@@ -15,8 +15,8 @@ interface ConnectionDotProps {
 }
 
 const TONE_CLASS: Record<ConnectionStatus, string> = {
-  connected: "bg-green-500",
-  disconnected: "bg-red-500",
+  connected: "bg-primary",
+  disconnected: "bg-destructive",
   unknown: "bg-muted-foreground",
   connecting: "bg-yellow-500",
 };
@@ -34,7 +34,14 @@ export function ConnectionDot({ status }: ConnectionDotProps): React.JSX.Element
       title={TOOLTIP[status]}
       data-testid="connection-dot"
       data-status={status}
-      className={cn("inline-block h-3 w-3 rounded-full", TONE_CLASS[status])}
-    />
+      className={cn(
+        "relative inline-flex h-2 w-2 rounded-full",
+        TONE_CLASS[status],
+      )}
+    >
+      {status === "connected" && (
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-60" />
+      )}
+    </span>
   );
 }
