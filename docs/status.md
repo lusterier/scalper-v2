@@ -1,5 +1,40 @@
 # Session status
 
+## 2026-05-08 (late-night X — fix(T-218b-open-fill-qty-bug) CRITICAL pre-live blocker shipped; H-030 NEW hazard + L-017 NEW lesson)
+
+**F5 phase counter UNCHANGED at 26/47** (fix() commits don't count toward F5 numbered task counter; mirror `fix(T-511b2a)` precedent).
+
+### fix(T-218b-open-fill-qty-bug) — pre-live blocker
+
+- **All 4 review gates passed**: plan-reviewer single-pass APPROVE 2026-05-08 (10-item Write-time guidance) → drift-checker ON TRACK (10/10 WG verified) → brief-reviewer SHIP → math-validator VERIFIED (conditional-skip only; no new arithmetic; existing partial_tp/sl/trail/close arithmetic preserved bit-identical).
+- **Bug**: ExecutionDispatcher unconditionally called `update_position_state_after_fill(qty_delta=message.qty)` for ANY exec_type including 'open'. Placement tx (`placement_persist.py:419`) writes `remaining_qty=request.qty` at trade-open commit; WS execution event for open fill with `message.qty == request.qty` would zero remaining_qty → trigger close-flow → trade marked closed in DB while position open on exchange.
+- **Real-world impact (live/testnet)**: phantom close + cumulative-delta P&L drift + spurious shadow variant cancel + reconcile_orphan emergency_close. Bug dormant in paper mode (PaperExchange does NOT emit ExecutionEvent for open fills via stream_executions per analysis).
+- **Operator decision**: surgical patch as `fix(T-218b-...)` urgent-fix on master mirror `fix(T-511b2a)` precedent; NOT new F5 task. Operator-confirmed analysis 2026-05-08 + approved fix shape + suggested defensive close-trigger guard.
+- **Fix shape**: dispatcher.py wrap `update_position_state_after_fill` in `if exec_type != "open":`. `insert_execution` (audit row) + `update_trade_fees_incremental` (entry fee) STAY OUTSIDE. Defensive close-trigger guard: prepend `exec_type != "open" and` to existing `if ps_after.remaining_qty == Decimal("0"):` check.
+- **Tests**: existing `test_process_open_fill_orders_lookup_to_open_branch` fixed with realistic placement-time pre-fill (matching factory default `Decimal("5")`); 4 explicit assertions per L-017. NEW `test_process_open_fill_does_not_decrement_remaining_qty` regression guard. REPURPOSED former B1 test (encoded bug-as-expected) → renamed `test_process_open_fill_with_zero_remaining_qty_does_NOT_trigger_close` as defensive-guard pin (assertion FLIPPED to assert_not_called).
+
+### NEW H-030 hazard catalog entry (BRIEF §20)
+
+H-030 verbatim: "Open-fill must not decrement remaining_qty". Inserted after H-026 (H-027/H-028/H-029 reserved for ADR-0011 anticipated hazards per T-525/T-534/T-535 pre-live operational hardening cluster). H-030 is the first concrete hazard discovered post-ADR-0011.
+
+### NEW L-017 lesson (review-lessons.md)
+
+Pattern: Test fixtures using artificial "post-update" mock values to bypass downstream state-checks can hide bugs in the pre-update logic. Active control: state-mutation tests MUST use REALISTIC pre-mutation entering values (not artificial post-update placeholders) + assert BOTH "what was called" AND "what was NOT called" sides via explicit `assert_called_once` / `assert_not_called` on EVERY mutating helper. Plan-reviewer Gate 1 must flag fixtures with comments like "post-update non-zero". Brief-reviewer Gate 3 must grep `assert_not_called` count in tests touching `services/execution/` paths.
+
+### Watch-outs for next session
+
+- **fix(T-218b) closes a live-deployment blocker** — without this fix, live mode would have phantom-closed every trade on first open-fill WS event. T-525 / T-534 / T-535 (ADR-0011 anticipated hazards) likely have similar dormant-in-paper bugs that would need pre-live testnet validation.
+- **PaperExchange open-fill stream verification** — flagged as out-of-scope per fix WG#8 but should be verified at T-516a2 plan stage or T-525 plan stage. Question: does PaperExchange emit ExecutionEvent for OPEN fills (synthetic) via `stream_executions`? If yes, paper mode also affected by the same bug class. Analysis suggests no (only SL/TP synthetic fills emit) but explicit verification needed before live deployment.
+- **L-017 active control** strengthens future plan-reviewer + brief-reviewer for state-mutation tests. Plan-reviewer Gate 1 must flag artificial post-update mock values. Brief-reviewer Gate 3 must grep `assert_not_called` count in `services/execution/` test files.
+- **F5 next pickup** — T-516a2 (UI routes for paper-trade drill-down) + T-516b (shadow variants section in both routes). Then T-518..T-521 (existing F5 backend polish). Then T-524..T-536 (pre-live operational hardening per ADR-0011). Then T-522 close-out + Live-ready sign-off.
+
+### Lessons surfaced (2 today)
+
+- **L-017 (this session)**: artificial post-update mock values in state-mutation tests mask pre-update bugs. Active control above.
+- **No new calibration data point** — fix() tasks are surgical/specialized; calibration band of L-006/L-014/L-016 not applicable to bug-fix commits (which are scoped by bug semantic, not phase work-item).
+
+---
+
 ## 2026-05-08 (late-night IX — T-516a1 paper-trade analytics-api backend shipped; T-516 split into T-516a1 + T-516a2 + T-516b; backend mirror /api/trades/* 1:1)
 
 **F5 phase: 26/47 tasks done (~55%).** Master HEAD pre-merge `6c5365d` (chore for T-513b2). T-516 reorg 2026-05-08 split into T-516a1 (this; backend; DONE) + T-516a2 (UI routes + nav + shared component module; PENDING) + T-516b (shadow variants section in BOTH live + paper drill-down routes; original T-516 scope per BRIEF §13.6; PENDING) per L-007 + operator OQ-1/2/3=A 2026-05-08. Mirror T-512 + T-513 split precedent.

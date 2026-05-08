@@ -2813,6 +2813,16 @@ All with audit log entries.
 
 **Test.** `test_partial_non_5050_reconciliation_does_not_create_duplicate`.
 
+### H-030 — Open-fill must not decrement remaining_qty
+
+**Context.** ExecutionDispatcher subtracts `qty_delta` from `position_state.remaining_qty` on every execution event. Placement tx writes `remaining_qty=request.qty` at trade-open commit (`placement_persist.py:419`). If the dispatcher unconditionally subtracts qty for the open-fill audit event (the WS execution event for the same fill), `remaining_qty` drops to 0 → triggers close-flow → trade marked closed in DB while position is still open on exchange. Operator-discovered shipped-code bug 2026-05-08; fix shipped via `fix(T-218b-open-fill-qty-bug)` precedent.
+
+**Policy.** Dispatcher MUST skip `update_position_state_after_fill` when `exec_type="open"`. Open-fill is already accounted-for at placement-tx time; the WS execution event is audit-side mirror only (`insert_execution` still writes the audit row). `update_trade_fees_incremental` is UNCONDITIONAL — entry fee recorded on every fill including open. Defensive close-trigger guard at the `remaining_qty == 0` check ALSO gates on `exec_type != "open"` to protect against state-inconsistency edge cases.
+
+**Test.** `test_process_open_fill_does_not_decrement_remaining_qty` (regression guard) + `test_process_open_fill_with_zero_remaining_qty_does_NOT_trigger_close` (defensive-guard pin) + restored `test_process_open_fill_orders_lookup_to_open_branch` with realistic placement-time `remaining_qty=event.qty` semantics.
+
+H-numbering note: H-027/H-028/H-029 are reserved for ADR-0011 anticipated hazards (T-525/T-534/T-535 per pre-live operational hardening cluster); H-030 is the first concrete hazard discovered post-ADR-0011.
+
 ---
 
 ## 21. Glossary
