@@ -1,5 +1,35 @@
 # Session status
 
+## 2026-05-08 (late-night IV — T-513a rejected-signal observation FSM + producer shipped; BRIEF §13.5 4-outcome classification; T-513b kill-test deferred per OQ-3=A pre-emptive split)
+
+**F5 phase: 21/22 numbered tasks done (~95%).** Master HEAD pre-merge `374afdd` (feat T-513a). Shadow runtime cluster 9/11 sub-tasks (T-510a + T-510b + T-511a + T-511b1 + T-511b2a + T-511b2 + T-512a + T-513a + T-514; T-512b + T-513b remaining — both gating E3 exit criterion).
+
+### T-513a delivered — observation FSM half of BRIEF §13.5 rejected-signal tracking
+
+- **All 4 review gates passed**: plan-reviewer 5-pass APPROVE (4 BLOCKERs initial → APPROVE pass-5 after FeatureResolver.kv_get → select_latest_close switch + source filter add + L-014 LOC calibration + L-015 sibling migration test attestation) → drift-checker ON TRACK (12 files; all WG#1..#18 verified) → brief-reviewer SHIP (21/21 acceptance + 17/18 WG; WG#17 §N4 TDD ordering attestation in commit body) → math-validator VERIFIED.
+- Implements BRIEF §13.5 verbatim: 60-min observation window, MFE/MAE tracking, 4-outcome classification (would_tp / would_sl / would_be / no_trigger). NEW `services/execution/app/shadow_rejected_worker.py` (397 LOC) with 1:1 ID-to-task mapping, SL-first conservative race bias, BE-trigger sticky `>=`/`<=` flag, entry==0 defensive early-return.
+- Strategy-engine consumer.py rejection branch publishes `ShadowRejectedStartPayload` ALONGSIDE existing T-310b `SignalRejected` (parallel emits; separate concerns). NEW `select_latest_close(conn, *, symbol, source)` DB helper (PK source filter REQUIRED).
+- Composition root wiring AFTER T-512a `resume_active_variants_on_startup` BEFORE `scheduler.start()` (settings-gated `shadow_rejected_enabled`).
+- 26 nových testov (2013 → 2039); 0 regressions.
+
+### §0.3 over-cap waiver per L-014
+
+- **632 LOC src vs 400 cap (~+58%)**: shadow_rejected_worker.py 397 LOC (FSM minimum surface — 3 pure helpers + worker class + 60-min observation lifecycle); consumer.py +117 (rejection branch _resolve_virtual_entry + _publish_shadow_rejected_start producer); payloads.py +60 + market_data.py +32 + main.py +19 + config.py +7. Mirror T-511b1 / T-512a precedent — FSM-task LOC pattern systemic, not split-able without operationally-expensive cross-cutting refactor. Plan §6 pre-authorized over-cap waiver line; operator approval 2026-05-08.
+- **L-014 / L-016 calibration data**: 3rd data point (T-511b1 ~70%, T-512a ~150%, T-513a ~58%) on FSM/integration tasks systematically running 50-180% over plan target. L-014 active control already enforces drift-checker DRIFT-but-waivable verdict + commit-body waiver line.
+
+### Watch-outs for next session
+
+- **T-512b + T-513b twin critical-path pickup** — both kill-test integration tests gate E3 exit criterion. T-512b mandatory per BRIEF §20:2787 verbatim `test_shadow_variant_survives_restart_via_replay`; T-513b mirror pattern for rejected-observation FSM kill-during-observation. Heavy integration scope: testcontainer postgres + nats jetstream + subprocess.spawn execution-service + SIGTERM + restart assertions. Could ship together (T-512b first per E3 criticality) or separately. T-513b additionally needs replay-recovery side via OHLC replay (mirror T-512a `shadow_replay.py` pattern but for rejected_observation FSM) — surface in T-513b plan stage.
+- **UI tasks T-516 + T-517** — now BOTH unblocked. T-516 needs T-510 + T-511 + T-512 shadow runtime (all done as of T-513a); T-517 rejected-explorer side needs T-513a (done). Could prep frontend mockup work in parallel with T-512b/T-513b.
+- **F5 phase ~95% complete**: 21/22 numbered tasks shipped. Remaining: T-512b + T-513b (E3 gating) + T-516 + T-517 + T-518..T-522 (backend polish + ops + close-out runbook). Pace: 5-7 tasks remaining; ~1 week realistic at current cadence.
+
+### Lessons surfaced (additions to recent body of work)
+
+- **L-014 / L-016 calibration confirmed**: 3rd consecutive FSM-task over-cap (T-511b1 +70%, T-512a +150%, T-513a +58%); plan-budget systematically optimistic on FSM tasks. Active control already in place — no new lesson, just calibration data point.
+- **Pre-emptive split pattern matures further**: T-510 → T-510a/b; T-511 → T-511a/b1/b2a/b2; T-512 → T-512a/b; T-513 → T-513a/b. Consistently chosen at L-007 trigger threshold. Mid-write splits avoided across 5+ task families this session cluster.
+
+---
+
 ## 2026-05-08 (late-night III — T-512a shadow variant restart-recovery via OHLC replay shipped; L-016 replay-recovery LOC calibration lesson + UI redesign separate)
 
 **F5 phase: 20/22 numbered tasks done (~91%).** Master HEAD pre-merge `067ad6f` (feat T-512a). Shadow runtime cluster 8/10 sub-tasks (T-510a + T-510b + T-511a + T-511b1 + T-511b2a + T-511b2 + T-512a + T-514; T-512b + T-513 remaining). Plus **independent UI redesign** shipped earlier in session (master HEAD `784e397`; visual/CSS only with bonus YamlDiffView typecheck regression fix).
