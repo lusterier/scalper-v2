@@ -35,6 +35,7 @@ __all__ = [
     "OhlcReplayRow",
     "fetch_latest_ohlc_bucket",
     "insert_ohlc_1m",
+    "select_latest_close",
     "select_ohlc_for_replay_window",
 ]
 
@@ -146,6 +147,37 @@ async def insert_ohlc_1m(
         volume,
         source,
     )
+
+
+async def select_latest_close(
+    conn: _DbExecutor,
+    *,
+    symbol: str,
+    source: str,
+) -> Decimal | None:
+    """Return latest closed-candle close for ``(symbol, source)`` (T-513a virtual_entry_price).
+
+    SQL: ``SELECT close FROM ohlc_1m WHERE symbol = $1 AND source = $2
+    ORDER BY bucket_start DESC LIMIT 1``. Reads from market-data-service-
+    populated table (T-104 OhlcPipeline shipped). ``source`` filter is
+    REQUIRED — PK is ``(symbol, bucket_start, source)``; multiple sources
+    may co-exist (e.g. binance + future synthetic). Mirror sibling
+    :func:`fetch_latest_ohlc_bucket` ``(symbol, source)`` convention.
+    T-513a caller :func:`services.strategy_engine.app.consumer._resolve_virtual_entry`
+    passes ``source="binance"`` (live market data).
+
+    Returns ``None`` when no rows for given ``(symbol, source)`` yet (cold-
+    start case → caller falls back to ``Decimal("0")``; worker-side
+    defensive filters zero-entry as ``NO_TRIGGER`` immediately on
+    observation start).
+    """
+    row = await conn.fetchrow(
+        "SELECT close FROM ohlc_1m WHERE symbol = $1 AND source = $2 "
+        "ORDER BY bucket_start DESC LIMIT 1",
+        symbol,
+        source,
+    )
+    return row["close"] if row is not None else None
 
 
 async def select_ohlc_for_replay_window(

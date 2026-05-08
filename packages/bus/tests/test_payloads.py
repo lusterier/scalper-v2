@@ -139,3 +139,62 @@ def test_trade_closed_payload_rejects_non_utc_offset() -> None:
             bot_id="alpha",
             closed_at=cest,
         )
+
+
+# ---------------------------------------------------------------------------
+# T-513a / BRIEF §13.5 — ShadowRejectedStartPayload (rejected-signal observation)
+# ---------------------------------------------------------------------------
+
+
+def test_shadow_rejected_start_payload_round_trip() -> None:
+    """ShadowRejectedStartPayload round-trips through model_dump(mode='json') + model_validate."""
+    from packages.bus.payloads import ShadowRejectedStartPayload
+
+    rejected_at = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+    original = ShadowRejectedStartPayload(
+        signal_id=42,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        action="LONG",
+        virtual_entry_price=Decimal("65000"),
+        sl_pct=Decimal("0.005"),
+        tp_pct=Decimal("0.01"),
+        be_trigger=Decimal("0.005"),
+        be_sl_level=Decimal("0.001"),
+        rejected_at=rejected_at,
+    )
+    raw = original.model_dump(mode="json")
+    restored = ShadowRejectedStartPayload.model_validate(raw)
+    assert restored.signal_id == 42
+    assert restored.symbol == "BTCUSDT"
+    assert restored.virtual_entry_price == Decimal("65000")
+    assert restored.sl_pct == Decimal("0.005")
+    assert restored.rejected_at == rejected_at
+
+
+def test_shadow_rejected_start_payload_rejects_naive_datetime() -> None:
+    """rejected_at must be timezone-aware UTC."""
+    from packages.bus.payloads import ShadowRejectedStartPayload
+
+    naive = datetime(2026, 5, 8, 12, 0, 0)  # noqa: DTZ001
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        ShadowRejectedStartPayload(
+            signal_id=42,
+            bot_id="alpha",
+            symbol="BTCUSDT",
+            action="LONG",
+            virtual_entry_price=Decimal("65000"),
+            sl_pct=Decimal("0.005"),
+            tp_pct=Decimal("0.01"),
+            be_trigger=Decimal("0.005"),
+            be_sl_level=Decimal("0.001"),
+            rejected_at=naive,
+        )
+
+
+def test_subject_for_shadow_rejected_start() -> None:
+    """L-002 helper: subject_for_shadow_rejected_start('alpha') == 'shadow.rejected.start.alpha'."""
+    from packages.bus.payloads import subject_for_shadow_rejected_start
+
+    assert subject_for_shadow_rejected_start("alpha") == "shadow.rejected.start.alpha"
+    assert subject_for_shadow_rejected_start("beta") == "shadow.rejected.start.beta"

@@ -39,7 +39,11 @@ from typing import TYPE_CHECKING
 
 from packages.bus import MessageEnvelope
 from packages.bus.errors import NotConnectedError, PublishError
-from packages.bus.payloads import VariantSpec
+from packages.bus.payloads import (
+    ShadowRejectedStartPayload,
+    VariantSpec,
+    subject_for_shadow_rejected_start,
+)
 from packages.bus.schemas import (
     OrderRequest,
     SignalRejected,
@@ -48,6 +52,7 @@ from packages.bus.schemas import (
     subject_for_signals_rejected,
 )
 from packages.core import CorrelationId
+from packages.db.queries.market_data import select_latest_close
 from packages.db.queries.scoring import insert_scoring_evaluation
 from packages.db.queries.signal_gateway import select_signal_id_by_idempotency_key
 from packages.scoring import evaluate
@@ -229,6 +234,28 @@ def make_signal_handler(
                 audit_logger=audit_logger,
                 system_logger=system_logger,
             )
+            # T-513a / BRIEF §13.5 — parallel publish ShadowRejectedStartPayload.
+            # Always-on per BRIEF §13.5; execution-service-side gate via
+            # Settings.shadow_rejected_enabled. virtual_entry_price from
+            # latest closed-candle ohlc_1m row (best-effort; PG error → Decimal("0")
+            # fallback; worker-side classifies entry==0 as NO_TRIGGER immediately).
+            virtual_entry_price = await _resolve_virtual_entry(
+                pool=pool,
+                symbol=signal.symbol,
+                bound_logger=system_logger,
+            )
+            await _publish_shadow_rejected_start(
+                bot_id=bot_id,
+                bot_config=bot_config,
+                signal=signal,
+                signal_id=signal_id,
+                rejected_at=now,
+                virtual_entry_price=virtual_entry_price,
+                envelope=envelope,
+                bus=bus,
+                audit_logger=audit_logger,
+                system_logger=system_logger,
+            )
 
     return _handle
 
@@ -346,6 +373,95 @@ async def _publish_signal_rejected(
         )
         system_logger.error(
             "signals_rejected_publish_failed",
+            bot_id=bot_id,
+            signal_id=signal_id,
+            error=str(exc),
+        )
+
+
+async def _resolve_virtual_entry(
+    *,
+    pool: asyncpg.Pool,
+    symbol: str,
+    bound_logger: BoundLogger,
+) -> Decimal:
+    """T-513a / BRIEF §13.5: resolve virtual_entry_price for rejected-signal observation.
+
+    Best-effort: queries latest closed-candle close from ``ohlc_1m`` via
+    :func:`packages.db.queries.market_data.select_latest_close` with
+    ``source="binance"`` (live market data filter). On any PG transient
+    error returns ``Decimal("0")`` fallback + warn-log; consumer task
+    survives. Worker-side classifies entry==0 as NO_TRIGGER immediately
+    (early-return; no candle subscribe + no 60-min wait).
+    """
+    import asyncpg as _asyncpg
+
+    try:
+        async with pool.acquire() as conn:
+            latest_close = await select_latest_close(
+                conn,
+                symbol=symbol,
+                source="binance",
+            )
+        return latest_close if latest_close is not None else Decimal("0")
+    except (_asyncpg.PostgresError, OSError, TimeoutError) as exc:
+        bound_logger.warning(
+            "shadow_rejected_resolve_virtual_entry_failed",
+            symbol=symbol,
+            error=str(exc),
+        )
+        return Decimal("0")
+
+
+async def _publish_shadow_rejected_start(
+    *,
+    bot_id: BotId,
+    bot_config: BotConfig,
+    signal: SignalValidated,
+    signal_id: int,
+    rejected_at: datetime,
+    virtual_entry_price: Decimal,
+    envelope: MessageEnvelope,
+    bus: BusProtocol,
+    audit_logger: BoundLogger,
+    system_logger: BoundLogger,
+) -> None:
+    """T-513a / BRIEF §13.5: publish ShadowRejectedStartPayload per signal rejection.
+
+    Always-on per BRIEF §13.5 — independent of ``bot_config.shadow.enabled``
+    (operator gates via ``Settings.shadow_rejected_enabled`` execution-service-
+    side). Best-effort: publish failure logged + scoring_evaluations row already
+    persisted via parent ``_handle`` path. Mirror :func:`_publish_signal_rejected`
+    (T-310b shipped) per-publish error envelope.
+    """
+    payload = ShadowRejectedStartPayload(
+        signal_id=signal_id,
+        bot_id=str(bot_id),
+        symbol=signal.symbol,
+        action=signal.action,
+        virtual_entry_price=virtual_entry_price,
+        sl_pct=bot_config.execution.sl_pct,
+        tp_pct=bot_config.execution.tp_pct,
+        be_trigger=bot_config.execution.be_trigger,
+        be_sl_level=bot_config.execution.be_sl_level,
+        rejected_at=rejected_at,
+    )
+    out_envelope = MessageEnvelope(
+        correlation_id=CorrelationId(envelope.correlation_id),
+        publisher="strategy-engine",
+        payload=payload.model_dump(mode="json"),
+    )
+    try:
+        await bus.publish(subject_for_shadow_rejected_start(str(bot_id)), out_envelope)
+    except (PublishError, NotConnectedError) as exc:
+        audit_logger.error(
+            "shadow_rejected_start_publish_failed",
+            bot_id=bot_id,
+            signal_id=signal_id,
+            error=str(exc),
+        )
+        system_logger.error(
+            "shadow_rejected_start_publish_failed",
             bot_id=bot_id,
             signal_id=signal_id,
             error=str(exc),

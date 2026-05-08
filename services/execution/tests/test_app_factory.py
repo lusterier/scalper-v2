@@ -150,9 +150,12 @@ def test_lifespan_subscribes_to_orders_requests_per_bot(
     assert "orders.requests.>" not in subscribe_subjects
     # T-511b2 / ADR-0010: ShadowWorker.start() adds 2 wildcard subscriptions for
     # H-016 (parent-close) + ShadowStartPayload (open emit) consumers.
+    # T-513a / BRIEF §13.5: ShadowRejectedWorker.start() adds 1 more wildcard
+    # subscription for rejected-signal observation FSM.
     assert "shadow.start.>" in subscribe_subjects
     assert "trade.closed.>" in subscribe_subjects
-    assert mock_bus.subscribe.await_count == 4
+    assert "shadow.rejected.start.>" in subscribe_subjects
+    assert mock_bus.subscribe.await_count == 5
 
 
 def test_lifespan_attaches_shadow_worker_and_orders_shutdown_correctly(

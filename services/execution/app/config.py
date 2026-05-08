@@ -123,3 +123,10 @@ class Settings(BaseSettings):
     # = ~30ms expected) / ~400x I/O margin (asyncpg cursor prefetch=1000 = ~0.3s).
     shadow_replay_query_window_max_hours: Decimal = Decimal("48")
     shadow_replay_per_variant_timeout_seconds: float = 120.0
+
+    # T-513a / BRIEF §13.5 — rejected-signal observation FSM.
+    # Always-on per BRIEF spec ("Separate from variants"); operational kill-
+    # switch via `shadow_rejected_enabled`. 60-min observation window per
+    # BRIEF §13.5 default; configurable per §N9 + L-001 active control.
+    shadow_rejected_enabled: bool = True
+    shadow_rejected_observation_minutes: int = 60

@@ -167,6 +167,17 @@ def _build_handler(
 
             monkeypatch.setattr("services.strategy_engine.app.consumer.evaluate", _evaluate_ok)
 
+        # T-513a: stub select_latest_close so rejection branch _resolve_virtual_entry
+        # gets a deterministic Decimal back (default Decimal("65000")). Tests that
+        # need cold-start path (None) or PG-error path patch this further inline.
+        async def _select_latest_close_default(_conn: Any, **_kwargs: Any) -> Decimal | None:
+            return Decimal("65000")
+
+        monkeypatch.setattr(
+            "services.strategy_engine.app.consumer.select_latest_close",
+            _select_latest_close_default,
+        )
+
     resolver = MagicMock()
     handler = make_signal_handler(
         bot_id="alpha",  # type: ignore[arg-type]
@@ -271,7 +282,12 @@ async def test_decision_passthrough_publishes_order_request(
 async def test_decision_reject_publishes_signal_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Decision==reject → signals.rejected.<bot_id> with T-310a SignalRejected schema."""
+    """Decision==reject → signals.rejected.<bot_id> with T-310a SignalRejected schema.
+
+    T-513a / BRIEF §13.5: rejection branch ALSO publishes ShadowRejectedStartPayload
+    on `shadow.rejected.start.<bot_id>` topic (paralelne); test filters publish
+    calls to verify ONLY the SignalRejected envelope here.
+    """
     handler, caps = _build_handler(
         evaluate_result=_scoring_result(
             decision="reject", reason="score_below_threshold", total_score=0.5
@@ -279,8 +295,11 @@ async def test_decision_reject_publishes_signal_rejected(
         monkeypatch=monkeypatch,
     )
     await handler(_envelope(_signal()))
-    caps["bus"].publish.assert_awaited_once()
-    subject, env = caps["bus"].publish.await_args.args
+    publish_calls = caps["bus"].publish.await_args_list
+    # T-513a: 2 publishes — signals.rejected.alpha + shadow.rejected.start.alpha.
+    rejected_calls = [c for c in publish_calls if c.args[0] == "signals.rejected.alpha"]
+    assert len(rejected_calls) == 1
+    subject, env = rejected_calls[0].args
     assert subject == "signals.rejected.alpha"
     rejection = SignalRejected.model_validate(env.payload)
     assert rejection.bot_id == "alpha"
@@ -477,3 +496,92 @@ async def test_invalid_envelope_payload_is_logged_and_dropped(
     caps["bus"].publish.assert_not_called()
     caps["system"].error.assert_called_once()
     assert caps["system"].error.call_args.args[0] == "consumer.signal_validated_validation_failed"
+
+
+# ---------------------------------------------------------------------------
+# T-513a / BRIEF §13.5 — rejection branch publishes ShadowRejectedStartPayload
+# ---------------------------------------------------------------------------
+
+
+async def test_decision_reject_publishes_shadow_rejected_start_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rejection branch ALSO publishes shadow.rejected.start.<bot_id> with full envelope.
+
+    Verify subject + payload fields (signal_id, bot_id, symbol, action, virtual_entry_price,
+    sl/tp/be thresholds, rejected_at) match BotConfig values + signal context.
+    """
+    from packages.bus.payloads import ShadowRejectedStartPayload
+
+    handler, caps = _build_handler(
+        evaluate_result=_scoring_result(
+            decision="reject", reason="score_below_threshold", total_score=0.5
+        ),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal()))
+    publish_calls = caps["bus"].publish.await_args_list
+    shadow_rejected_calls = [c for c in publish_calls if c.args[0] == "shadow.rejected.start.alpha"]
+    assert len(shadow_rejected_calls) == 1
+    subject, env = shadow_rejected_calls[0].args
+    assert subject == "shadow.rejected.start.alpha"
+    payload = ShadowRejectedStartPayload.model_validate(env.payload)
+    assert payload.signal_id == 42
+    assert payload.bot_id == "alpha"
+    assert payload.symbol == "BTCUSDT"
+    assert payload.action == "LONG"
+    assert payload.virtual_entry_price == Decimal("65000")
+    assert payload.rejected_at == _FIXED_NOW
+
+
+async def test_decision_reject_shadow_rejected_carries_botconfig_thresholds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ShadowRejectedStartPayload thresholds copy from BotConfig.execution verbatim."""
+    from packages.bus.payloads import ShadowRejectedStartPayload
+
+    handler, caps = _build_handler(
+        evaluate_result=_scoring_result(decision="reject", reason="x", total_score=0.5),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal()))
+    publish_calls = caps["bus"].publish.await_args_list
+    sr_calls = [c for c in publish_calls if c.args[0] == "shadow.rejected.start.alpha"]
+    assert len(sr_calls) == 1
+    payload = ShadowRejectedStartPayload.model_validate(sr_calls[0].args[1].payload)
+    # Mirror _bot_config() execution section.
+    assert payload.sl_pct == Decimal("0.01")
+    assert payload.tp_pct == Decimal("0.01")
+    assert payload.be_trigger == Decimal("0.005")
+    assert payload.be_sl_level == Decimal("0.003")
+
+
+async def test_decision_reject_db_error_resolves_zero_virtual_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When :func:`select_latest_close` raises asyncpg.PostgresError, ``_resolve_virtual_entry``
+    swallows the error + returns ``Decimal('0')``; rejection branch still publishes
+    ShadowRejectedStartPayload (entry==0 — worker handles defensive skip)."""
+    import asyncpg
+
+    from packages.bus.payloads import ShadowRejectedStartPayload
+
+    handler, caps = _build_handler(
+        evaluate_result=_scoring_result(decision="reject", reason="x", total_score=0.5),
+        monkeypatch=monkeypatch,
+    )
+
+    async def _select_latest_close_raises(_conn: Any, **_kwargs: Any) -> Decimal | None:
+        raise asyncpg.PostgresError("simulated DB outage")
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.select_latest_close",
+        _select_latest_close_raises,
+    )
+
+    await handler(_envelope(_signal()))
+    publish_calls = caps["bus"].publish.await_args_list
+    sr_calls = [c for c in publish_calls if c.args[0] == "shadow.rejected.start.alpha"]
+    assert len(sr_calls) == 1
+    payload = ShadowRejectedStartPayload.model_validate(sr_calls[0].args[1].payload)
+    assert payload.virtual_entry_price == Decimal("0")

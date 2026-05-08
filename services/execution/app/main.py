@@ -99,6 +99,7 @@ from .health import router as health_router
 from .placement import make_per_bot_handler
 from .pool import build_adapter_pool
 from .restart import reconcile_on_startup
+from .shadow_rejected_worker import ShadowRejectedWorker
 from .shadow_replay import resume_active_variants_on_startup
 from .shadow_worker import ShadowWorker
 
@@ -272,6 +273,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             clock=lambda: datetime.now(UTC),
         )
 
+        # 6.8. T-513a / BRIEF §13.5 — rejected-signal 60-min observation FSM.
+        # Always-on per BRIEF §13.5 ("Separate from variants"); operational
+        # kill-switch via `Settings.shadow_rejected_enabled`. Constructed
+        # AFTER shadow_worker + resume_active_variants so subscriptions
+        # are live before NATS messages start consuming.
+        shadow_rejected_worker: ShadowRejectedWorker | None = None
+        if settings.shadow_rejected_enabled:
+            shadow_rejected_worker = ShadowRejectedWorker(
+                bus=bus,
+                pool=pool,
+                observation_minutes=settings.shadow_rejected_observation_minutes,
+                clock=lambda: datetime.now(UTC),
+            )
+            await shadow_rejected_worker.start()
+
         # 7. T-220b — APScheduler-driven P&L audit (per ADR-0007 D1-D7).
         # Sub-account → adapter + bot_ids reverse mapping for audit job composition.
         sub_account_to_adapter: dict[str, object] = {}
@@ -326,6 +342,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.closed_pnl_locks = closed_pnl_locks
         app.state.scheduler = scheduler
         app.state.shadow_worker = shadow_worker
+        app.state.shadow_rejected_worker = shadow_rejected_worker
 
         logger.info(
             "service_started",
@@ -346,6 +363,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             #   drain before adapter.close pulls the WS) → ws_tasks cancel →
             #   adapter.close → pool.close.
             await bus.close()
+            if shadow_rejected_worker is not None:
+                await shadow_rejected_worker.stop()
             await shadow_worker.stop()
             for task in position_lifecycle_tasks.values():
                 task.cancel()

@@ -43,6 +43,17 @@ def subject_for_trade_closed(bot_id: str) -> str:
     return f"trade.closed.{bot_id}"
 
 
+def subject_for_shadow_rejected_start(bot_id: str) -> str:
+    """Build ``shadow.rejected.start.<bot_id>`` publish subject (T-513a / L-002 helper).
+
+    Topic for the rejected-signal 60-min observation FSM per BRIEF §13.5.
+    Strategy-engine producer publishes when a signal is rejected by scoring;
+    execution-service ``ShadowRejectedWorker`` subscribes and spawns the
+    observation task.
+    """
+    return f"shadow.rejected.start.{bot_id}"
+
+
 def _validate_utc(value: datetime) -> datetime:
     """Mirror of :func:`packages.bus.schemas.orders._validate_utc` per L-007 reuse trade-off."""
     if value.tzinfo is None:
@@ -133,5 +144,54 @@ class TradeClosedPayload(BaseModel):
         return _validate_utc(value)
 
     @field_serializer("closed_at")
+    def _ts_serialize_utc(self, value: datetime) -> str:
+        return value.isoformat()
+
+
+class ShadowRejectedStartPayload(BaseModel):
+    """``shadow.rejected.start.<bot_id>`` envelope per BRIEF §13.5 (T-513a).
+
+    Published by :func:`services.strategy_engine.app.consumer._publish_shadow_rejected_start`
+    when a signal is rejected by scoring (paralelne s ``_publish_signal_rejected``
+    on ``signals.rejected.<bot_id>``). Always-on per BRIEF §13.5; operational
+    kill-switch via ``Settings.shadow_rejected_enabled``.
+
+    Carries ``virtual_entry_price`` (latest closed-candle close from
+    ``ohlc_1m`` table at rejection time via NEW
+    :func:`packages.db.queries.market_data.select_latest_close` helper) +
+    ``bot_config.execution`` thresholds (``sl_pct``, ``tp_pct``, ``be_trigger``,
+    ``be_sl_level``) for the in-process observation FSM. Receiver decodes +
+    ``insert_shadow_rejected`` (T-510b shipped) + spawns 60-min observation task.
+
+    NO ``parent_kind`` field — rejected signals have no parent trade
+    (rejection happens BEFORE placement); ``shadow_rejected`` table has
+    no FK to ``trades`` or ``paper_trades`` (T-510a OQ-6=A no-FK convention).
+
+    NO ``trail_pct`` field — rejected signals don't trade, so trail SL
+    is not part of the observation window. T-513a observes TP/SL/BE
+    thresholds only; trail-recompute logic is shadow-variant-specific
+    (T-511b1) and irrelevant for rejected-signal observation.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    envelope_version: Literal[1] = 1
+    signal_id: int
+    bot_id: str
+    symbol: str
+    action: Literal["LONG", "SHORT", "CLOSE"]
+    virtual_entry_price: Decimal
+    sl_pct: Decimal
+    tp_pct: Decimal
+    be_trigger: Decimal
+    be_sl_level: Decimal
+    rejected_at: datetime
+
+    @field_validator("rejected_at")
+    @classmethod
+    def _ts_must_be_utc(cls, value: datetime) -> datetime:
+        return _validate_utc(value)
+
+    @field_serializer("rejected_at")
     def _ts_serialize_utc(self, value: datetime) -> str:
         return value.isoformat()
