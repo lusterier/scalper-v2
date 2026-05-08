@@ -1,5 +1,53 @@
 # Session status
 
+## 2026-05-08 (late-night II — T-511b2 shadow-worker integration shipped + L-015 sibling-migration-test lesson + fix(T-511b2a) ci-full follow-up)
+
+**F5 phase: 19/22 numbered tasks done (~86%).** Master HEAD `c16e9cb` (`ebb6155` fix(T-511b2a) test_0014_migration post-0015 head schema + `c16e9cb` feat T-511b2). Shadow runtime cluster 7/9 sub-tasks (T-510a + T-510b + T-511a + T-511b1 + T-511b2a + T-511b2 + T-514; T-512 + T-513 remaining; T-511 split into 4 sub-tasks via 3 pre-emptive splits per L-007). **Shadow runtime fully operational end-to-end for both live + paper modes** (per ADR-0010).
+
+### T-511b2 delivered — paper-aware producer + parent-close H-016 hook (full H-016 ownership achieved)
+
+- **All 4 review gates passed**: plan-reviewer pass-1 APPROVE (8-item WG checklist) → drift-checker pass-1 DRIFT (3 test coverage gaps: paper_trade_id population test #18, lifespan shutdown order pin #15, WG#8 negative duplicate-publish assertion) → drift-checker pass-2 ON TRACK (after adding all 3 missing tests, +30 LOC) → brief-reviewer single-pass SHIP (15/15 acceptance + 8/8 WG; 360 LOC src counted under §0.3 400 cap; over plan target ~260 absorbed cleanly per WG#6 PE adapter delta calibration) → math-validator VERIFIED (18 parity grid hand-computed values verified byte-for-byte; no Decimal→float drift).
+- 13 src files modified + 1 NEW test file (`test_shadow_parity.py` 18-assertion BRIEF §13.7 grid) + 8 test files extended; 1993 repo-wide passing (+32 from baseline 1961); 0 regressions.
+- **H-016 full ownership**: T-511b1 finalizer half + T-511b2 parent-close cancel hook half = complete shadow task cleanup contract per BRIEF §20 verbatim policy.
+
+### Pre-T-511b2 fix(T-511b2a) follow-up
+
+- **ci-full failed on T-511b2a master push** (commit `7b74c2b`) — 3 tests in `test_0014_migration.py` regressed because `migrated_db_dsn` fixture upgrades to head (post-0015 schema), so `shadow_variants` had 15 cols + parent_kind NOT NULL + FK dropped, but tests asserted 0014-era state.
+- **Fix shipped** (`ebb6155`): `_EXPECTED_VARIANTS_COLUMNS` updated to 15 cols + INSERTs include `parent_kind="live"` + FK cascade test repurposed as `test_migration_0014_shadow_variants_no_fk_cascade_after_0015_relax` (asserts post-0015 reality: NO cascade).
+- ci-full now PASSES on master (verified via `gh run list`).
+
+### L-015 appended — sibling migration test impact watch
+
+- **Pattern**: when a NEW migration modifies a table introduced in earlier migration, integration tests for the earlier migration (which run against `migrated_db_dsn` upgraded to head) inherit head schema state → 3 distinct failure modes (column shape / NOT NULL INSERT / FK behaviour) all surface in ci-full.
+- **Active control**: plan-reviewer at Gate 1 MUST require "Sibling migration test impact" section listing every earlier `test_NNNN_migration.py` whose assertions touch the modified table + the specific assertion needing update. Brief-reviewer at Gate 3 MUST grep staged diff for those test files.
+- **Why ci-full-only catch**: env-gated `POSTGRES_TEST_DSN` integration tests skip locally → ~2 min latency post-merge surface (L-009 sibling lesson).
+
+### Implementation summary
+
+- **Producer half**: `emit_post_commit_shadow_start_event` helper in `placement_persist.py` + LIVE emit at `placement.py:328` area + PAPER emit at `placement.py:240-252` paper-fork (uses `OrderPlaceResult.paper_trade_id` populated from `PaperExchange._persist_open` `insert_paper_trade` return — NEW dataclass field per AC#3).
+- **Paper close emit**: NEW `PaperExchange.emit_parent_lifecycle: bool = False` ctor flag (default False; variant PE in `shadow_worker._run_shadow_variant` stays default False to avoid self-cancel loop; primary bot PE in `pool.py:198` wires True). `_persist_close` publishes `TradeClosedPayload(parent_kind='paper')` post-commit.
+- **Live close emit**: extended `reconcile.emit_post_commit_close_event` dual-publish (`OrderClosed` to `orders.events.<bot_id>` + `TradeClosedPayload(parent_kind='live')` to `trade.closed.<bot_id>`; per-publish try/except — first publish failure does NOT short-circuit second).
+- **Consumer half**: `ShadowWorker._on_parent_close` H-016 cancellation hook subscribes to `trade.closed.>` wildcard (in addition to T-511b1's `shadow.start.>`); cancel-only semantic (no await — each task's own try/finally finalizer handles bus_unsubscribe lazily).
+- **Strategy-engine `consumer.py`**: `_publish_order_request` populates 2 new OrderRequest fields when `bot_config.shadow.enabled` (maps `ShadowVariant` (scoring) → `VariantSpec` (bus); float→Decimal cast on `max_duration_hours` via `Decimal(str(value))`).
+- **OrderRequest schema delta**: `shadow_variants: list[VariantSpec]` + `shadow_max_duration_hours: Decimal | None`; schema_version stays "1.0" (additive non-breaking).
+- **NEW envelope** `TradeClosedPayload(parent_trade_id, parent_kind, bot_id, closed_at)` + 2 subject helpers (`subject_for_shadow_start` + `subject_for_trade_closed`) in `packages/bus/payloads.py` (L-002 active control).
+- **`main.py` wire**: ShadowWorker constructed in lifespan after dispatcher_tasks (always-on; data-driven by per-bot YAML); `start()` + state attach. **Shutdown order BLOCKER 2 fix** from T-511b2a pass-1 review: `bus.close()` runs FIRST (drains subscriptions), THEN `shadow_worker.stop()` (cancels in-flight variant tasks; finalizer bus_unsubscribe is no-op since bus already drained). Test #15 verbatim pins shutdown order via index assertion.
+- **`config.py`**: 2 NEW Settings fields `shadow_seed_balance_usd` + `shadow_fee_rate` (service-wide; deliberate isolation from per-bot paper-bot fee config per WG#4).
+
+### Watch-outs for next session
+
+- **T-512 next critical-path pickup** — OHLC replay restart-recovery (H-023 owner; mandatory kill-during-variant integration test per E3 exit criterion). Heaviest remaining F5 task. Consumes T-511b2a foundation (`select_active_shadow_variants` from `packages/db/queries/shadow.py` for resume scan) + T-511b2 producer (variants registered in shadow_variants with `WHERE terminated_at IS NULL` for restart resume).
+- **T-513 rejected-signal observation** — mirror persistence pattern (T-510b shipped read+write helpers); separate input source. Independent of T-512.
+- **UI tasks T-516 + T-517** soft-blocked on T-512 runtime; could prep frontend mockup work.
+- **Today total**: 21+ master commits anticipated post-merge (16 prior + T-511b2a feat + chore + fix(T-511b2a) + T-511b2 feat + chore).
+
+### Lessons surfaced (additions to recent body of work)
+
+- **L-015 (this session)**: sibling migration test impact watch — plan-stage gate is the most reliable prevention point for the "head schema bleeds into earlier-migration test" failure class.
+- **WG#6 PE adapter delta calibration miss**: plan claimed ~30 LOC for PE adapter delta; reality 52 LOC (1 over upper-bound 50). L-014 calibration band held (within 30-50; calibration miss flag, not DRIFT).
+
+---
+
 ## 2026-05-08 (late-night I — T-511b2a shadow runtime schema foundation shipped; ADR-0010 paper-aware deviation recorded)
 
 **F5 phase: 18/22 numbered tasks done (~82%).** Master HEAD `da7413a` pre-merge; T-511b2a feat commit `741f086` on branch `feat/T-511b2a-shadow-foundation` awaiting ff-merge. Shadow runtime cluster 6/9 sub-tasks (T-510a + T-510b + T-511a + T-511b1 + **T-511b2a NEW** + T-514; T-511b2 + T-512 + T-513 remaining; T-511 split into 4 sub-tasks via 3 pre-emptive splits per L-007).
