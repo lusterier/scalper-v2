@@ -2148,7 +2148,7 @@ Prometheus `/metrics` endpoint on every service. Standard metrics:
 
 **Gauges:**
 - `open_positions{bot_id}`
-- `virtual_balance{bot_id}`
+- `virtual_balance{bot_id}` → promoted to mandatory T-531 (T-523 reorg 2026-05-08; per ADR-0011)
 - `ws_connected{stream}`
 - `nats_consumer_pending{consumer}`
 - `db_pool_saturation{service}`
@@ -2570,9 +2570,9 @@ secrets:
 - Backtest lab can trigger a small backtest and show results.
 - Playwright smoke journeys pass in CI.
 
-### Phase F5 — Shadow Variants, Backtest Harness, Finishing (est. 2-3 weeks)
+### Phase F5 — Shadow Variants, Backtest Harness, Finishing, Pre-live Hardening (est. 4-6 weeks)
 
-**Goal:** full shadow + backtest capability; polish.
+**Goal:** full shadow + backtest capability; polish; **pre-live operational hardening (T-523 reorg 2026-05-08; see ADR-0011 for scope-extension rationale)**.
 
 **Tasks:**
 - Backtest harness: ReplayBus, HistoricalOHLCSource, HistoricalSignalSource, intra-candle path generator, comparison mode.
@@ -2582,13 +2582,15 @@ secrets:
 - Feature auto-backfill on registration.
 - Final pass on runbooks, docs, glossary, README.
 - Hardening tasks from backlog.
+- **Pre-live operational hardening cluster (T-524..T-536 — 13 mandatory tasks; per ADR-0011)**: bot-level risk caps (max_open_trades, daily_loss_limit, max_drawdown_stop, cooldowns), balance-driven position sizing (§B.1 reified + risk-per-SL + qty_step rounding + available_balance pre-check), account balance / equity tracking (`get_account_balance()` adapter protocol + equity snapshots + funding fees), named-state trade lifecycle FSM enum, SL/TP verification (periodic watchdog + overwrite protection + trailing audit).
 
 **Exit criteria:**
 - Backtest on a 30-day historical window completes and reports aggregates.
 - Two backtests with different configs compared side-by-side.
 - Shadow variants persist across restart (verified by killing execution-service mid-variant).
 - All hazards in §20 have an associated test that passes.
-- Operator signs off on the Plný MVP scope.
+- Operator signs off on the **Live-ready MVP** scope. *(Renamed from "Plný MVP" per ADR-0011 — production-ready semantic includes pre-live operational hardening cluster T-524..T-536.)*
+- All hardening tasks (T-524..T-536) shipped + integration tests green + Live-ready deployment runbook executed.
 
 ---
 
