@@ -1,5 +1,41 @@
 # Session status
 
+## 2026-05-08 (late-night IX — T-516a1 paper-trade analytics-api backend shipped; T-516 split into T-516a1 + T-516a2 + T-516b; backend mirror /api/trades/* 1:1)
+
+**F5 phase: 26/47 tasks done (~55%).** Master HEAD pre-merge `6c5365d` (chore for T-513b2). T-516 reorg 2026-05-08 split into T-516a1 (this; backend; DONE) + T-516a2 (UI routes + nav + shared component module; PENDING) + T-516b (shadow variants section in BOTH live + paper drill-down routes; original T-516 scope per BRIEF §13.6; PENDING) per L-007 + operator OQ-1/2/3=A 2026-05-08. Mirror T-512 + T-513 split precedent.
+
+### T-516a1 delivered — backend half of paper-trade drill-down infra
+
+- **All review gates passed**: plan-reviewer 2-pass APPROVE 2026-05-08 (pass-1 REVISE 3 BLOCKER + 4 CONCERN — AC#2 contradiction + test path convention + helper symbol name + test count + TASKS.md split timing + docstring guidance; all 6 mechanical fixes applied; pass-2 APPROVE with 15-item Write-time guidance) → drift-checker ON TRACK (7 staged files; 15/15 WG verified) → brief-reviewer SHIP (27 ACs satisfied; §N1/§N3/§N5/§N6/§N7/§N9 clean; L-008/L-013/L-014/L-015 active controls applied) → math-validator N/A per CLAUDE.md Gate 4 (services/analytics_api/ NOT in math-binding list).
+- Mirror live `/api/trades/*` feature stack 1:1 for paper_trades — paper_trades schema (migration 0008) is structurally identical to trades schema (migration 0005) per §3.1:268 paper-live symmetry invariant.
+- **Operator audit 2026-05-08 surfaced gap**: analytics-api + UI had ZERO paper_trade support. Operator's primary mode is paper, so live-only T-516 (original UI placeholder) had limited operational value until paper-trade drill-down ships.
+- **NEW `PaperTradeRow`** dataclass (analytics.py; frozen+slots+21 fields; status: TradeStatus enum reuse since paper_trades.status values 'open'/'closed' identical to live).
+- **NEW DB helpers** (analytics.py +193 LOC): `select_paper_trade_by_id` + `select_paper_trades_paginated` + `count_paper_trades` + `_build_paper_trades_where_clause` + `_row_to_paper_trade` (byte-for-byte mirror `_row_to_trade`) + 2 SQL constants. All filter binds use $N parameterized placeholders only (L-008); ORDER BY closed_at DESC NULLS FIRST + id DESC tiebreaker mirror live.
+- **NEW `services/analytics_api/app/models/paper_trades.py`** (68 LOC): PaperTradeResponse + PaperTradeListResponse Pydantic models. Decimal NUMERIC columns serialize as strings; DOUBLE PRECISION stay as float. Envelope key `paper_trades` (NOT `trades`).
+- **NEW `services/analytics_api/app/routers/paper_trades.py`** (113 LOC): `GET /api/paper-trades/` paginated list + `GET /api/paper-trades/{id}` single detail (404 'paper trade {id} not found'). Mirror trades.py 1:1.
+- main.py (+2 LOC): `app.include_router(paper_trades_router)` registered.
+- 26 nových testov (target +24; +2 bonus): 15 router tests + 11 DB helper tests. Repo baseline 2062 → 2088 (0 regressions).
+
+### §0.3 LOC kalibrácia — 7. dátový bod L-006/L-014/L-016
+
+- T-516a1: src 376 LOC (analytics.py +193 + paper_trades.py 113 + models 68 + main.py 2) under 400 cap; no waiver needed. Plan target ~272 LOC src → reality 376 = 1.39× (within L-006 backend-mirror band 1.0-1.4×).
+- 7. dátový bod confirms calibration band stratifikácia: backend-mirror tasks (1.0-1.4×) vs FSM tasks (1.5-1.8×) vs verification-only mirror tasks (UNDER target — T-513b2 -24%).
+- Mirror-reuse pattern compresses overshoot consistently. Future backend-mirror tasks should plan with multiplier 1.2-1.4× as central tendency.
+
+### Watch-outs for next session
+
+- **T-516a2 next pickup** — UI routes + nav + shared component module. NEW `ui/src/routes/paper-trades.index.tsx` + NEW `/paper-trades/$paperTradeId.tsx` (mirror trades.\$tradeId.tsx 8 timeline sections; shadow variants section is placeholder for T-516b) + NEW `ui/src/components/trade-drill/` shared module (lift TradeSummary + SignalDetailView + Row + TimelineSection; refactor existing route via discriminated union `Trade | PaperTrade`) + NEW nav sidebar entry. Reuses T-516a1 shipped backend endpoints. Est ~400 LOC src + ~250 LOC tests. Per L-006 calibration realistic ~500-600 LOC src.
+- **T-516b** — shadow variants section in BOTH live + paper drill-down routes (original T-516 scope per BRIEF §13.6). NEW `<ShadowVariantsView />` + endpoint(s) for shadow_variants by parent_trade_id (per ADR-0010 parent_kind dispatch) + NEW DB helper `select_shadow_variants_by_parent_trade_id`. Blocked-by T-516a1 + T-516a2.
+- **F5 critical-path bottleneck post-T-516**: T-533 (named-state FSM enum refactor; largest hardening task per ADR-0011). Sizing block T-527 / risk-per-SL T-528 also split-watch-flagged.
+- **Hardening tasks (T-524..T-536) land AFTER existing F5 tail** per OQ-3=A 2026-05-08 baked: T-516a2 + T-516b → T-518..T-521 → T-524..T-536 → T-522 close-out + Live-ready sign-off.
+
+### Lessons surfaced
+
+- **L-006/L-014/L-016 calibration 7th data point** — backend-mirror tasks consistently 1.0-1.4×, distinct from FSM tasks 1.5-1.8× and verification-only mirror tasks (UNDER target). Plan-reviewer Gate 1 multiplier guidance can stratify by task-type: backend-mirror 1.2-1.4×; UI mirror 1.0-1.3× (predicted); FSM/replay-recovery 1.5-1.8×; verification-only mirror tests of just-shipped infra ~1.0×.
+- **TASKS.md split row timing convention** — 4 instances now (T-512 + T-513 + T-516 + per task-close pattern memory): row-update happens in chore commit accompanying feat (NOT in feat itself). T-516a1 follows precedent (chore commit accompanying this feat).
+
+---
+
 ## 2026-05-08 (late-night VIII — T-513b2 rejected-signal kill-test integration test shipped; F5 E3 FULLY SATISFIED; Shadow runtime cluster 12/12 sub-tasks COMPLETE)
 
 **F5 phase: 25/45 tasks done (~56%).** Master HEAD pre-merge `4a533b4` (chore for T-513b1). Shadow runtime cluster **12/12 sub-tasks COMPLETE** (T-510a + T-510b + T-511a + T-511b1 + T-511b2a + T-511b2 + T-512a + T-512b + T-513a + T-513b1 + T-513b2 + T-514). **F5 E3 FULLY SATISFIED 2026-05-08** per both halves of BRIEF §19:2589 verbatim *"Shadow variants persist across restart (verified by killing execution-service mid-variant)"*: T-512b variant kill-test (shipped earlier today) + T-513b2 rejected-signal kill-test (this; mirror T-512b in-process pattern).
