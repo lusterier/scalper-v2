@@ -69,6 +69,7 @@ __all__ = [
     "insert_shadow_variant",
     "select_active_shadow_rejected",
     "select_active_shadow_variants",
+    "select_all_active_shadow_rejected",
     "select_all_active_shadow_variants",
     "select_shadow_rejected_by_id",
     "select_shadow_variant_by_id",
@@ -149,6 +150,13 @@ _SELECT_ACTIVE_REJECTED_SQL = (
     f"SELECT {_SHADOW_REJECTED_BASE_COLUMNS}"  # noqa: S608 — column whitelist constant, no user input  # nosec B608
     " FROM shadow_rejected"
     " WHERE bot_id = $1 AND terminated_at IS NULL"
+    " ORDER BY created_at ASC"
+)
+
+_SELECT_ALL_ACTIVE_REJECTED_SQL = (
+    f"SELECT {_SHADOW_REJECTED_BASE_COLUMNS}"  # noqa: S608 — column whitelist constant, no user input  # nosec B608
+    " FROM shadow_rejected"
+    " WHERE terminated_at IS NULL"
     " ORDER BY created_at ASC"
 )
 
@@ -318,6 +326,23 @@ async def select_active_shadow_rejected(
 ) -> list[ShadowRejectedRow]:
     """Return active rejected-signal observations (terminated_at IS NULL) for ``bot_id``."""
     rows = await conn.fetch(_SELECT_ACTIVE_REJECTED_SQL, bot_id)
+    return [_row_to_shadow_rejected(row) for row in rows]
+
+
+async def select_all_active_shadow_rejected(
+    conn: _DbExecutor,
+) -> list[ShadowRejectedRow]:
+    """Cross-bot enumeration of active rejected observations ordered by created_at ASC (T-513b1).
+
+    Used by ``services.execution.app.shadow_rejected_replay.resume_active_observations_on_startup``
+    on lifespan startup to iterate every rejected-signal observation pending
+    across all bots. Differs from :func:`select_active_shadow_rejected` — no
+    ``bot_id`` filter; sequential index scan on ``shadow_rejected_bot_active``
+    partial index (``terminated_at IS NULL`` filter) acceptable at expected
+    F5 scale (<500 active observations total per H-016 + T-510a docstring).
+    Mirror :func:`select_all_active_shadow_variants` (T-512a shipped).
+    """
+    rows = await conn.fetch(_SELECT_ALL_ACTIVE_REJECTED_SQL)
     return [_row_to_shadow_rejected(row) for row in rows]
 
 

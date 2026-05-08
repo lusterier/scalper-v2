@@ -855,6 +855,64 @@ def test_lifespan_shutdown_calls_scheduler_shutdown_wait_true_before_adapter_clo
     )
 
 
+def test_lifespan_invokes_resume_active_observations_after_rejected_worker_start_when_enabled(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-513b1 — resume_active_observations_on_startup called AFTER shadow_rejected_worker.start().
+
+    Per plan WG#1 + WG#19: index-based call-order assertion. ShadowRejectedWorker
+    constructed + start()ed FIRST, then resume_active_observations_on_startup
+    invoked. Both gated on settings.shadow_rejected_enabled (default True).
+    """
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    call_log: list[str] = []
+
+    async def _resume_observations(**_kwargs: Any) -> None:
+        call_log.append("resume_active_observations_on_startup")
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.resume_active_observations_on_startup",
+        _resume_observations,
+    )
+
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        # ShadowRejectedWorker must be constructed and attached.
+        assert hasattr(app.state, "shadow_rejected_worker")
+        assert app.state.shadow_rejected_worker is not None
+    # resume_active_observations_on_startup must have been invoked during lifespan.
+    assert "resume_active_observations_on_startup" in call_log
+
+
 def test_lifespan_invokes_reconcile_on_startup_before_dispatchers(
     settings: object,
     mock_pool: MagicMock,

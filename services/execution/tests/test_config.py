@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
@@ -72,3 +74,21 @@ def test_env_overrides(
     monkeypatch.setenv(env_key, env_value)
     s = Settings()  # type: ignore[call-arg]
     assert getattr(s, attr) == expected
+
+
+def test_shadow_rejected_replay_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-513b1 — 2 NEW Settings defaults match T-512a values for symmetry."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
+    s = Settings()  # type: ignore[call-arg]
+    assert s.shadow_rejected_replay_query_window_max_hours == Decimal("48")
+    assert s.shadow_rejected_replay_per_observation_timeout_seconds == 120.0
+
+
+def test_shadow_rejected_replay_settings_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-513b1 — Settings round-trip via env vars (§N9 + L-001)."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
+    monkeypatch.setenv("SHADOW_REJECTED_REPLAY_QUERY_WINDOW_MAX_HOURS", "24")
+    monkeypatch.setenv("SHADOW_REJECTED_REPLAY_PER_OBSERVATION_TIMEOUT_SECONDS", "60.5")
+    s = Settings()  # type: ignore[call-arg]
+    assert s.shadow_rejected_replay_query_window_max_hours == Decimal("24")
+    assert s.shadow_rejected_replay_per_observation_timeout_seconds == 60.5

@@ -507,3 +507,22 @@ async def test_stop_cancels_active_observation_tasks() -> None:
     fake_task.cancel.assert_called_once()
     # Second stop is no-op (registry already cleared).
     await worker.stop()
+
+
+async def test_register_resume_task_smoke_inserts_into_active_tasks() -> None:
+    """T-513b1 — register_resume_task inserts into _active_tasks (1:1 keyed by rejected_id)."""
+    worker = _make_worker()
+    fake_task = MagicMock(spec=asyncio.Task)
+    worker.register_resume_task(rejected_id=99, task=fake_task)
+    assert worker._active_tasks[99] is fake_task
+
+
+async def test_register_resume_task_then_stop_cancels_task() -> None:
+    """T-513b1 — registered resume task is cancelled by stop() (mirror live-spawn cleanup)."""
+    worker = _make_worker()
+    fake_task = MagicMock()
+    fake_task.done = MagicMock(return_value=False)
+    fake_task.cancel = MagicMock()
+    worker.register_resume_task(rejected_id=101, task=fake_task)
+    await worker.stop()
+    fake_task.cancel.assert_called_once()

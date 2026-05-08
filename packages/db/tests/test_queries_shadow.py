@@ -36,6 +36,7 @@ from packages.db.queries.shadow import (
     insert_shadow_variant,
     select_active_shadow_rejected,
     select_active_shadow_variants,
+    select_all_active_shadow_rejected,
     select_shadow_rejected_by_id,
     select_shadow_variant_by_id,
     update_shadow_rejected_terminal,
@@ -161,12 +162,13 @@ def test_shadow_variant_terminal_strenum_values() -> None:
 
 
 def test_shadow_rejected_terminal_strenum_values() -> None:
-    """4 values per BRIEF §13.5."""
+    """4 values per BRIEF §13.5 + 1 T-513b1 addition (SHUTDOWN_MID_REPLAY mirror T-512a)."""
     assert {member.value for member in ShadowRejectedTerminal} == {
         "would_tp",
         "would_sl",
         "would_be",
         "no_trigger",
+        "shutdown_mid_replay",
     }
 
 
@@ -248,6 +250,24 @@ async def test_select_active_shadow_rejected_sql_filter_and_order() -> None:
     assert "WHERE bot_id = $1 AND terminated_at IS NULL" in sql
     assert "ORDER BY created_at ASC" in sql
     assert bind_args == ["alpha"]
+
+
+async def test_select_all_active_shadow_rejected_sql_cross_bot_filter_and_order() -> None:
+    """T-513b1 cross-bot helper — terminated_at IS NULL (no bot_id) + ORDER BY created_at ASC."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_all_active_shadow_rejected(conn)
+    sql, *bind_args = captured[0]
+    assert "WHERE terminated_at IS NULL" in sql
+    assert "bot_id =" not in sql
+    assert "ORDER BY created_at ASC" in sql
+    assert bind_args == []
 
 
 async def test_select_shadow_variant_by_id_returns_none_on_miss() -> None:

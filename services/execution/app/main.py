@@ -99,6 +99,7 @@ from .health import router as health_router
 from .placement import make_per_bot_handler
 from .pool import build_adapter_pool
 from .restart import reconcile_on_startup
+from .shadow_rejected_replay import resume_active_observations_on_startup
 from .shadow_rejected_worker import ShadowRejectedWorker
 from .shadow_replay import resume_active_variants_on_startup
 from .shadow_worker import ShadowWorker
@@ -287,6 +288,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 clock=lambda: datetime.now(UTC),
             )
             await shadow_rejected_worker.start()
+
+            # 6.9. T-513b1 / BRIEF §13.5 + §20 H-023 — rejected observation
+            # restart-recovery via OHLC replay. Mirror T-512a wire pattern:
+            # AFTER `shadow_rejected_worker.start()` (subscriptions ready before
+            # resume tasks register; functionally agnostic since rejected obs
+            # have no cancel-hook subscribe — operator-symmetry rationale per
+            # plan OQ-4=A 2026-05-08). BEFORE `scheduler.start()` (audit
+            # doesn't fire mid-replay).
+            await resume_active_observations_on_startup(
+                pool=pool,
+                bus=bus,
+                settings=settings,
+                shadow_rejected_worker=shadow_rejected_worker,
+                clock=lambda: datetime.now(UTC),
+            )
 
         # 7. T-220b — APScheduler-driven P&L audit (per ADR-0007 D1-D7).
         # Sub-account → adapter + bot_ids reverse mapping for audit job composition.

@@ -251,6 +251,23 @@ class ShadowRejectedWorker:
                 task.cancel()
         self._active_tasks.clear()
 
+    def register_resume_task(
+        self,
+        *,
+        rejected_id: int,
+        task: asyncio.Task[None],
+    ) -> None:
+        """T-513b1 — register a restart-recovery resume task into ``_active_tasks``.
+
+        Public surface for ``services.execution.app.shadow_rejected_replay`` so
+        ``stop()`` cancels resume tasks identically to live-spawn tasks.
+        Encapsulates the ``_active_tasks`` registry layout — callers must NOT
+        access the dict directly. Mirror :meth:`ShadowWorker.register_resume_task`
+        (T-512a) but 1:1 keying (``dict[int, Task]``) since rejected obs are
+        1:1 ID-to-task vs variants 1:N parent_trade_id-to-tasks.
+        """
+        self._active_tasks[rejected_id] = task
+
     async def _on_rejected_start_envelope(self, envelope: MessageEnvelope) -> None:
         """NATS handler: parse :class:`ShadowRejectedStartPayload` → dispatch."""
         payload = ShadowRejectedStartPayload.model_validate(envelope.payload)

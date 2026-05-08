@@ -130,3 +130,12 @@ class Settings(BaseSettings):
     # BRIEF §13.5 default; configurable per §N9 + L-001 active control.
     shadow_rejected_enabled: bool = True
     shadow_rejected_observation_minutes: int = 60
+
+    # T-513b1 / BRIEF §13.5 + §20 H-023 — rejected-signal observation
+    # restart-recovery via OHLC replay. Mirror T-512a `shadow_replay_*`
+    # Settings values for symmetry: 48h window cap covers 2x default
+    # observation window with margin (defensive against extreme stuck
+    # observations); 120s per-task compute timeout adequate for pure-
+    # observer FSM (no PE construction; lighter than variant replay).
+    shadow_rejected_replay_query_window_max_hours: Decimal = Decimal("48")
+    shadow_rejected_replay_per_observation_timeout_seconds: float = 120.0

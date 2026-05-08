@@ -102,15 +102,23 @@ class ShadowVariantTerminal(StrEnum):
 class ShadowRejectedTerminal(StrEnum):
     """shadow_rejected.terminal_outcome enum (BRIEF §13.5).
 
-    F5 (T-513 rejected-signal observation) writes one of these 4 values
+    F5 (T-513 rejected-signal observation) writes one of these values
     when the 60-min observation window closes. Mirror
-    :class:`ShadowVariantTerminal` forward-compat pattern.
+    :class:`ShadowVariantTerminal` forward-compat pattern (column TEXT no
+    CHECK per T-510a OQ-4=A — value additions are app-layer only, no
+    migration).
     """
 
     WOULD_TP = "would_tp"
     WOULD_SL = "would_sl"
     WOULD_BE = "would_be"
     NO_TRIGGER = "no_trigger"
+    # T-513b1 / OQ-2 baked: replay-recovery edge cases (window cap exceeded
+    # OR per-task compute timeout) → observation cannot resume meaningfully.
+    # Mirror :data:`ShadowVariantTerminal.SHUTDOWN_MID_REPLAY` semantic per
+    # T-512a OQ-4=A precedent. Distinguishes "couldn't observe long enough"
+    # from "observed but no trigger" — operator-visible classification.
+    SHUTDOWN_MID_REPLAY = "shutdown_mid_replay"
 
 
 class ExchangeMode(StrEnum):
