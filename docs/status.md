@@ -1,5 +1,49 @@
 # Session status
 
+## 2026-05-08 (late-evening II — T-509 worker shipped; backtest harness cluster 9/9 complete)
+
+**F5 phase: 15/22 numbered tasks done (~68%).** Master HEAD `850b94a`. **Backtest harness cluster T-501..T-509 = 9/9 (100% complete)** — F5 backtest goal delivered per BRIEF §12.2.
+
+### T-509 delivered (15/22)
+
+Plan-reviewer 2-pass APPROVE (REVISE → APPROVE on L-011/L-013 codec regression BLOCKER + missing Write-time guidance + 3 CONCERNs) → drift-checker SKIPPED → brief-reviewer single-pass SHIP (7 WG items verified) → math-validator OUT OF SCOPE.
+
+**Key catches**:
+- **L-011/L-013 codec regression BLOCKER**: T-507b `update_backtest_run_completion` was text-mode for CLI pool (no codec); analytics-api worker pool REGISTERS `_register_jsonb_codec` → would double-encode. Fix: `codec_registered: bool = False` kwarg flag (forward-pointer in `analytics.py:2038-2041` literally predicted this).
+- **getattr sentinel for backwards-compat**: T-507b `main()` uses `external_run_id = getattr(args, 'run_id', None)` — preserves CLI argparse Namespace without the attr.
+- **SKIP LOCKED race-safety verification**: env-gated real-PG concurrent claim test (2 coroutines proti seeded queued row → only 1 claims).
+
+### Backtest harness cluster recap (T-501..T-509)
+
+- T-501: backtest_runs migration 0013 + scoring_evaluations FK
+- T-502: ReplayBus (in-process timestamp-ordered pub/sub)
+- T-503: HistoricalOHLCSource (cursor-streamed OHLC replay; pace control)
+- T-504: HistoricalSignalSource (signals replay)
+- T-505: intra_candle generator (TradingView Replay path)
+- T-506: PaperExchange replay-mode wiring (T-503 + T-505)
+- T-507a: BusProtocol prereq + ReplayBus async subscribe + KV stubs
+- T-507b: scripts/backtest.py CLI orchestrator + ReplayClock + ADR-0008 PF semantic
+- T-508: --compare mode (aggregate diff + per-trade diff)
+- **T-509: backtest worker connect (this) — analytics-api lifespan polls queue + dispatches to T-507b**
+
+End-to-end backtest flow now operational: operator UI POST /api/backtests/ → T-407 creates queued row → T-509 worker claims (atomic SKIP LOCKED) → invokes T-507b main() with run_id → replays via T-502/T-503/T-504/T-506/strategy-engine/execution-service → writes summary + backtest_trades.
+
+### F5 cluster progress
+
+- **Backtest harness (T-501..T-509, 9 tasks)**: **9/9 done = 100% COMPLETE**
+- **Shadow variants runtime (T-510..T-514, 5 tasks)**: 3/5 done (unchanged)
+- **UI extensions (T-515..T-517, 3 tasks)**: 1/3 done (unchanged)
+- **Backend polish + ops (T-518..T-522, 5 tasks)**: 0/5 done (unchanged)
+
+### Watch-outs for next session
+
+- **F5 critical-path bottleneck**: T-512 OHLC replay restart-recovery (H-023 owner; kill-during-variant integration test mandatory) is heaviest remaining task; T-516 + T-517 UI tasks soft-blocked on T-512 runtime
+- **T-511 next reasonable pickup**: shadow-worker FSM (H-016 owner) — first shadow runtime task after T-510a/b infra layer
+- **Today total**: 13 master commits (T-506 + chore + 3 chore(devx) + T-507a + chore + T-507b + chore + T-508 + chore + T-509 + chore)
+- **Operator can now end-to-end test backtest CLI**: `BACKTEST_WORKER_ENABLED=true ... uv run uvicorn services.analytics_api.app.main:create_app --factory ...` + UI POST → worker picks up → T-507b replays → summary persisted
+
+---
+
 ## 2026-05-08 (late-evening — T-508 compare mode shipped)
 
 **F5 phase: 14/22 numbered tasks done (~64%).** Master HEAD `fcdc453`. T-508 is small additive read-only mode extending T-507b CLI; backtest harness cluster 8/9 → 9/9 (only T-509 worker connect remaining).
