@@ -94,6 +94,11 @@ class AdapterPoolResult:
     adapters: dict[BotId, ExchangeClient]
     ws_tasks: list[asyncio.Task[None]]
     paper_consumer_tasks: list[asyncio.Task[None]]
+    # T-218c fix(paper-dispatcher-skip) / H-031: bot_ids whose adapter is
+    # PaperExchange. ExecutionDispatcher MUST skip these (dispatcher reads
+    # LIVE tables; paper bots write to paper_* — unattributable_fill kills
+    # the task). main.py:215-240 dispatcher creation loop consults this set.
+    paper_bot_ids: frozenset[BotId]
 
 
 def _require_env(env: Mapping[str, str], key: str) -> str:
@@ -240,6 +245,7 @@ async def build_adapter_pool(
     adapters: dict[BotId, ExchangeClient] = {}
     ws_tasks: list[asyncio.Task[None]] = []
     paper_consumer_tasks: list[asyncio.Task[None]] = []
+    paper_bot_ids: set[BotId] = set()  # T-218c H-031 — populated for exchange_mode="paper"
     for bot_row in bot_rows:
         if bot_row.exchange_mode in ("live", "testnet"):
             adapter, ws_task = _construct_bybit_adapter(
@@ -262,14 +268,17 @@ async def build_adapter_pool(
             )
             adapters[BotId(bot_row.bot_id)] = paper_adapter
             paper_consumer_tasks.append(consumer_task)
+            paper_bot_ids.add(BotId(bot_row.bot_id))  # T-218c H-031
     bound_logger.info(
         "execution.adapter_pool_built",
         bots_loaded=len(adapters),
         ws_tasks=len(ws_tasks),
         paper_consumer_tasks=len(paper_consumer_tasks),
+        paper_bot_ids=len(paper_bot_ids),
     )
     return AdapterPoolResult(
         adapters=adapters,
         ws_tasks=ws_tasks,
         paper_consumer_tasks=paper_consumer_tasks,
+        paper_bot_ids=frozenset(paper_bot_ids),
     )

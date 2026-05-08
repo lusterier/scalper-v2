@@ -213,8 +213,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return str(sub_account)
 
         # 6. Per-bot ExecutionDispatcher tasks (T-218a; H-009 per-bot dedup ring).
+        # T-218c fix(paper-dispatcher-skip) / H-031: skip dispatcher for paper
+        # bots — PaperExchange writes paper_* tables and emits ExecutionEvent
+        # for both open + close (paper/adapter.py:820/930/1185); the LIVE
+        # ExecutionDispatcher tries to look up events in live orders/trades/
+        # position_state which paper bots don't write to → unattributable_fill
+        # RuntimeError → run_dispatcher_for_bot re-raises → task dies silently.
+        # Paper bots' orders.requests subscriber (line 166) STAYS — placement
+        # handler routes paper orders via PaperExchange.place_market_order;
+        # dispatcher's role is irrelevant for paper.
         dispatcher_tasks: list[asyncio.Task[None]] = []
         for bot_id, adapter in adapter_pool.adapters.items():
+            if bot_id in adapter_pool.paper_bot_ids:
+                continue
             sub_account = _resolve_sub_account(adapter)
             if sub_account not in closed_pnl_locks:
                 closed_pnl_locks[sub_account] = asyncio.Lock()

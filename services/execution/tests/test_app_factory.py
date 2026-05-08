@@ -124,6 +124,7 @@ def test_lifespan_subscribes_to_orders_requests_per_bot(
     fake_pool_result.adapters = {"alpha": _adapter(), "beta": _adapter()}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "services.execution.app.main.create_pool",
@@ -183,6 +184,7 @@ def test_lifespan_attaches_shadow_worker_and_orders_shutdown_correctly(
     fake_pool_result.adapters = {"alpha": _adapter()}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "services.execution.app.main.create_pool",
@@ -257,6 +259,7 @@ def test_lifespan_subscribes_each_bot_with_handler_wrapped_in_OrderRequestDedupC
     fake_pool_result.adapters = {"alpha": _adapter(), "beta": _adapter()}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "services.execution.app.main.create_pool",
@@ -315,6 +318,7 @@ def test_lifespan_threads_settings_execution_orders_dedup_capacity_to_make_per_b
     fake_pool_result.adapters = {"alpha": _adapter()}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     captured_kwargs: list[dict[str, object]] = []
 
@@ -384,6 +388,7 @@ def test_lifespan_spawns_one_dispatcher_task_per_bot_named_dispatcher_botid(
     fake_pool_result.adapters = {"alpha": _adapter(), "beta": _adapter()}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "services.execution.app.main.create_pool",
@@ -449,6 +454,7 @@ def test_lifespan_cancels_dispatcher_tasks_before_adapter_close(
     fake_pool_result.adapters = {"alpha": _adapter("alpha")}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "services.execution.app.main.create_pool",
@@ -524,6 +530,7 @@ def test_lifespan_threads_settings_dispatch_dedup_capacity_to_dispatcher(
     fake_pool_result.adapters = {"alpha": _adapter()}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     captured_ctor_kwargs: list[dict[str, object]] = []
 
@@ -606,6 +613,7 @@ def test_lifespan_threads_settings_position_poll_to_make_per_bot_handler(
     fake_pool_result.adapters = {"alpha": _adapter()}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     captured_kwargs: list[dict[str, object]] = []
 
@@ -681,6 +689,7 @@ def test_lifespan_creates_scheduler_with_timezone_utc_and_starts(
     fake_pool_result.adapters = {"alpha": _MagicMock(_sub_account="alpha-sub", close=_AsyncMock())}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "services.execution.app.main.create_pool",
@@ -743,6 +752,7 @@ def test_daily_report_runs_at_configured_utc_time(
     fake_pool_result.adapters = {"alpha": _MagicMock(_sub_account="alpha-sub", close=_AsyncMock())}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "services.execution.app.main.create_pool",
@@ -819,6 +829,7 @@ def test_lifespan_shutdown_calls_scheduler_shutdown_wait_true_before_adapter_clo
     fake_pool_result.adapters = {"alpha": fake_adapter}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     mock_pool.close = _pool_close
 
@@ -882,6 +893,7 @@ def test_lifespan_invokes_resume_active_observations_after_rejected_worker_start
     fake_pool_result.adapters = {}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "services.execution.app.main.create_pool",
@@ -939,6 +951,7 @@ def test_lifespan_invokes_reconcile_on_startup_before_dispatchers(
     fake_pool_result.adapters = {"alpha": _MagicMock(_sub_account="alpha-sub", close=_AsyncMock())}
     fake_pool_result.ws_tasks = []
     fake_pool_result.paper_consumer_tasks = []
+    fake_pool_result.paper_bot_ids = frozenset()
 
     real_create_task = asyncio.create_task
 
@@ -982,3 +995,83 @@ def test_lifespan_invokes_reconcile_on_startup_before_dispatchers(
         assert reconcile_idx < min(dispatcher_idxs), (
             f"reconcile_on_startup must precede dispatcher tasks; got call_log={call_log}"
         )
+
+
+def test_lifespan_does_not_create_dispatcher_task_for_paper_bots(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    mock_rate_limiter: MagicMock,
+    monkeypatch: object,
+) -> None:
+    """T-218c H-031 regression guard: paper bots MUST NOT get ExecutionDispatcher task.
+
+    PaperExchange writes paper_* tables and emits ExecutionEvent for both open
+    + close (paper/adapter.py:820_persist_open / :930 / :1185); the LIVE
+    ExecutionDispatcher's lookups against `orders` / `trades` / `position_state`
+    return None for paper events → unattributable_fill RuntimeError →
+    run_dispatcher_for_bot re-raises → task dies silently.
+
+    Fix: main.py:215-240 dispatcher creation skips bot_ids in
+    adapter_pool.paper_bot_ids. orders.requests.<bot_id> subscriber STAYS
+    for paper bots (placement handler routes paper orders via PaperExchange).
+    """
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from services.execution.app.main import create_app
+
+    created_task_names: list[str] = []
+
+    def _adapter() -> _MagicMock:
+        return _MagicMock(_sub_account="alpha-sub", close=_AsyncMock())
+
+    fake_pool_result = _MagicMock()
+    fake_pool_result.adapters = {"alpha": _adapter(), "paper-bot": _adapter()}
+    fake_pool_result.ws_tasks = []
+    fake_pool_result.paper_consumer_tasks = []
+    # Mark "paper-bot" as paper-mode bot per H-031 contract.
+    fake_pool_result.paper_bot_ids = frozenset({"paper-bot"})
+
+    real_create_task = asyncio.create_task
+
+    def _create_task_proxy(coro: Any, *, name: str = "") -> Any:
+        if name.startswith("dispatcher_"):
+            created_task_names.append(name)
+        return real_create_task(coro, name=name)
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.create_pool",
+        _AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.NatsClient",
+        _MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.SharedRateLimiter",
+        _MagicMock(return_value=mock_rate_limiter),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "services.execution.app.main.build_adapter_pool",
+        _AsyncMock(return_value=fake_pool_result),
+    )
+    monkeypatch.setattr(asyncio, "create_task", _create_task_proxy)  # type: ignore[attr-defined]
+
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+
+    # H-031 contract: paper-bot must NOT get a dispatcher task; live "alpha" must.
+    assert "dispatcher_alpha" in created_task_names, (
+        f"Live bot 'alpha' must have dispatcher task; got {created_task_names}"
+    )
+    assert "dispatcher_paper-bot" not in created_task_names, (
+        f"Paper bot 'paper-bot' MUST NOT have dispatcher task per H-031; got {created_task_names}"
+    )
+    # orders.requests subscriber preserved for paper bots — placement handler
+    # routes paper OrderRequests via PaperExchange.place_market_order. Verify
+    # bus.subscribe was called for both bots' orders.requests subjects.
+    subscribe_subjects = [c.args[0] for c in mock_bus.subscribe.await_args_list]
+    assert "orders.requests.alpha" in subscribe_subjects
+    assert "orders.requests.paper-bot" in subscribe_subjects

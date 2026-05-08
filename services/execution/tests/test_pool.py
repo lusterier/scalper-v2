@@ -102,6 +102,56 @@ async def test_build_adapter_pool_with_empty_bots_returns_empty_result() -> None
     assert result.adapters == {}
     assert result.ws_tasks == []
     assert result.paper_consumer_tasks == []
+    assert result.paper_bot_ids == frozenset()  # T-218c H-031
+
+
+async def test_build_adapter_pool_populates_paper_bot_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-218c H-031 regression guard: paper_bot_ids set populated for paper-mode bots only.
+
+    Mixed live + paper bot rows; assert paper_bot_ids == {paper_bot_ids only}
+    and live bots NOT in set. Field is frozenset (immutable; safe to share).
+    """
+    rows = [
+        {"bot_id": "alpha-paper", "display_name": "A", "exchange_mode": "paper"},
+        {"bot_id": "beta-paper", "display_name": "B", "exchange_mode": "paper"},
+    ]
+    pool = _make_pool_with_rows(rows)
+
+    class _FakePaper:
+        def __init__(self, **kwargs: Any) -> None:
+            self._kwargs = kwargs
+
+        async def start_consuming(self) -> None:
+            return None
+
+    monkeypatch.setattr("services.execution.app.pool.PaperExchange", _FakePaper)
+    env = {
+        f"BOT_{name}_PAPER_{k}": v
+        for name in ("ALPHA-PAPER", "BETA-PAPER")
+        for k, v in {
+            "SEED_BALANCE": "10000",
+            "SLIPPAGE_MODEL": "fixed_pct",
+            "FEE_RATE": "0.0006",
+            "SLIPPAGE_PARAMS_JSON": '{"fixed_slippage_pct": "0.001"}',
+        }.items()
+    }
+    result = await build_adapter_pool(
+        pool=pool,
+        bus=MagicMock(),
+        rate_limiter=MagicMock(),
+        settings=_settings(),
+        bound_logger=_logger(),
+        env=env,
+    )
+    # H-031 contract: paper_bot_ids exactly matches the paper-mode bots.
+    assert result.paper_bot_ids == frozenset({"alpha-paper", "beta-paper"})
+    assert isinstance(result.paper_bot_ids, frozenset)
+    # Cleanup spawned consumer tasks.
+    for task in result.paper_consumer_tasks:
+        task.cancel()
+    await asyncio.gather(*result.paper_consumer_tasks, return_exceptions=True)
 
 
 async def test_build_adapter_pool_filters_to_active_via_sql_where(

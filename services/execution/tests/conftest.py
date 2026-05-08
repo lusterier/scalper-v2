@@ -105,6 +105,9 @@ def mock_adapter_pool_result() -> MagicMock:
     result.adapters = {}
     result.ws_tasks = []
     result.paper_consumer_tasks = []
+    # T-218c H-031: dispatcher creation loop iterates `if bot_id in paper_bot_ids`;
+    # MagicMock default would raise TypeError. Empty frozenset = no paper skip.
+    result.paper_bot_ids = frozenset()
     return result
 
 
