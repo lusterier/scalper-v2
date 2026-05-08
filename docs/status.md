@@ -1,5 +1,48 @@
 # Session status
 
+## 2026-05-08 (late-night I — T-511b2a shadow runtime schema foundation shipped; ADR-0010 paper-aware deviation recorded)
+
+**F5 phase: 18/22 numbered tasks done (~82%).** Master HEAD `da7413a` pre-merge; T-511b2a feat commit `741f086` on branch `feat/T-511b2a-shadow-foundation` awaiting ff-merge. Shadow runtime cluster 6/9 sub-tasks (T-510a + T-510b + T-511a + T-511b1 + **T-511b2a NEW** + T-514; T-511b2 + T-512 + T-513 remaining; T-511 split into 4 sub-tasks via 3 pre-emptive splits per L-007).
+
+### T-511b2a delivered — 4-gate review system caught architectural §6.4 deviation requiring ADR-0010 + dual-FK alternative consideration
+
+- **Plan-reviewer pass-1 REVISE** — 2 BLOCKERs + 3 CONCERNs:
+  - BLOCKER 1: BRIEF §2.5:268 deviation ("Downstream services cannot distinguish paper from live") without ADR per §6.7 protocol — paper-aware shadow runtime explicitly distinguishes paper/live via `parent_kind` discriminator at 3 layers (DB schema + wire envelope + strategy-engine producer mapping)
+  - BLOCKER 2: dual-FK + XOR CHECK alternative not discussed in plan as rejected option (T-510a OQ-6=A precedent had different rationale — composite PK technical constraint vs paper/live dual-target here)
+  - 3 CONCERNs: §7.4:1192 destructive-migration ADR coverage; two-step ALTER pattern test assertion gap; L-014 budget calibration watch
+- **Architectural OQ surfaces driving plan revision**:
+  - OQ-Paper-mode (operator decision 2026-05-08): chose **B = paper plno-scope** over A (live + testnet only) and C (defer F6+) — operator's primary v2 mode is paper today (v2 not deployed; sibling v1 disabled 2026-05-02), so shadow runtime needs to fire there; but migration 0014 FK `shadow_variants.parent_trade_id → trades(id)` would FK-violate for paper bots writing to `paper_trades`
+  - OQ-Split (operator decision 2026-05-08): chose **A = pre-emptive split T-511b2a + T-511b2** per L-007 + L-014 — original T-511b2 estimate ~190 src grew to ~250-330 src across 9+ files with paper-aware support; mirror T-510 (T-510a schema + T-510b helpers) split pattern
+- **NEW ADR-0010** (`docs/adr/0010-shadow-runtime-distinguishes-paper-from-live.md`; Accepted 2026-05-08 per §6.7 protocol after operator review): records §2.5:268 invariant narrowing rationale (binds on listed services strategy-engine + analytics-api; shadow runtime is post-spec first-class) + Trade-offs (loss of single-table FK referential integrity; cross-table writeback complexity for paper_trade_id sourcing in T-511b2; discriminator drift risk; downgrade-on-paper-rows risk) + 4 rejected alternatives (live-only, defer-F6, **dual-FK + XOR CHECK** quantitatively rejected at 530 LOC vs 340 LOC = 60% overhead, **paper-dual-write trades + paper_trades** rejected as architecturally invasive breaking T-219 cumulative-delta close-flow)
+- **Plan-reviewer pass-2 APPROVE** with 10-item write-time guidance verbatim checklist
+- **Drift-checker ON TRACK** — 48 src counted (under plan target 70); zero out-of-scope changes; no T-511b2 producer-side leak; runtime ValueError narrowing in `_row_to_shadow_variant` decoder is in-scope defensive narrowing (mirror existing terminal_outcome pattern); 1 extra parametrized round-trip test scope-aligned (strengthens WG#4 Literal validation contract)
+- **Brief-reviewer single-pass SHIP** — 10/10 acceptance + 10/10 WG; §N1 / §N3 / §N8 / §N9 hazards clean; L-002 / L-008 / L-009 / L-013 N/A verified
+- **Math-validator VERIFIED** — services/execution/ touched by 1-LOC propagation only; zero financial math changes; no Decimal→float casts; no seed conventions; `_compute_be_sl_price` / `_compute_trail_sl_price` / `_check_be_trigger` / `_terminal_from_pe_state` / mfe-mae casts from T-511b1 untouched (verified by grep on +/- LOC)
+
+### Implementation summary
+
+- **migration 0015**: drops `shadow_variants_parent_trade_id_fkey` FK + adds `parent_kind: TEXT NOT NULL` discriminator with two-step ALTER pattern (server_default 'live' + nullable=False → drop default); explicit `downgrade 0014` per L-012 (NEVER relative `-1`)
+- **`packages/db/queries/shadow.py`**: `insert_shadow_variant` adds keyword-only no-default `parent_kind: Literal["live", "paper"]` kwarg (TypeError if omitted; test verifies); `ShadowVariantRow.parent_kind` field appended at end (preserved field order); SQL INSERT $9 + RETURNING + SELECT projections updated; `_row_to_shadow_variant` decoder ValueError narrowing on unexpected literal value
+- **`packages/bus/payloads.py`**: `ShadowStartPayload.parent_kind: Literal["live", "paper"]` no-default field with Pydantic Literal validation
+- **`services/execution/app/shadow_worker.py:_run_shadow_variant`** — 1-LOC required-effect propagation `parent_kind=payload.parent_kind` (NOT silent refactor; payload schema delta is the cause)
+- **5 env-gated migration integration tests** (`tests/integration/migrations/test_0015_migration.py`): drop FK + column NOT NULL with `column_default IS NULL` post-upgrade per WG#1 two-step ALTER test assertion + paper insert + live-orphan insert + explicit downgrade 0014
+- **3 unit query tests** + **4 unit payload tests** + **7 fixture cascades** in T-511b1 shipped tests
+- 41 src LOC counted (under plan target ~70) + 81 LOC migration §0.3-excluded + ~370 LOC tests = ~492 total
+- 1960 repo-wide passing (up from 1953 = +7 new tests); 0 regressions
+
+### Watch-outs for next session
+
+- **T-511b2 next reasonable pickup** — producer + integration half consumes T-511b2a foundation. Plan-doc draft `docs/plans/T-511b2.md` exists (pre-T-511b2a-split version) but **needs revision** before plan-reviewer pass to incorporate: (1) paper-aware emit at placement.py paper-fork (line 240-252) AND live branch (line 328) — paper_trade_id sourcing requires `OrderPlaceResult.paper_trade_id` field extension or PaperExchange method; (2) **main.py shutdown-order BLOCKER 2 fix** from T-511b2a pass-1 reviewer (existing main.py runs `bus.close()` FIRST, then position_lifecycle_tasks cancel, etc. — plan WG#10 had backwards "stop() BEFORE bus.close" which contradicted convention; correct order is shadow_worker.stop() AFTER bus.close, alongside position_lifecycle_tasks gather); (3) parity test verbatim name `test_variant_step_transitions_match_live_lifecycle_fsm` (BRIEF §13.7 wording with `_step` + "fsm" suffix); (4) NEW `TradeClosedPayload` envelope + `subject_for_trade_closed` + `subject_for_shadow_start` helpers; (5) extended `emit_post_commit_close_event` dual-publish (orders.events + trade.closed); (6) OrderRequest schema delta `shadow_variants` + `shadow_max_duration_hours` + parent_kind carry-through; (7) strategy-engine `_publish_order_request` populates from `bot_config.shadow.enabled` + maps `BotConfig.exchange.mode` → ShadowStartPayload.parent_kind. Per L-014 calibration: realistic ~200 LOC src + ~320 LOC tests across 9+ files
+- **Critical-path gating task** — T-512 OHLC replay restart-recovery (H-023 owner; mandatory kill-during-variant integration test per E3 exit criterion). Heaviest remaining F5 task; UI tasks T-516/T-517 soft-blocked
+- **Today total**: 18 master commits anticipated post-merge (16 prior + T-511b2a feat + chore)
+
+### Lessons surfaced
+
+- **§6.4 invariant scope-narrowing pattern**: when adding a new first-class component (like shadow runtime per BRIEF §13) post-spec, invariants on "downstream services" can be narrowed via ADR if the new component's purpose requires the distinction. ADR-0010 sets precedent — narrowing not deviation when the listed services preserve the invariant.
+- **Pre-emptive split mechanic for cross-cutting deviations**: when operator decision (paper plno-scope) dramatically expands scope (~190 → ~330 LOC), L-007 + L-014 + T-510 split precedent makes T-Xa (foundation) + T-X (consumer/producer) the operationally-cheap path. T-511b2a → T-511b2 mirrors T-510a → T-510b mirror T-507a → T-507b.
+
+---
+
 ## 2026-05-08 (late-evening IV — T-511b1 shadow-worker FSM core shipped)
 
 **F5 phase: 17/22 numbered tasks done (~77%).** Master HEAD `da7413a` (`4bf4e63` feat + `da7413a` chore). Shadow runtime cluster 5/8 sub-tasks (T-510a + T-510b + T-511a + T-511b1 + T-514; T-511b2 + T-512 + T-513 remaining). Today total: 16 master commits.
