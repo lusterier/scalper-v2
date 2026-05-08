@@ -1,5 +1,45 @@
 # Session status
 
+## 2026-05-08 (morning — T-506 PaperExchange replay-mode shipped)
+
+**F5 phase: 11/22 numbered tasks done (~50%) + 3 T-520 hardening shortlist sub-commits unchanged.** Master HEAD `a96df9e`. Single-task session; no T-520 sub-items advanced.
+
+### T-506 delivered
+
+- **Backtest harness cluster (T-501..T-509, 9 tasks)**: 6/9 done (was 5/9). T-506 PaperExchange replay-mode wired to HistoricalOHLCSource via T-505 intra-candle path expansion; 187 src LOC + 391 test LOC + 406 plan-doc; 12 new tests; live-mode 100% intact (106 existing tests unchanged). Plan-reviewer 2-pass APPROVE (REVISE → APPROVE on `_last_candle` BLOCKER caught at concern #6); brief-reviewer 2-pass SHIP (FIX FIRST → SHIP on inline comment line citation). **Remaining**: T-507 CLI orchestrator (top-of-DAG zostávajúce ne-T-520) + T-508 comparison mode + T-509 worker-connect.
+
+### Key implementation details for T-507 hand-off
+
+- **PaperExchange constructor** now accepts `mode: Literal["live","replay"]` + `historical_source: HistoricalOHLCSource | None`. Defaults preserve live-mode backwards compat.
+- **Replay entry point**: `await paper.run_replay()` — iterates injected source to exhaustion. Returns None.
+- **Intra-candle expansion**: each OHLCRow → 4 prices via T-505 `generate_intra_candle_path` → 3 sequential segments fed through new `_check_sl_tp_crosses_replay(symbol, low, high)`. Segment ranges `[min(seg_open, seg_close), max(seg_open, seg_close)]` are narrower than the full real candle, so SL/TP fire in chronological order (TradingView "Replay" semantics).
+- **Drain-side caveat for T-507 CLI**: `_drain_sl_tp_fill` writes to live `paper_*` tables in replay mode (same drain path as live). T-507 CLI must run against dev DB; production replay sandbox out of scope per §0.8.
+- **`_last_candle` cache** (BLOCKER fix from plan-reviewer concern #6): `_process_replay_candle` populates BOTH `_last_price` and `_last_candle` (synthesised `OhlcCandlePayload` with hardcoded `source='binance'` — schema lie contained because `_compute_slippage` reads only `candle.high`/`.low`, never `.source`). Without this, T-507 signal-driven `place_market_order` would `KeyError` on first call.
+
+### F5 cluster progress (per T-500 backlog)
+
+- **Backtest harness cluster (T-501..T-509, 9 tasks)**: 6/9 done — T-501 + T-502 + T-503 + T-504 + T-505 + **T-506 NEW**. **Remaining**: T-507 + T-508 + T-509.
+- **Shadow variants runtime cluster (T-510..T-514, 5 tasks)**: 3/5 done (unchanged) — T-510a + T-510b + T-514. **Remaining**: T-511 + T-512 + T-513.
+- **UI extensions cluster (T-515..T-517, 3 tasks)**: 1/3 done (unchanged) — T-515. **Remaining**: T-516 + T-517 (soft-blocked na T-512).
+- **Backend polish + ops cluster (T-518..T-522, 5 tasks)**: 0/5 done (unchanged); T-520 hardening shortlist 3/5 cherry-picked sub-commits from yesterday.
+
+### Active lessons (`docs/review-lessons.md`)
+
+13 lessons L-001..L-013 unchanged (T-506 nedidal žiadne nové generalizable lesson — `_last_candle` BLOCKER bol task-specific cache parity, nie cross-task pattern).
+
+L-006 (LOC overshoot acceptable on integration tasks) najviac uplatňované — T-506 src 187 = +50% nad plánom 125 (kvôli WG-required documentation blocks); ON TRACK per drift-checker.
+
+### Watch-outs for next session
+
+- **F5 phase pickup**: 11/22 numbered tasks remaining + 2 T-520 sub-items.
+- **Top-of-DAG zostávajúce ne-T-520 / ne-T-512**: **T-507 PaperExchange CLI orchestrator** (~250 LOC src + ~180 LOC tests; pre-emptively split-flagged per L-007 — môže sa rozdeliť na T-507a orchestration + T-507b summary stats ak compute non-trivial; integruje T-503 + T-504 + T-502 + T-506 do single in-process CLI). T-518 Feature auto-backfill + T-516 shadow variants UI (soft-blocked na T-512) + T-519 hazard test audit (gating; late-F5).
+- **Critical-path bottleneck**: T-512 OHLC replay restart-recovery (kill-during-variant integration test mandatory) zostáva najťažší F5 task.
+- **Dev stack**: postgres + nats v Dockeri uptime ~24h (healthy); analytics-api + Vite procesy zomreli zo včera, neresetované (T-506 backend-only task, neboli potrebné).
+- **CI status**: ci-fast + ci-full + e2e all green on master HEAD chains across yesterday's 33 commits + dnešný `a96df9e`.
+- **Master HEAD trajectory**: yesterday `64cda81` (status) → today `a96df9e` (T-506).
+
+---
+
 ## 2026-05-07 (evening session-end — F5 marathon: 10/22 tasks done + T-520 hardening shortlist 3/5)
 
 **F5 phase: 10/22 numbered tasks done (~50%) + 3 T-520 hardening shortlist sub-commits + L-013 lesson generalizing pre-emptive _to_jsonable convention.** Master HEAD `426e873`. **Today total: 33 master commits** across morning F4 close + afternoon F5 marathon.
