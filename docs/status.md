@@ -1,5 +1,60 @@
 # Session status
 
+## 2026-05-08 (late-night VI — T-523 F5 scope extension to Live-ready MVP shipped per ADR-0011; 13 mandatory pre-live hardening tasks T-524..T-536 added; "Plný MVP" → "Live-ready MVP" rename + new exit criterion E6)
+
+**F5 phase: 23/44 tasks done (~52% post-scope-extension).** Master HEAD pre-merge `387b67d` (`chore(tasks)` for T-512b). T-523 reorg 2026-05-08 added 13 mandatory pre-live operational hardening tasks (T-524..T-536) + T-523 meta-chore itself (mirror T-500 named-task precedent). F5 cluster expanded from 30 entries (22 done + 8 pending) to 44 entries (23 done + 21 pending: T-513b + T-516..T-522 existing + T-524..T-536 hardening).
+
+### T-523 delivered — F5 scope extension via BRIEF §19 addendum + ADR-0011
+
+- **All 4 review gates passed**: plan-reviewer 2-pass APPROVE 2026-05-08 (pass-1 REVISE 2 BLOCKER + 5 CONCERN; all 7 mechanical fixes applied; pass-2 APPROVE with 10-item Write-time guidance) → drift-checker IMPLICIT (markdown only; no source code) → brief-reviewer SHIP (9/9 WG addressed; WG#9 status.md deferred to chore commit) → math-validator VERIFIED — out of scope per CLAUDE.md Gate 4 fast no-op (no services/execution/, packages/pnl/, packages/features/ touched).
+- Mirror T-500 / T-019 / T-200 named-task precedent. Markdown-only meta-chore.
+- **Operator session 2026-05-08 audit** (general-purpose research agent) surfaced 6 categories of pre-live ops gaps post-F5-feature-complete:
+  1. Bot-level risk caps (max_open_trades, daily_loss, max_drawdown halt, cooldowns, losing-streak)
+  2. Automatic position sizing (qty from balance/equity, % of account, risk-per-SL, min/max notional, altcoin cap, qty_step rounding, min order size, balance pre-check)
+  3. Account balance / equity tracking (`get_account_balance()` protocol gap, wallet/available/total/margin balance, unrealized PnL, historical snapshots)
+  4. Better PnL accounting (8/9 sub-items already-shipped; only funding fees genuine gap)
+  5. Named-state trade lifecycle FSM enum (currently free-text status + flags + close_reason split)
+  6. SL/TP lifecycle verification (periodic watchdog, overwrite protection, trailing audit)
+- **Bucket A (already shipped)**: PnL accounting majority via cumulative-delta ADR-0006 + fee-per-fill + partial TP + reduce-only + realized/unrealized split + executions audit + T-220 audit loop + restart reconciliation T-221.
+- **Bucket B (BRIEF-deferred-no-task)**: §B.1 sizing block + qty_step rounding + virtual_balance Prom gauge.
+- **Bucket C (silent everywhere)**: All bot-level risk caps + % / risk-per-SL sizing + altcoin cap + min order / available_balance pre-checks + get_account_balance() adapter protocol + wallet/available/equity/margin tracking + funding fees + periodic SL watchdog + SL overwrite protection + named SIGNAL_RECEIVED..RECONCILED enum.
+
+### Operator decisions baked (session 2026-05-08)
+
+- **OQ-1=B**: Extend F5 scope (rename "Plný MVP" → "Live-ready MVP"); 13 hardening tasks land within F5 vs separate F6 phase; single sign-off semantic.
+- **OQ-2=A**: Formal BRIEF §19 addendum + NEW ADR-0011 (per §6.7 ADR discipline).
+- **OQ-3=A (reconciled)**: Hardening tasks land within F5 after existing tail (T-513b + UI T-516+T-517 + T-518..T-521) and before T-522 close-out; T-522 scope expanded to 2-section runbook (paper feature-complete + Live-ready).
+
+### 13 mandatory hardening tasks (T-524..T-536)
+
+- **Risk management (3)**: T-524 bot concurrent-trades caps + T-525 daily loss limit + max drawdown stop (L-007 split-watch) + T-526 cooldown after loss + losing-streak cooldown.
+- **Position sizing (3)**: T-527 §B.1 sizing block reified (absorbs F4+ opportunistic; L-007 split-watch) + T-528 risk-per-SL sizing (L-007 split-watch) + T-529 qty_step rounding + min order + balance pre-check (absorbs T-F2+ opportunistic + placement.py:153 stub).
+- **Account balance / equity tracking (3)**: T-530 ExchangeClient.get_account_balance() protocol extension + T-531 equity snapshot table + virtual_balance Prom gauge (absorbs BRIEF §15:2151) + T-532 funding fee tracking.
+- **Trade lifecycle FSM (1)**: T-533 named-state TradeLifecycleState enum refactor (L-007/L-014/L-016 split-watch — largest task in cluster).
+- **SL/TP verification (3)**: T-534 periodic SL watchdog APScheduler tick (L-007 split-watch) + T-535 SL overwrite protection + T-536 trailing SL audit pass.
+
+### Anticipated hazards H-027 / H-028 / H-029
+
+3 anticipated hazards documented in ADR-0011 §Consequences but **NOT added to BRIEF §20 catalog at T-523 time per §0.8 anti-hypothetical**. Each surfaces during the relevant task's plan stage and gets formal H-NNN allocation then:
+
+- **H-027 (anticipated, T-525)**: Daily loss limit / drawdown stop must be persisted across restart and re-evaluated on startup (mirror T-221 reconcile pattern). Otherwise restart resets the kill-switch.
+- **H-028 (anticipated, T-534)**: Periodic SL watchdog must distinguish "Bybit dropped SL" from "Bybit returned 'no positions' on transient error" — false-positive emergency_close would close real positions wrongly.
+- **H-029 (anticipated, T-535)**: SL overwrite detection must NOT fire false-positive on legitimate trail SL updates — only on out-of-FSM updates.
+
+### Watch-outs for next session
+
+- **F5 critical-path bottleneck revised post-T-523**: T-533 named-state FSM enum refactor (largest hardening task; touches 4 columns + migration 0018 + state population) likely dominates final F5 cycles. T-512 OHLC replay (orig bottleneck) closed via T-512a + T-512b shipped 2026-05-08.
+- **Hardening tasks land AFTER existing F5 tail per OQ-3=A**: T-513b (E3 final) + T-516+T-517 (UI) + T-518..T-521 (existing backend polish) shipnú prv. Potom T-524..T-536. Potom T-522 close-out + Live-ready sign-off.
+- **L-015 active control reminder for T-531/T-532/T-533 plan stages**: each plan-doc MUST include "Sibling migration test impact" section per L-015 (migrations 0016 + 0017 + 0018 each modify earlier-migration-introduced tables → potential ci-full integration test breakage).
+- **Pre-emptive split likely candidates**: T-525 (loss-limit FSM + persistence + reconcile profile = L-014 multiplier) + T-527 (§B.1 block large) + T-528 (sizing.method discriminator dispatcher) + T-533 (large refactor across modules + migration + state population) + T-534 (APScheduler tick + emergency_close on miss = L-016 restart-recovery profile). Each plan stage decides per L-007.
+- **L-019 named-task precedent extended**: T-019 (F1) + T-200 (F2) + T-500 (F5 init) + T-523 (F5 extension) all use named-task path. F3 / F4 anonymous chore(tasks) commits remain historical exceptions; named-task path preferred for plans of any non-trivial scope per L-019 active control + drift-checker + brief-reviewer visibility.
+
+### Lessons surfaced
+
+- **No new lesson** — T-523 is markdown-only meta-chore; no implementation surface for review system to catch new patterns. ADR-0011 captures the F5 scope-extension pattern that may itself become a precedent if future BRIEF amendments via ADR mechanism are needed.
+
+---
+
 ## 2026-05-08 (late-night V — T-512b mandatory kill-during-variant integration test shipped; F5 E3 partially satisfied; in-process simulated restart per OQ-1=A; T-513b sole remaining E3 gating sub-task)
 
 **F5 phase: 22/22 numbered tasks done (~100%).** Master HEAD pre-merge `6aa96a9` (`chore(tasks)` for T-513a). Shadow runtime cluster 10/11 sub-tasks done (T-510a + T-510b + T-511a + T-511b1 + T-511b2a + T-511b2 + T-512a + T-512b + T-513a + T-514; T-513b remaining as the only gating sub-task for full F5 E3 exit-criterion sign-off).
