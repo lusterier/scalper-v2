@@ -366,7 +366,13 @@ async def test_run_dispatcher_for_bot_logs_error_and_reraises_on_stream_exceptio
 async def test_process_open_fill_orders_lookup_to_open_branch(
     patched_queries: dict[str, Any],
 ) -> None:
-    """Orders row exists, trade.open_order_id matches → exec_type='open'."""
+    """Orders row exists, trade.open_order_id matches → exec_type='open'.
+
+    Per T-218b H-030 fix: open-fill must NOT decrement remaining_qty.
+    Realistic placement-time pre-fill ``remaining_qty`` matches event ``qty``
+    (placement_persist.py:419 wrote remaining_qty=request.qty); without the
+    H-030 skip, dispatcher would zero remaining_qty → trigger close-flow.
+    """
     patched_queries["select_order_id_by_exchange_id"].return_value = 100
     patched_queries["select_trade_by_open_order_id"].return_value = TradeLookupRow(
         id=1,
@@ -374,8 +380,10 @@ async def test_process_open_fill_orders_lookup_to_open_branch(
         close_order_id=None,
         side="buy",
     )
+    # Pre-fill remaining_qty matches event.qty (default Decimal("5") per
+    # _execution_event_v factory) — placement-time realistic value.
     patched_queries["select_position_state"].return_value = _ps_row(
-        remaining_qty=Decimal("5"),  # post-update non-zero (no close trigger)
+        remaining_qty=Decimal("5"),
     )
     dispatcher, _ = _build()
     await dispatcher.consume(_execution_event_v(exchange_exec_id="exec-open"))
@@ -383,7 +391,50 @@ async def test_process_open_fill_orders_lookup_to_open_branch(
     assert insert_call.kwargs["exec_type"] == "open"
     assert insert_call.kwargs["order_id"] == 100
     assert insert_call.kwargs["trade_id"] == 1
+    # H-030 fix invariants: open-fill NEVER decrements remaining_qty + NEVER
+    # triggers close-flow. update_trade_fees_incremental still records entry fee.
+    patched_queries["update_position_state_after_fill"].assert_not_called()
     patched_queries["reconcile_close"].assert_not_called()
+    patched_queries["update_trade_fees_incremental"].assert_called_once()
+
+
+async def test_process_open_fill_does_not_decrement_remaining_qty(
+    patched_queries: dict[str, Any],
+) -> None:
+    """H-030 regression guard: open fill must NOT decrement remaining_qty.
+
+    Reproduction setup mirrors placement-time pre-fill state:
+    placement_persist.py:419 writes ``remaining_qty=request.qty``; the WS
+    execution event for the open fill arrives with ``message.qty == request.qty``.
+    Pre-T-218b fix, dispatcher subtracted full qty → remaining_qty zeroed →
+    reconcile_close triggered → trade marked closed in DB while position open
+    on exchange.
+
+    Post-fix: dispatcher skips ``update_position_state_after_fill`` for
+    ``exec_type='open'`` (placement-tx already accounted-for the qty);
+    ``insert_execution`` still writes audit row; ``update_trade_fees_incremental``
+    still records entry fee. Defensive close-trigger guard at dispatcher.py:237
+    additionally gates on ``exec_type != 'open'``.
+    """
+    patched_queries["select_order_id_by_exchange_id"].return_value = 100
+    patched_queries["select_trade_by_open_order_id"].return_value = TradeLookupRow(
+        id=1,
+        open_order_id=100,
+        close_order_id=None,
+        side="buy",
+    )
+    # Pre-fill remaining_qty == event.qty (the BUG TRIGGER condition).
+    patched_queries["select_position_state"].return_value = _ps_row(
+        remaining_qty=Decimal("5"),
+    )
+    dispatcher, _ = _build()
+    await dispatcher.consume(_execution_event_v(exchange_exec_id="exec-open-regression"))
+    insert_call = patched_queries["insert_execution"].call_args
+    # H-030 invariants:
+    assert insert_call.kwargs["exec_type"] == "open"  # exec_type derivation unchanged
+    patched_queries["update_position_state_after_fill"].assert_not_called()  # skip per fix
+    patched_queries["reconcile_close"].assert_not_called()  # close-trigger gated
+    patched_queries["update_trade_fees_incremental"].assert_called_once()  # entry fee recorded
 
 
 async def test_process_close_fill_orders_lookup_to_close_branch(
@@ -630,15 +681,24 @@ async def test_process_invokes_update_trade_fees_incremental_with_event_fee(
     assert fees_call.kwargs["trade_id"] == 1
 
 
-async def test_process_invokes_reconcile_close_when_remaining_zeroes(
+async def test_process_open_fill_with_zero_remaining_qty_does_NOT_trigger_close(
     patched_queries: dict[str, Any],
 ) -> None:
-    """B1 fix — close-trigger fires when ps_after.remaining_qty == 0; reconcile_close raises NIE.
+    """T-218b H-030 defensive guard — open-fill must NEVER trigger close-flow.
 
-    Tx rolls back; INSERT execution NOT persisted post-rollback (real DB) — but
-    in mock-tests the AsyncMock `insert_execution` was already invoked once
-    BEFORE reconcile_close raised. Verify the raise path + reconcile_close call,
-    not persistence (mock-level test cannot model rollback).
+    REPURPOSED from former B1 test ``test_process_invokes_reconcile_close_when_remaining_zeroes``
+    which encoded the BUG behavior as expected (exec_type='open' + remaining_qty=0
+    → reconcile_close fires). H-030 fix gates close-trigger on
+    ``exec_type != 'open'`` defensively; B1 state-based-trigger invariant is
+    preserved for non-open exec_types (covered by companion test
+    ``test_process_close_trigger_pure_state_based_independent_of_exec_type``
+    using exec_type='unknown').
+
+    Edge case under guard: even if some other path zeroes remaining_qty during
+    open-fill processing (state-inconsistency edge case per operator OQ-2
+    2026-05-08), close-flow MUST NOT fire because exec_type='open' implies
+    placement-tx already committed the position state — re-zeroing is bug
+    surface, not legitimate close.
     """
     patched_queries["select_order_id_by_exchange_id"].return_value = 100
     patched_queries["select_trade_by_open_order_id"].return_value = TradeLookupRow(
@@ -647,14 +707,21 @@ async def test_process_invokes_reconcile_close_when_remaining_zeroes(
         close_order_id=None,
         side="buy",
     )
-    # 'open' branch only reads position_state once (ps_after) — derivation skips it.
+    # Edge case: ps_after returns remaining_qty=0 during open-fill processing.
+    # H-030 defensive guard MUST prevent close-trigger from firing.
     patched_queries["select_position_state"].return_value = _ps_row(
         remaining_qty=Decimal("0"),
     )
     dispatcher, _ = _build()
     await dispatcher.consume(_execution_event_v())
-    patched_queries["reconcile_close"].assert_called_once()
-    patched_queries["emit_post_commit_close_event"].assert_called_once()
+    insert_call = patched_queries["insert_execution"].call_args
+    assert insert_call.kwargs["exec_type"] == "open"
+    # H-030 invariants: open-fill NEVER decrements remaining_qty AND NEVER
+    # triggers close-flow even when defensive ps_after re-read shows zero.
+    patched_queries["update_position_state_after_fill"].assert_not_called()
+    patched_queries["reconcile_close"].assert_not_called()
+    patched_queries["emit_post_commit_close_event"].assert_not_called()
+    patched_queries["update_trade_fees_incremental"].assert_called_once()
 
 
 async def test_process_close_trigger_pure_state_based_independent_of_exec_type(

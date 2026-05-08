@@ -210,17 +210,26 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
                 executed_at=message.executed_at,
             )
 
-            new_sl_type: Literal["protective", "be", "trail"] | None = (
-                "trail" if exec_type == "partial_tp" else None
-            )
-            await update_position_state_after_fill(
-                conn,
-                bot_id=self._bot_id,
-                symbol=message.symbol,
-                qty_delta=message.qty,
-                new_sl_type=new_sl_type,
-                updated_at=self._now_fn(),
-            )
+            # T-218b fix(open-fill-qty-bug) / H-030: exec_type="open" must NOT
+            # decrement remaining_qty. Placement tx (placement_persist.py:419)
+            # already wrote remaining_qty=request.qty at trade-open commit; the
+            # WS execution event for the open fill is audit-side mirror only
+            # (insert_execution above wrote the audit row). Per operator OQ-2
+            # 2026-05-08. Without this skip, remaining_qty would zero out for
+            # full-fill open events → close-trigger fires → trade marked closed
+            # in DB while position is still open on exchange.
+            if exec_type != "open":
+                new_sl_type: Literal["protective", "be", "trail"] | None = (
+                    "trail" if exec_type == "partial_tp" else None
+                )
+                await update_position_state_after_fill(
+                    conn,
+                    bot_id=self._bot_id,
+                    symbol=message.symbol,
+                    qty_delta=message.qty,
+                    new_sl_type=new_sl_type,
+                    updated_at=self._now_fn(),
+                )
 
             if trade_id is not None:
                 await update_trade_fees_incremental(
@@ -234,7 +243,14 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
                 bot_id=self._bot_id,
                 symbol=message.symbol,
             )
-            if ps_after is not None and ps_after.remaining_qty == Decimal("0"):
+            # H-030 defensive: open-fill must NEVER trigger close-flow even if
+            # some other path zeroes remaining_qty during processing (state-
+            # inconsistency edge case). Per operator OQ-2 2026-05-08.
+            if (
+                exec_type != "open"
+                and ps_after is not None
+                and ps_after.remaining_qty == Decimal("0")
+            ):
                 if trade_id is None:
                     msg = "internal invariant: trade_id None at close-trigger block"
                     raise RuntimeError(msg)
