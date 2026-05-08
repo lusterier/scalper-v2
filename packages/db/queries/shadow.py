@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from packages.core import non_idempotent
 from packages.core.types import ShadowRejectedTerminal, ShadowVariantTerminal
@@ -78,7 +78,12 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class ShadowVariantRow:
-    """Full projection of ``shadow_variants`` row (14 cols per T-510a migration 0014)."""
+    """Full projection of ``shadow_variants`` row (15 cols per T-511b2a migration 0015).
+
+    ``parent_kind`` discriminator (T-511b2a / ADR-0010) routes ``parent_trade_id``
+    to either ``trades.id`` (live) or ``paper_trades.id`` (paper). Migration 0015
+    drops the original 0014 FK; integrity at app layer via the discriminator.
+    """
 
     id: int
     parent_trade_id: int
@@ -94,6 +99,7 @@ class ShadowVariantRow:
     mfe_pct: float | None
     mae_pct: float | None
     meta: dict[str, Any]
+    parent_kind: Literal["live", "paper"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,7 +122,7 @@ class ShadowRejectedRow:
 _SHADOW_VARIANT_BASE_COLUMNS = (
     "id, parent_trade_id, bot_id, variant_name, side, entry_price, qty, "
     "created_at, terminated_at, terminal_outcome, realized_pnl, "
-    "mfe_pct, mae_pct, meta"
+    "mfe_pct, mae_pct, meta, parent_kind"
 )
 
 _SHADOW_REJECTED_BASE_COLUMNS = (
@@ -151,12 +157,12 @@ _SELECT_REJECTED_BY_ID_SQL = (
 _INSERT_SHADOW_VARIANT_SQL = """
     INSERT INTO shadow_variants (
         parent_trade_id, bot_id, variant_name, side,
-        entry_price, qty, created_at, meta
+        entry_price, qty, created_at, meta, parent_kind
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::jsonb, '{}'::jsonb))
+    VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::jsonb, '{}'::jsonb), $9)
     RETURNING id, parent_trade_id, bot_id, variant_name, side, entry_price, qty,
               created_at, terminated_at, terminal_outcome, realized_pnl,
-              mfe_pct, mae_pct, meta
+              mfe_pct, mae_pct, meta, parent_kind
 """
 
 _INSERT_SHADOW_REJECTED_SQL = """
@@ -178,7 +184,7 @@ _UPDATE_VARIANT_TERMINAL_SQL = """
      WHERE id = $1
     RETURNING id, parent_trade_id, bot_id, variant_name, side, entry_price, qty,
               created_at, terminated_at, terminal_outcome, realized_pnl,
-              mfe_pct, mae_pct, meta
+              mfe_pct, mae_pct, meta, parent_kind
 """
 
 _UPDATE_REJECTED_TERMINAL_SQL = """
@@ -216,6 +222,10 @@ def _row_to_shadow_variant(row: asyncpg.Record) -> ShadowVariantRow:
     """
     meta_value = row["meta"]
     terminal_raw = row["terminal_outcome"]
+    parent_kind_raw = str(row["parent_kind"])
+    if parent_kind_raw not in ("live", "paper"):
+        msg = f"shadow_variants.parent_kind unexpected value {parent_kind_raw!r}"
+        raise ValueError(msg)
     return ShadowVariantRow(
         id=int(row["id"]),
         parent_trade_id=int(row["parent_trade_id"]),
@@ -233,6 +243,7 @@ def _row_to_shadow_variant(row: asyncpg.Record) -> ShadowVariantRow:
         mfe_pct=float(row["mfe_pct"]) if row["mfe_pct"] is not None else None,
         mae_pct=float(row["mae_pct"]) if row["mae_pct"] is not None else None,
         meta=meta_value if isinstance(meta_value, dict) else {},
+        parent_kind=parent_kind_raw,  # type: ignore[arg-type]
     )
 
 
@@ -322,9 +333,15 @@ async def insert_shadow_variant(
     entry_price: Decimal,
     qty: Decimal,
     created_at: datetime,
+    parent_kind: Literal["live", "paper"],
     meta: dict[str, Any] | None = None,
 ) -> ShadowVariantRow:
     """INSERT shadow_variants row; ``meta=None`` → SQL DEFAULT ``'{}'::jsonb`` applies.
+
+    ``parent_kind`` (T-511b2a / ADR-0010) is a required keyword-only argument
+    with no default — caller must specify ``"live"`` or ``"paper"`` based on
+    the parent trade's ``BotConfig.exchange.mode``. Routes ``parent_trade_id``
+    to either ``trades.id`` or ``paper_trades.id``.
 
     L-011 B-mode: ``meta`` (when non-None) serialized via
     ``json.dumps(_to_jsonable(meta))`` text-mode (no codec on execution-service).
@@ -340,6 +357,7 @@ async def insert_shadow_variant(
         qty,
         created_at,
         _serialize_meta(meta),
+        parent_kind,
     )
     if row is None:
         msg = "INSERT shadow_variants ... RETURNING produced no row"

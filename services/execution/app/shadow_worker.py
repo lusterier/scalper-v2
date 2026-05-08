@@ -180,6 +180,7 @@ class ShadowWorker:
                     entry_price=payload.entry_price,
                     qty=payload.qty,
                     created_at=self._clock(),
+                    parent_kind=payload.parent_kind,
                 )
             variant_id = row.id
 

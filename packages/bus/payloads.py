@@ -7,6 +7,13 @@ StrEnum is REUSED from :class:`packages.core.types.ShadowVariantTerminal`
 redefine it. Migration 0014 wire-format is snake_case plain TEXT (no
 CHECK constraint per OQ-4=A); ``ShadowVariantTerminal`` already aligns.
 
+T-511b2a (2026-05-08; ADR-0010) adds ``parent_kind`` discriminator to
+``ShadowStartPayload`` so the shadow runtime can route ``parent_trade_id``
+to either ``trades.id`` (live) or ``paper_trades.id`` (paper) per the
+strategy-engine producer's ``BotConfig.exchange.mode`` mapping. Migration
+0015 drops the original 0014 FK to ``trades(id)`` and writes
+``parent_kind`` as a plain TEXT NOT NULL column.
+
 Future shadow / backtest payloads land here as the F5 cluster shipped.
 """
 
@@ -39,12 +46,20 @@ class ShadowStartPayload(BaseModel):
     Published by :mod:`services.execution.app.placement_persist` post-commit
     on trade-open when ``bot_config.shadow.enabled`` (T-511b2 wires the
     publisher; T-511b1 ships only the consumer in :mod:`shadow_worker`).
+
+    ``parent_kind`` (T-511b2a / ADR-0010) routes ``parent_trade_id`` to
+    either ``trades.id`` (``"live"``) or ``paper_trades.id`` (``"paper"``).
+    Strategy-engine producer maps ``BotConfig.exchange.mode``: ``"paper"``
+    → ``"paper"``; ``"live"`` / ``"testnet"`` → ``"live"``. Migration 0015
+    drops the original 0014 FK to ``trades(id)`` so paper-mode parent
+    trades are addressable.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     envelope_version: Literal[1] = 1
     parent_trade_id: int
+    parent_kind: Literal["live", "paper"]
     bot_id: str
     symbol: str
     side: Literal["buy", "sell"]

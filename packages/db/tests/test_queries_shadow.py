@@ -50,6 +50,7 @@ def _variant_row(
     *,
     row_id: int = 1,
     parent_trade_id: int = 100,
+    parent_kind: str = "live",
     terminal_outcome: str | None = None,
     terminated_at: datetime | None = None,
     realized_pnl: Decimal | None = None,
@@ -72,6 +73,7 @@ def _variant_row(
         "mfe_pct": mfe_pct,
         "mae_pct": mae_pct,
         "meta": meta if meta is not None else {},
+        "parent_kind": parent_kind,
     }
 
 
@@ -105,7 +107,7 @@ def _rejected_row(
 
 
 def test_shadow_variant_row_dataclass_shape() -> None:
-    """ShadowVariantRow has 14 fields per T-510a migration column order."""
+    """ShadowVariantRow has 15 fields per T-511b2a migration 0015 (added parent_kind)."""
     field_names = tuple(f.name for f in fields(ShadowVariantRow))
     assert field_names == (
         "id",
@@ -122,6 +124,7 @@ def test_shadow_variant_row_dataclass_shape() -> None:
         "mfe_pct",
         "mae_pct",
         "meta",
+        "parent_kind",
     )
     assert ShadowVariantRow.__dataclass_params__.frozen is True  # type: ignore[attr-defined]
 
@@ -289,6 +292,7 @@ async def test_insert_shadow_variant_serialises_meta_via_to_jsonable_then_json_d
         entry_price=Decimal("65000"),
         qty=Decimal("0.001"),
         created_at=_FIXED_NOW,
+        parent_kind="live",
         meta=meta_with_decimal,
     )
     bind_args = captured[0]
@@ -318,8 +322,11 @@ async def test_insert_shadow_variant_meta_none_binds_none_for_default() -> None:
         entry_price=Decimal("65000"),
         qty=Decimal("0.001"),
         created_at=_FIXED_NOW,
+        parent_kind="live",
     )
     assert captured[0][7] is None
+    # T-511b2a: parent_kind binds at $9 (positional index 8) post-meta.
+    assert captured[0][8] == "live"
 
 
 async def test_insert_shadow_rejected_happy_path() -> None:
@@ -400,6 +407,80 @@ async def test_update_shadow_rejected_terminal_no_realized_pnl_arg() -> None:
     )
     assert isinstance(result, ShadowRejectedRow)
     assert result.terminal_outcome is ShadowRejectedTerminal.WOULD_TP
+
+
+# ---------------------------------------------------------------------------
+# T-511b2a / ADR-0010 — parent_kind discriminator
+# ---------------------------------------------------------------------------
+
+
+async def test_insert_shadow_variant_persists_parent_kind_live() -> None:
+    """parent_kind='live' binds at $9 + decoded into ShadowVariantRow.parent_kind."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(_sql: str, *args: Any) -> dict[str, Any]:
+        captured.append(args)
+        return _variant_row(parent_kind="live")
+
+    conn.fetchrow = _capture
+    result = await insert_shadow_variant(
+        conn,
+        parent_trade_id=100,
+        bot_id="alpha",
+        variant_name="baseline",
+        side="buy",
+        entry_price=Decimal("65000"),
+        qty=Decimal("0.001"),
+        created_at=_FIXED_NOW,
+        parent_kind="live",
+    )
+    assert captured[0][8] == "live"
+    assert isinstance(result, ShadowVariantRow)
+    assert result.parent_kind == "live"
+
+
+async def test_insert_shadow_variant_persists_parent_kind_paper() -> None:
+    """parent_kind='paper' binds at $9 + decoded into ShadowVariantRow.parent_kind."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(_sql: str, *args: Any) -> dict[str, Any]:
+        captured.append(args)
+        return _variant_row(parent_kind="paper")
+
+    conn.fetchrow = _capture
+    result = await insert_shadow_variant(
+        conn,
+        parent_trade_id=100,
+        bot_id="alpha",
+        variant_name="baseline",
+        side="buy",
+        entry_price=Decimal("65000"),
+        qty=Decimal("0.001"),
+        created_at=_FIXED_NOW,
+        parent_kind="paper",
+    )
+    assert captured[0][8] == "paper"
+    assert isinstance(result, ShadowVariantRow)
+    assert result.parent_kind == "paper"
+
+
+async def test_insert_shadow_variant_requires_parent_kind_kwarg() -> None:
+    """parent_kind keyword-only with no default — caller MUST specify (TypeError if omitted)."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=_variant_row())
+    with pytest.raises(TypeError, match="parent_kind"):
+        await insert_shadow_variant(  # type: ignore[call-arg]
+            conn,
+            parent_trade_id=100,
+            bot_id="alpha",
+            variant_name="baseline",
+            side="buy",
+            entry_price=Decimal("65000"),
+            qty=Decimal("0.001"),
+            created_at=_FIXED_NOW,
+        )
 
 
 @pytest.mark.parametrize(

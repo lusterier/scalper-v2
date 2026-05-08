@@ -105,6 +105,7 @@ def _make_shadow_variant_row(*, id_: int = 1, **kwargs: Any) -> ShadowVariantRow
         mfe_pct=None,
         mae_pct=None,
         meta={},
+        parent_kind=kwargs.get("parent_kind", "live"),
     )
 
 
@@ -129,6 +130,7 @@ def _make_worker(
 def _make_payload(
     *,
     parent_trade_id: int = 42,
+    parent_kind: str = "live",
     bot_id: str = "test-bot",
     symbol: str = "BTCUSDT",
     side: str = "buy",
@@ -138,6 +140,7 @@ def _make_payload(
 ) -> ShadowStartPayload:
     return ShadowStartPayload(
         parent_trade_id=parent_trade_id,
+        parent_kind=parent_kind,  # type: ignore[arg-type]
         bot_id=bot_id,
         symbol=symbol,
         side=side,  # type: ignore[arg-type]
@@ -201,6 +204,7 @@ async def _drive_candle(
 def test_shadow_start_envelope_pydantic_validation() -> None:
     payload = ShadowStartPayload(
         parent_trade_id=42,
+        parent_kind="live",
         bot_id="test",
         symbol="BTCUSDT",
         side="buy",
