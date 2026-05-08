@@ -7,9 +7,11 @@ Integration test (env-gated) lives in test_backtest_integration.py.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -361,6 +363,251 @@ def test_format_per_trade_diff_no_common_signals_returns_na_message() -> None:
 
 
 # select_diverging_trades_for_compare SQL bind shape (1 test)
+
+
+# --- T-509 main() backwards-compat after run_id refactor (2 tests) -----------
+
+
+async def test_main_default_run_id_creates_fresh_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-509 backwards-compat: args without run_id (existing CLI) creates row.
+
+    Verifies T-507b CLI invocation path UNCHANGED post-T-509 main() refactor.
+    """
+    import scripts.backtest as backtest_mod
+
+    insert_calls: list[object] = []
+
+    async def _capture_insert(*_args: object, **kwargs: object) -> object:
+        insert_calls.append(kwargs)
+        # Return minimal object with .id attribute
+        return MagicMock(id=uuid4())
+
+    monkeypatch.setattr(backtest_mod, "insert_backtest_run", _capture_insert)
+    monkeypatch.setattr(backtest_mod, "update_backtest_run_to_running", AsyncMock())
+    monkeypatch.setattr(backtest_mod, "update_backtest_run_completion", AsyncMock())
+    monkeypatch.setattr(backtest_mod, "copy_paper_trades_to_backtest", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        backtest_mod,
+        "_compute_summary",
+        AsyncMock(return_value={"total_trades": 0, "wr": None, "pnl": "0", "pf": None, "mdd": "0"}),
+    )
+    # Stub out heavy composition (load config + bus + paper).
+    monkeypatch.setattr(
+        backtest_mod,
+        "_load_bot_config_with_overrides",
+        lambda **_: (
+            "yaml",
+            "hash",
+            MagicMock(
+                symbols=["BTCUSDT"],
+                execution=MagicMock(fee_rate=Decimal("0.0006")),
+                signals=MagicMock(ttl_seconds=120),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        backtest_mod,
+        "create_pool",
+        AsyncMock(return_value=_make_pool_for_main()),
+    )
+    monkeypatch.setattr(
+        backtest_mod,
+        "ReplayBus",
+        lambda: MagicMock(
+            subscribe=AsyncMock(),
+            publish=AsyncMock(),
+            run_until_empty=AsyncMock(),
+            close=AsyncMock(),
+        ),
+    )
+    monkeypatch.setattr(backtest_mod, "HistoricalOHLCSource", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr(backtest_mod, "HistoricalSignalSource", lambda *a, **kw: _FakeAsyncIter([]))
+    monkeypatch.setattr(
+        backtest_mod, "PaperExchange", lambda **kw: MagicMock(run_replay=AsyncMock())
+    )
+    monkeypatch.setattr(backtest_mod, "FeatureResolver", lambda **kw: MagicMock())
+    monkeypatch.setattr(backtest_mod, "make_signal_handler", lambda **kw: AsyncMock())
+    monkeypatch.setattr(backtest_mod, "make_per_bot_handler", lambda **kw: AsyncMock())
+    monkeypatch.setattr(backtest_mod, "ExecutionDispatcher", lambda **kw: MagicMock())
+    monkeypatch.setattr(backtest_mod, "run_dispatcher_for_bot", AsyncMock())
+    monkeypatch.setattr(
+        backtest_mod,
+        "ExecutionSettings",
+        lambda: MagicMock(
+            execution_orders_dedup_capacity=10000,
+            execution_fill_price_retry_attempts=3,
+            execution_fill_price_retry_backoff_s=0.1,
+            position_poll_interval_s=1.0,
+            position_poll_stale_ticks=5,
+            dispatch_dedup_capacity=10000,
+        ),
+    )
+
+    args = argparse.Namespace(
+        bot="alpha",
+        from_at=datetime(2026, 4, 1, tzinfo=UTC),
+        to_at=datetime(2026, 4, 2, tzinfo=UTC),
+        config_path=Path("/tmp/test.yaml"),
+        overrides=[],
+        pace="max",
+        source="binance",
+        plugin_registry_path=None,
+        db_url="postgresql://test",
+        name=None,
+        notes=None,
+        # NO run_id attr — existing CLI behavior
+    )
+    rc = await backtest_mod.main(args)
+    assert rc == 0
+    assert len(insert_calls) == 1, "CLI path MUST call insert_backtest_run exactly once"
+
+
+async def test_main_with_external_run_id_skips_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-509: args.run_id (worker path) → skip insert_backtest_run."""
+    import scripts.backtest as backtest_mod
+
+    insert_calls: list[object] = []
+
+    async def _capture_insert(*_args: object, **kwargs: object) -> object:
+        insert_calls.append(kwargs)
+        return MagicMock(id=uuid4())
+
+    monkeypatch.setattr(backtest_mod, "insert_backtest_run", _capture_insert)
+    monkeypatch.setattr(backtest_mod, "update_backtest_run_to_running", AsyncMock())
+    monkeypatch.setattr(backtest_mod, "update_backtest_run_completion", AsyncMock())
+    monkeypatch.setattr(backtest_mod, "copy_paper_trades_to_backtest", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        backtest_mod,
+        "_compute_summary",
+        AsyncMock(return_value={"total_trades": 0, "wr": None, "pnl": "0", "pf": None, "mdd": "0"}),
+    )
+    monkeypatch.setattr(
+        backtest_mod,
+        "_load_bot_config_with_overrides",
+        lambda **_: (
+            "yaml",
+            "hash",
+            MagicMock(
+                symbols=["BTCUSDT"],
+                execution=MagicMock(fee_rate=Decimal("0.0006")),
+                signals=MagicMock(ttl_seconds=120),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        backtest_mod,
+        "create_pool",
+        AsyncMock(return_value=_make_pool_for_main()),
+    )
+    monkeypatch.setattr(
+        backtest_mod,
+        "ReplayBus",
+        lambda: MagicMock(
+            subscribe=AsyncMock(),
+            publish=AsyncMock(),
+            run_until_empty=AsyncMock(),
+            close=AsyncMock(),
+        ),
+    )
+    monkeypatch.setattr(backtest_mod, "HistoricalOHLCSource", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr(backtest_mod, "HistoricalSignalSource", lambda *a, **kw: _FakeAsyncIter([]))
+    monkeypatch.setattr(
+        backtest_mod, "PaperExchange", lambda **kw: MagicMock(run_replay=AsyncMock())
+    )
+    monkeypatch.setattr(backtest_mod, "FeatureResolver", lambda **kw: MagicMock())
+    monkeypatch.setattr(backtest_mod, "make_signal_handler", lambda **kw: AsyncMock())
+    monkeypatch.setattr(backtest_mod, "make_per_bot_handler", lambda **kw: AsyncMock())
+    monkeypatch.setattr(backtest_mod, "ExecutionDispatcher", lambda **kw: MagicMock())
+    monkeypatch.setattr(backtest_mod, "run_dispatcher_for_bot", AsyncMock())
+    monkeypatch.setattr(
+        backtest_mod,
+        "ExecutionSettings",
+        lambda: MagicMock(
+            execution_orders_dedup_capacity=10000,
+            execution_fill_price_retry_attempts=3,
+            execution_fill_price_retry_backoff_s=0.1,
+            position_poll_interval_s=1.0,
+            position_poll_stale_ticks=5,
+            dispatch_dedup_capacity=10000,
+        ),
+    )
+
+    external_run_id = uuid4()
+    args = argparse.Namespace(
+        bot="alpha",
+        from_at=datetime(2026, 4, 1, tzinfo=UTC),
+        to_at=datetime(2026, 4, 2, tzinfo=UTC),
+        config_path=Path("/tmp/test.yaml"),
+        overrides=[],
+        pace="max",
+        source="binance",
+        plugin_registry_path=None,
+        db_url="postgresql://test",
+        name=None,
+        notes=None,
+        run_id=external_run_id,  # T-509 worker path
+    )
+    rc = await backtest_mod.main(args)
+    assert rc == 0
+    assert insert_calls == [], "Worker path MUST NOT call insert_backtest_run"
+
+
+def _make_pool_for_main() -> MagicMock:
+    """Minimal pool mock for main() backwards-compat tests."""
+    pool = MagicMock()
+    pool.close = AsyncMock()
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    conn.fetch = AsyncMock(return_value=[])
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    tx_cm = MagicMock()
+    tx_cm.__aenter__ = AsyncMock(return_value=conn)
+    tx_cm.__aexit__ = AsyncMock(return_value=None)
+    conn.transaction = MagicMock(return_value=tx_cm)
+    pool.acquire = MagicMock(return_value=cm)
+    return pool
+
+
+class _FakeAsyncIter:
+    def __init__(self, items: list[object]) -> None:
+        self._items = items
+
+    def __aiter__(self) -> object:
+        async def _gen() -> object:
+            for item in self._items:
+                yield item
+
+        return _gen()
+
+
+# --- T-509 codec_registered regression guard (1 test) -----------------------
+
+
+async def test_update_backtest_run_completion_codec_registered_dict_bind() -> None:
+    """L-013 BLOCKER #1 fix: codec_registered=True passes dict (not str) to asyncpg."""
+    from packages.core.types import BacktestStatus
+    from packages.db.queries.analytics import update_backtest_run_completion
+
+    conn = MagicMock()
+    conn.execute = AsyncMock(return_value="UPDATE 1")
+    summary = {"total_trades": 4, "wr": 0.5}
+    await update_backtest_run_completion(
+        conn,
+        run_id=uuid4(),
+        status=BacktestStatus.FAILED,
+        summary=summary,
+        finished_at=datetime(2026, 4, 1, tzinfo=UTC),
+        codec_registered=True,
+    )
+    args, _ = conn.execute.call_args
+    # bind value MUST be dict (codec mode), NOT str (text mode)
+    assert isinstance(args[2], dict), f"codec_registered=True MUST bind dict, got {type(args[2])}"
 
 
 async def test_select_diverging_trades_sql_bind_shape() -> None:

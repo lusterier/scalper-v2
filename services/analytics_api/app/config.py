@@ -81,3 +81,18 @@ class Settings(BaseSettings):
         le=3600,
         description="Rate-limit `sse_client_buffer_overflow` warnings to 1/N seconds per client.",
     )
+
+    # T-509 backtest worker — operator opt-in via env BACKTEST_WORKER_ENABLED=true.
+    backtest_worker_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable backtest worker in analytics-api lifespan "
+            "(env BACKTEST_WORKER_ENABLED=true to opt in)."
+        ),
+    )
+    backtest_worker_poll_interval_s: int = Field(
+        default=5,
+        ge=1,
+        le=300,
+        description="Interval (seconds) between backtest queue polls when no queued runs.",
+    )

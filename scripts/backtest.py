@@ -384,33 +384,42 @@ async def main(args: argparse.Namespace) -> int:
     pool = await create_pool(db_url, application_name="backtest-cli")
     run_id: UUID | None = None
     try:
-        # 4. Insert backtest_runs row (queued → running).
-        run_name = args.name or (
-            f"cli-{bot_id}-{args.from_at.isoformat()}-{args.to_at.isoformat()}"
-        )
-        async with pool.acquire() as conn:
-            run_row = await insert_backtest_run(
-                conn,
-                name=run_name,
-                bot_id=str(bot_id),
-                config_yaml=config_yaml,
-                config_hash=config_hash,
-                date_range_start=args.from_at,
-                date_range_end=args.to_at,
-                started_at=datetime.now(UTC),
-                notes=args.notes,
+        # 4. T-509 dispatch: external run_id (worker path) skips insert +
+        # transition (worker already CLAIMED + transitioned atomically per
+        # OQ-2=A). Else CLI path: create fresh row + transition to running.
+        external_run_id = getattr(args, "run_id", None)
+        if external_run_id is not None:
+            run_id = external_run_id
+            log_source = "t509_worker"
+        else:
+            run_name = args.name or (
+                f"cli-{bot_id}-{args.from_at.isoformat()}-{args.to_at.isoformat()}"
             )
-            run_id = run_row.id
-            await update_backtest_run_to_running(
-                conn,
-                run_id=run_id,
-                started_at=datetime.now(UTC),
-            )
+            async with pool.acquire() as conn:
+                run_row = await insert_backtest_run(
+                    conn,
+                    name=run_name,
+                    bot_id=str(bot_id),
+                    config_yaml=config_yaml,
+                    config_hash=config_hash,
+                    date_range_start=args.from_at,
+                    date_range_end=args.to_at,
+                    started_at=datetime.now(UTC),
+                    notes=args.notes,
+                )
+                run_id = run_row.id
+                await update_backtest_run_to_running(
+                    conn,
+                    run_id=run_id,
+                    started_at=datetime.now(UTC),
+                )
+            log_source = "cli"
 
         system_logger.info(
             "backtest.started",
             run_id=str(run_id),
             bot_id=str(bot_id),
+            source=log_source,
             **{"from": args.from_at.isoformat(), "to": args.to_at.isoformat()},
         )
 

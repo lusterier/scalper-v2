@@ -43,6 +43,8 @@ Shutdown order (reverse, load-bearing):
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -148,13 +150,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             overflow_log_interval_s=settings.sse_overflow_log_interval_s,
         )
 
+        # T-509 backtest worker (operator opt-in via Settings.backtest_worker_enabled).
+        backtest_worker_task: asyncio.Task[None] | None = None
+        if settings.backtest_worker_enabled:
+            from services.analytics_api.app.backtest_worker import (
+                run_backtest_worker_loop,
+            )
+
+            backtest_worker_task = asyncio.create_task(
+                run_backtest_worker_loop(pool=pool, settings=settings, logger=logger),
+                name="backtest_worker",
+            )
+            app.state.backtest_worker_task = backtest_worker_task
+
         logger.info(
             "service_started",
             http_port=settings.http_port,
+            backtest_worker_enabled=settings.backtest_worker_enabled,
         )
         try:
             yield
         finally:
+            # T-509 worker shutdown BEFORE other resources so claimed
+            # in-flight runs can finish writing terminal status.
+            if backtest_worker_task is not None:
+                backtest_worker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await backtest_worker_task
             # T-408 WG#6 — SSE shutdown BEFORE bus.close so per-client subs
             # drain cleanly without racing bus's own subscription drain.
             await app.state.sse_multiplexer.shutdown()

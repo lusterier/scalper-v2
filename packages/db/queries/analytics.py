@@ -1852,23 +1852,35 @@ async def update_backtest_run_completion(
     status: BacktestStatus,
     summary: dict[str, Any],
     finished_at: datetime,
+    codec_registered: bool = False,
 ) -> None:
-    """T-507b: transition ``backtest_runs`` to terminal status + persist summary.
+    """T-507b + T-509: transition ``backtest_runs`` to terminal status + persist summary.
 
-    L-013 codec-state-immune convention: CLI does NOT register JSONB codec
-    on its asyncpg pool (default ``create_pool`` has ``init=None``).
-    Text-mode ``json.dumps(_to_jsonable(summary))`` + ``$N::jsonb`` bind.
-    The ``_to_jsonable`` wrapper recursively pre-stringifies UUID /
-    datetime / Decimal so outer ``json.dumps`` cannot ``TypeError``.
+    L-013 codec-state-immune via explicit `codec_registered` flag (T-509
+    BLOCKER #1 fix per plan-reviewer cycle):
 
-    Switch trigger: if the CLI ever registers a codec (unlikely for one-shot
-    tool), drop the outer ``json.dumps`` and pass ``_to_jsonable(summary)``
-    dict directly — codec encoder serialises via internal ``json.dumps``.
+    * ``codec_registered=False`` (default; T-507b CLI invocation path; pool
+      created via ``create_pool(...)`` without ``init`` hook): bind
+      ``json.dumps(_to_jsonable(summary))`` text-mode + ``$N::jsonb``
+      cast. asyncpg without codec rejects raw dict for ``$N::jsonb``.
+    * ``codec_registered=True`` (T-509 worker invocation path; analytics-api
+      pool registers ``_register_jsonb_codec`` per
+      ``services/analytics_api/app/main.py:121``): bind
+      ``_to_jsonable(summary)`` dict directly. Codec encoder serializes
+      via internal ``json.dumps``; text-mode + codec would double-encode
+      (L-011 regression class).
+
+    Backwards-compat: default False matches existing T-507b CLI behavior
+    (commit fcdc453); T-509 worker passes True at single dispatch_failed
+    call site.
     """
+    bind_value: Any = (
+        _to_jsonable(summary) if codec_registered else json.dumps(_to_jsonable(summary))
+    )
     await conn.execute(
         _UPDATE_BACKTEST_RUN_COMPLETION_SQL,
         status.value,
-        json.dumps(_to_jsonable(summary)),
+        bind_value,
         finished_at,
         run_id,
     )
@@ -2027,6 +2039,50 @@ async def count_common_signals_for_compare(
     if row is None:
         return 0
     return int(row["n"])
+
+
+# ---------------------------------------------------------------------------
+# T-509 — backtest worker claim helper (analytics-api lifespan task)
+# ---------------------------------------------------------------------------
+
+_CLAIM_NEXT_BACKTEST_RUN_SQL = """
+    UPDATE backtest_runs
+       SET status='running',
+           started_at=$1
+     WHERE id IN (
+        SELECT id FROM backtest_runs
+         WHERE status='queued'
+         ORDER BY created_at
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED
+     )
+    RETURNING id, name, bot_id, config_yaml, config_hash,
+              date_range_start, date_range_end, status,
+              started_at, finished_at, summary, notes, created_at
+"""
+
+
+@non_idempotent
+async def claim_next_backtest_run(
+    conn: _DbExecutor,
+    *,
+    started_at: datetime,
+) -> BacktestRunRow | None:
+    """T-509 OQ-2=A: atomic UPDATE...RETURNING + SKIP LOCKED claim.
+
+    Race-safe for future multi-worker (FOR UPDATE SKIP LOCKED ensures
+    multiple workers don't claim same row). Single-worker today: SKIP
+    LOCKED is no-op. Returns None when no queued rows.
+
+    @non_idempotent because state transition queued→running is one-shot;
+    re-running on same row would no-op (status filter excludes it).
+
+    `started_at` populated Python-side per §N1 (no SQL NOW()).
+    """
+    row = await conn.fetchrow(_CLAIM_NEXT_BACKTEST_RUN_SQL, started_at)
+    if row is None:
+        return None
+    return _row_to_backtest_run(row)
 
 
 # ---------------------------------------------------------------------------
