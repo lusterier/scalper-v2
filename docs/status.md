@@ -1,5 +1,31 @@
 # Session status
 
+## 2026-05-08 (late-evening IV — T-511b1 shadow-worker FSM core shipped)
+
+**F5 phase: 17/22 numbered tasks done (~77%).** Master HEAD `da7413a` (`4bf4e63` feat + `da7413a` chore). Shadow runtime cluster 5/8 sub-tasks (T-510a + T-510b + T-511a + T-511b1 + T-514; T-511b2 + T-512 + T-513 remaining). Today total: 16 master commits.
+
+### T-511b1 delivered — 4-gate review system caught material issues across 3 plan-reviewer passes + 2 drift-checker passes
+
+- **Plan-reviewer pass-1 REVISE** — 4 BLOCKERs + 3 CONCERNs (helper count 3 not 4; H-016 verbatim test name; emit module mismatch reconcile.py vs placement_persist.py:466; BRIEF §13.7 parity test missing; hand-verification syntax; ADR-0009 needed; pre-emptive split recommended)
+- **Operator decisions** — split T-511b → T-511b1 + T-511b2 (CONCERN 7 = YES); ADR-0009 = YES (CONCERN 6); BE-trigger included in T-511b1 scope (OQ-1 = include BE); OHLC-1m stream over BRIEF §13.3 ticks (OQ-2 = OHLC)
+- **Plan-reviewer pass-2 REVISE** — 4 NEW BLOCKERs all duplicates with T-510b shipped surface (analytics.py duplicates; ShadowTerminalOutcome duplicate of ShadowVariantTerminal; @idempotent annotation mismatch; return type int vs ShadowVariantRow). All resolved by reuse-from-T-510b refactor (~50 LOC saved).
+- **Plan-reviewer pass-3 APPROVE** — final 12-item write-time guidance + 13-item acceptance criteria
+- **Drift-checker pass-1 DRIFT** — 4 unscoped helpers (~42 LOC: `_SlippageConfig`, `_compute_initial_sl/tp`, `_pct_change`, `_unsubscribe`) + bloated module docstring (42 LOC) + dead `_apply_variant_overrides`. Refactor: drop SlippageConfig (4 ctor kwargs); move SL/TP into `seed_open_state` per T-511a `_apply_seed_open_state` design (eliminates `_compute_initial_sl/tp` + step 5 init-SL setup); inline `_pct_change`; trim docstrings.
+- **Drift-checker pass-2 ON TRACK** with operator over-cap waiver (legitimate scope; plan budget miscalibrated +70%)
+- **Brief-reviewer SHIP** (13/13 acceptance + 13/13 write-time guidance; §0.3 over-cap waiver verified in commit msg per L-014)
+- **Math-validator VERIFIED** (3 BE/trail helpers byte-for-byte verbatim from lifecycle.py:233-268; truth-table parity dispatcher._derive_exec_type ✓; Decimal preservation realized_pnl end-to-end via TerminalEvent → kwargs → DB Numeric(20,4); plan/test fixture parameter divergence flagged but not blocking — implementation arithmetic matches test fixture math exactly)
+
+### L-014 appended
+
+Systematic plan-stage budget calibration miss for FSM-style execution-service tasks (shadow / risk / replay FSM): plan-reviewer should flag <300 LOC single-file budgets as optimistic when plan enumerates ≥3 helpers + ≥3 class methods + ≥1 closure factory + ≥1 dataclass; realistic budget 350-450 LOC. PE adapter deltas adding callback + dataclass + ctor kwarg + validation kwarg systematically run 50-70 LOC NOT 25. Brief-reviewer must verify §0.3 over-cap accompanied by explicit operator waiver in commit msg. Drift-checker must distinguish "scope drift" (DRIFT) from "plan-budget calibration miss" (ON TRACK with CONCERN noted).
+
+### Watch-outs for next session
+
+- **T-511b2 next reasonable pickup** — producer half of shadow runtime: `_on_parent_close` H-016 cancellation hook on `trade.closed.>` + `emit_post_commit_shadow_start_event` in `placement_persist.py:466` (open-side; mirror `emit_post_commit_events` pattern) + `main.py` ShadowWorker construction lifespan + per-bot YAML config plumbing + BRIEF §13.7 verbatim parity test `test_shadow_step_transitions_match_live_lifecycle`. Est ~110 LOC src + ~120 tests per backlog (apply L-014 calibration: realistic ~180-220 LOC src given enumerated members).
+- **Critical-path gating task** — T-512 OHLC replay restart-recovery (H-023 owner; mandatory kill-during-variant integration test per E3 exit criterion). Heaviest remaining F5 task; UI tasks T-516/T-517 soft-blocked.
+
+---
+
 ## 2026-05-08 (late-evening III — T-511a PE shadow-mode prereq shipped)
 
 **F5 phase: 16/22 numbered tasks done (~73%).** Master HEAD `b6cac80`. Shadow runtime cluster 3/5 → 4/5 with T-511a (T-510a + T-510b + T-511a + T-514; T-511b + T-512 + T-513 remaining).
