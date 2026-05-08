@@ -1,5 +1,42 @@
 # Session status
 
+## 2026-05-08 (late-night III — T-512a shadow variant restart-recovery via OHLC replay shipped; L-016 replay-recovery LOC calibration lesson + UI redesign separate)
+
+**F5 phase: 20/22 numbered tasks done (~91%).** Master HEAD pre-merge `067ad6f` (feat T-512a). Shadow runtime cluster 8/10 sub-tasks (T-510a + T-510b + T-511a + T-511b1 + T-511b2a + T-511b2 + T-512a + T-514; T-512b + T-513 remaining). Plus **independent UI redesign** shipped earlier in session (master HEAD `784e397`; visual/CSS only with bonus YamlDiffView typecheck regression fix).
+
+### T-512a delivered — replay-recovery infrastructure for H-023 hazard
+
+- **All 4 review gates passed**: plan-reviewer pass-2 APPROVE (20-item WG; pass-1 REVISE 2 BLOCKERs overrides-derivation + terminal-detection-method + 4 CONCERNs resolved) → drift-checker DRIFT (LOC overshoot ~625 src vs 400 cap; operator-waived per L-014 mirror T-511b1 precedent) → brief-reviewer single-pass SHIP (20/20 WG + 18/18 AC) → math-validator VERIFIED.
+- Implements BRIEF §13.4: enumerate active variants → check parent state → cursor-iterate ohlc_1m → drive PE._on_candle + _make_candle_handler → terminal_future.done() detection (handles partial-TP-then-SL H-024 v2) → finalize OR spawn live continuation. NEW `services/execution/app/shadow_replay.py` (570 LOC).
+- **Required-effect retro-fits to T-511b1 shipped**: (a) `meta={"symbol":..., "overrides":{...}}` in `insert_shadow_variant` call (overrides persistence enables resume to reconstruct PE seed_open_state); (b) `_drive_variant_to_terminal` helper extraction (single source of truth for terminal-classification + MFE/MAE; called from BOTH live + resume paths); (c) NEW public `ShadowWorker.register_resume_task` API replacing direct `_active_tasks` access.
+- **NEW ShadowVariantTerminal value `SHUTDOWN_MID_REPLAY`** (per T-510a OQ-4=A forward-compat; column TEXT no CHECK; no DB migration). Triggered when parent closed during downtime OR window cap exceeded OR per-variant compute timeout fired.
+- **Operator-resolved OQs baked**: OQ-1=A inline DB-cursor replay (NOT T-503/T-507b reuse); OQ-3=A wall-clock carry-over timer; OQ-4=A SHUTDOWN_MID_REPLAY enum value + skip when parent closed.
+- 20 nových testov (1993 → 2013); 0 regressions.
+
+### Pre-T-512a UI redesign (independent commit cycle)
+
+- **feat(ui)** `784e397` → terminal-aesthetic redesign (electric `#00e5a0` teal palette + Space Mono `font-trading` + lucide-react sectioned sidebar + ConnectionDot animate-ping + TimeRangePicker pill group + card top-edge accent line per operator's 8-step spec). Bonus: pre-existing YamlDiffView `noUncheckedIndexedAccess` typecheck regression from T-515 fixed (6 LOC). 4 test text-content updates (`scalper-v2`→`SCALPER-V2`; `Coming F4+`→`F4+` badge + `Coming soon`). 12 src files; ZERO touch outside `ui/`.
+- ci-full PASSES on UI push (verified via `gh run list`).
+
+### L-016 appended — replay-recovery LOC calibration
+
+- **Pattern**: replay-recovery / restart-resume FSM tasks systematically under-budgeted ~150-180% (2nd data point with T-511b1 → 2nd canonical case for plan-budget calibration miss). Specifically: defensive paths (parent-state checks per mode, window cap, timer carry-over, per-variant timeout, structured logging diagnostic fields, cascade-delete race logging, live-continuation closure, replay state seeding) each contribute 15-30 LOC realistic.
+- **Active control**: plan-reviewer at gate 1 MUST flag <500 LOC src budgets for replay-recovery / restart-resume FSM tasks as optimistic. Brief-reviewer at gate 3 MUST verify §0.3 over-cap accompanied by explicit operator waiver. Drift-checker at gate 2 MUST distinguish "scope drift" (REVISE) from "plan-budget calibration miss" (DRIFT but waivable — replay-recovery is canonical case).
+
+### Watch-outs for next session
+
+- **T-512b next critical-path pickup** — mandatory kill-during-variant integration test per E3 exit criterion (BRIEF §20:2787 verbatim test name `test_shadow_variant_survives_restart_via_replay`). Heavy integration: testcontainer postgres + nats jetstream + subprocess.spawn execution-service + SIGTERM mid-variant + restart + assert variant resumed via T-512a infra. Est ~80 LOC src + ~250 LOC integration test body. **Final E3 sign-off pin** for T-522 close-out runbook.
+- **T-513 rejected-signal observation** — mirrors persistence pattern (T-510b shipped) but separate input source (rejected signals from `signals.rejected.<bot_id>` topic; 60-min observation window). Independent of T-512b.
+- **UI tasks T-516 + T-517** — now unblocked via T-512a + T-511b2 shadow runtime fully operational. Could prep frontend mockup work in parallel with T-512b.
+- **Today total**: ~26 master commits anticipated post-merge (16 prior + T-511b2a feat + chore + fix + T-511b2 feat + chore + UI feat + T-512a feat + chore + L-016 lesson).
+
+### Lessons surfaced (additions to recent body of work)
+
+- **L-016 (this session)**: replay-recovery LOC calibration. 2nd data point with L-014 — both confirm ~150-180% under-budgeting on FSM/integration cohort.
+- **Operator decision pattern matures**: pre-emptive split (T-510 → T-510a/b; T-511 → T-511a/b1/b2a/b2; T-512 → T-512a/b) consistently chosen at L-007 trigger threshold. Mid-write splits avoided across 4 task families this session.
+
+---
+
 ## 2026-05-08 (late-night II — T-511b2 shadow-worker integration shipped + L-015 sibling-migration-test lesson + fix(T-511b2a) ci-full follow-up)
 
 **F5 phase: 19/22 numbered tasks done (~86%).** Master HEAD `c16e9cb` (`ebb6155` fix(T-511b2a) test_0014_migration post-0015 head schema + `c16e9cb` feat T-511b2). Shadow runtime cluster 7/9 sub-tasks (T-510a + T-510b + T-511a + T-511b1 + T-511b2a + T-511b2 + T-514; T-512 + T-513 remaining; T-511 split into 4 sub-tasks via 3 pre-emptive splits per L-007). **Shadow runtime fully operational end-to-end for both live + paper modes** (per ADR-0010).
