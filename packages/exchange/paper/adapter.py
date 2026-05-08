@@ -185,6 +185,7 @@ class PaperExchange:
         mode: Literal["live", "replay"] = "live",
         historical_source: HistoricalOHLCSource | None = None,
         replay_clock: ReplayClock | None = None,
+        seed_open_state: dict[str, Any] | None = None,
     ) -> None:
         if slippage_model not in _SLIPPAGE_MODELS:
             raise ValueError(
@@ -219,6 +220,14 @@ class PaperExchange:
         # (paper SL/TP triggered_at, signal handler, dispatcher) see consistent
         # replay-virtual now_fn. Live mode: stays None → no-op (no advancement).
         self._replay_clock = replay_clock
+        # T-511a: optional seed_open_state for shadow-mode lifecycle (variant
+        # forks parent's already-open trade; needs caches pre-populated BEFORE
+        # first market.ohlc.1m candle arrives, else place_market_order races on
+        # empty _last_price). Live + replay modes default None → no-op.
+        self._seed_open_state = seed_open_state
+        # T-511a: NATS Subscription handle from start_consuming(); enables
+        # bus_unsubscribe_market_ohlc() teardown for H-016 ergonomic precondition.
+        self._market_ohlc_subscription: object | None = None
         # Per-instance state (§N6: not module-level globals).
         self._last_price: dict[str, Decimal] = {}
         self._last_candle: dict[str, OhlcCandlePayload] = {}
@@ -253,7 +262,83 @@ class PaperExchange:
                 "use run_replay() for mode='replay'"
             )
         await self._hydrate_active_positions()
-        await self._bus.subscribe("market.ohlc.1m.>", self._on_candle)
+        # T-511a: pre-populate caches from seed_open_state if shadow-mode lifecycle.
+        if self._seed_open_state is not None:
+            self._apply_seed_open_state()
+        # T-511a: store Subscription handle for bus_unsubscribe_market_ohlc().
+        self._market_ohlc_subscription = await self._bus.subscribe(
+            "market.ohlc.1m.>",
+            self._on_candle,
+        )
+
+    def _apply_seed_open_state(self) -> None:
+        """T-511a: pre-populate caches from seed_open_state for shadow-mode lifecycle.
+
+        Eliminates the place_market_order race where _last_price[symbol] is None
+        until first market.ohlc.1m candle arrives (typical 0..60s window between
+        start_consuming() and first candle tick).
+
+        Synthesised _last_candle uses entry_price for all 4 OHLCV fields (degenerate
+        candle representing the entry instant); _compute_slippage reads only
+        candle.high/.low which equal entry_price → zero slippage on synthetic
+        candle (correct for shadow seeding — variant inherits parent's already-
+        applied slippage in entry_price). Mirrors T-506 BLOCKER #1 fix at
+        adapter.py:418-427 — schema lie contained at cache boundary
+        (source='binance' Literal default; _compute_slippage never reads
+        candle.source — verified by grep at T-506 plan-time).
+        """
+        s = self._seed_open_state
+        if s is None:
+            return
+        symbol = s["symbol"]
+        self._active_positions[symbol] = {
+            "trade_id": int(s["trade_id"]),
+            "side": s["side"],
+            "qty": Decimal(str(s["qty"])),
+            "entry_price": Decimal(str(s["entry_price"])),
+            "entry_fee": Decimal(str(s.get("entry_fee", "0"))),
+            "fees_paid": Decimal(str(s.get("fees_paid", "0"))),
+            "sl_price": (Decimal(str(s["sl_price"])) if s.get("sl_price") is not None else None),
+            "tp_price": (Decimal(str(s["tp_price"])) if s.get("tp_price") is not None else None),
+            "tp_size": Decimal(str(s.get("tp_size", s["qty"]))),
+            "tpsl_mode": s.get("tpsl_mode", "Full"),
+            "tp_hit": bool(s.get("tp_hit", False)),
+            "sl_type": s.get("sl_type", "protective"),
+        }
+        entry = Decimal(str(s["entry_price"]))
+        self._last_price[symbol] = entry
+        self._last_candle[symbol] = OhlcCandlePayload(
+            symbol=symbol,
+            bucket_start=s.get("opened_at", self._now_fn()),
+            open=entry,
+            high=entry,
+            low=entry,
+            close=entry,
+            volume=Decimal("0"),
+            is_closed=True,
+        )
+
+    async def bus_unsubscribe_market_ohlc(self) -> None:
+        """T-511a: idempotent unsubscribe from market.ohlc.1m.> subject.
+
+        Required by T-511b shadow worker per-variant teardown post-terminal so
+        orphan _on_candle handlers don't keep firing after variant completes
+        (H-016 hazard ergonomic precondition).
+
+        Implementation depends on subscription type:
+        - NATS Subscription (live mode): call subscription.unsubscribe() (async)
+        - ReplaySubscription (T-502): set subscription.active = False
+
+        Idempotent: second call no-op.
+        """
+        sub = self._market_ohlc_subscription
+        if sub is None:
+            return
+        self._market_ohlc_subscription = None
+        if hasattr(sub, "unsubscribe") and callable(sub.unsubscribe):
+            await sub.unsubscribe()
+        elif hasattr(sub, "active"):
+            sub.active = False
 
     async def _hydrate_active_positions(self) -> None:
         """Hydrate ``_active_positions`` dict from paper_positions JOIN.
@@ -887,6 +972,9 @@ class PaperExchange:
         position["fees_paid"] = new_fees_paid
         position["realized_pnl"] = new_pnl_total
         position["tp_hit"] = True
+        # T-511a: ADR-0005 v2 invariant — partial_tp promotes sl_type from
+        # 'protective' (or 'be') to 'trail'. Mirror execution-service dispatcher.py:213-215.
+        position["sl_type"] = "trail"
         await self._emit_close_events(
             fill,
             ctx,
@@ -1049,6 +1137,10 @@ class PaperExchange:
         existing["tp_price"] = tp_price
         existing["tp_size"] = tp_size
         existing["tpsl_mode"] = tpsl_mode
+        # T-511a: initialize sl_type='protective' if missing; preserves existing
+        # value (e.g., 'trail' set by partial_tp drain or 'be' set by future
+        # lifecycle BE-trigger). 3-state vocab per ADR-0005 v2 + execution-service.
+        existing.setdefault("sl_type", "protective")
         self._active_positions[symbol] = existing
         async with self._pool.acquire() as conn:
             await persistence.update_paper_position_sl_tp(
