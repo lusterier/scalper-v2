@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     import asyncpg
     from structlog.stdlib import BoundLogger
 
-    from packages.bus import NatsClient
+    from packages.bus import BusProtocol
     from packages.core import BotId
     from packages.exchange.protocols import ExchangeClient
 
@@ -81,7 +81,7 @@ async def run_position_monitor_for_trade(
     entry_price: Decimal,
     qty: Decimal,
     pool: asyncpg.Pool,
-    bus: NatsClient,
+    bus: BusProtocol,
     adapter: ExchangeClient,
     bound_logger: BoundLogger,
     poll_interval_s: float,

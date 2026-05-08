@@ -88,6 +88,7 @@ if TYPE_CHECKING:
 
     from packages.bus import BusProtocol, MessageEnvelope
     from packages.core import BotId
+    from packages.core.replay_clock import ReplayClock
 
     from .historical_ohlc_source import HistoricalOHLCSource, OHLCRow
 
@@ -183,6 +184,7 @@ class PaperExchange:
         event_queue_maxsize: int = 1000,
         mode: Literal["live", "replay"] = "live",
         historical_source: HistoricalOHLCSource | None = None,
+        replay_clock: ReplayClock | None = None,
     ) -> None:
         if slippage_model not in _SLIPPAGE_MODELS:
             raise ValueError(
@@ -213,6 +215,10 @@ class PaperExchange:
         self._pool = pool
         self._mode: Literal["live", "replay"] = mode
         self._historical_source = historical_source
+        # T-507b OQ-D=C: ReplayClock advanced per OHLC bucket so all components
+        # (paper SL/TP triggered_at, signal handler, dispatcher) see consistent
+        # replay-virtual now_fn. Live mode: stays None → no-op (no advancement).
+        self._replay_clock = replay_clock
         # Per-instance state (§N6: not module-level globals).
         self._last_price: dict[str, Decimal] = {}
         self._last_candle: dict[str, OhlcCandlePayload] = {}
@@ -403,6 +409,11 @@ class PaperExchange:
         read by :meth:`_compute_slippage` via :meth:`place_market_order`,
         so omission would ``KeyError`` on the first signal-driven order.
         """
+        # T-507b OQ-D=C: advance replay clock to candle bucket BEFORE fill
+        # detection so paper SL/TP triggered_at + downstream handlers see
+        # historical replay-virtual now() instead of wall-clock today.
+        if self._replay_clock is not None:
+            self._replay_clock.set(ohlc.bucket_start)
         self._last_price[ohlc.symbol] = ohlc.close
         # T-506 BLOCKER fix: cache the FULL real candle for _compute_slippage.
         # Synthesised OhlcCandlePayload hardcodes source="binance" (Literal

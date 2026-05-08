@@ -82,7 +82,7 @@ if TYPE_CHECKING:
     import asyncpg
     from structlog.stdlib import BoundLogger
 
-    from packages.bus import MessageEnvelope, NatsClient
+    from packages.bus import BusProtocol, MessageEnvelope
     from packages.core import BotId
     from packages.exchange.protocols import ExchangeClient
 
@@ -106,7 +106,7 @@ def make_per_bot_handler(
     *,
     bot_id: BotId,
     adapter: ExchangeClient,
-    bus: NatsClient,
+    bus: BusProtocol,
     logger: BoundLogger,
     pool: asyncpg.Pool,
     dedup_capacity: int,

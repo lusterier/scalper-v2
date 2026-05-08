@@ -64,10 +64,11 @@ consistency).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from packages.core import non_idempotent
+from packages.core import idempotent, non_idempotent
 from packages.core.types import (
     Action,
     BacktestStatus,
@@ -1115,6 +1116,7 @@ async def count_features_history(
 
 from packages.db.queries.audit import (  # noqa: E402 — re-used by audit reader, T-405 inline import for module structure
     AuditEventRow,
+    _to_jsonable,
 )
 
 
@@ -1786,6 +1788,119 @@ async def insert_backtest_run(
         msg = "INSERT ... RETURNING produced no row"
         raise RuntimeError(msg)
     return _row_to_backtest_run(row)
+
+
+# ---------------------------------------------------------------------------
+# T-507b — backtest_runs FSM transitions + paper_trades → backtest_trades copy
+# (CLI consumer at scripts/backtest.py)
+# ---------------------------------------------------------------------------
+
+_UPDATE_BACKTEST_RUN_TO_RUNNING_SQL = """
+    UPDATE backtest_runs
+       SET status='running',
+           started_at=$1
+     WHERE id=$2
+"""
+
+_UPDATE_BACKTEST_RUN_COMPLETION_SQL = """
+    UPDATE backtest_runs
+       SET status=$1,
+           summary=$2::jsonb,
+           finished_at=$3
+     WHERE id=$4
+"""
+
+_COPY_PAPER_TRADES_TO_BACKTEST_SQL = """
+    INSERT INTO backtest_trades (
+        run_id, bot_id, signal_id, open_order_id, close_order_id,
+        symbol, side, entry_price, exit_price, qty, notional_usd,
+        realized_pnl, fees_paid, close_reason, opened_at, closed_at,
+        status, mfe_pct, mae_pct, confidence_score, meta
+    )
+    SELECT
+        $1, $2, signal_id, open_order_id, close_order_id,
+        symbol, side, entry_price, exit_price, qty, notional_usd,
+        realized_pnl, fees_paid, close_reason, opened_at, closed_at,
+        status, mfe_pct, mae_pct, confidence_score, meta
+    FROM paper_trades
+    WHERE bot_id = $2
+      AND status = 'closed'
+"""
+
+
+@idempotent
+async def update_backtest_run_to_running(
+    conn: _DbExecutor,
+    *,
+    run_id: UUID,
+    started_at: datetime,
+) -> None:
+    """T-507b: transition ``backtest_runs.status`` queued → running.
+
+    ``started_at`` MUST be Python-side ``datetime.now(UTC)`` per §N1
+    (no SQL ``NOW()`` / ``CURRENT_TIMESTAMP``; brief line 127 invariant).
+    @idempotent: UPDATE WHERE id sets fixed values; replay-safe.
+    """
+    await conn.execute(_UPDATE_BACKTEST_RUN_TO_RUNNING_SQL, started_at, run_id)
+
+
+@idempotent
+async def update_backtest_run_completion(
+    conn: _DbExecutor,
+    *,
+    run_id: UUID,
+    status: BacktestStatus,
+    summary: dict[str, Any],
+    finished_at: datetime,
+) -> None:
+    """T-507b: transition ``backtest_runs`` to terminal status + persist summary.
+
+    L-013 codec-state-immune convention: CLI does NOT register JSONB codec
+    on its asyncpg pool (default ``create_pool`` has ``init=None``).
+    Text-mode ``json.dumps(_to_jsonable(summary))`` + ``$N::jsonb`` bind.
+    The ``_to_jsonable`` wrapper recursively pre-stringifies UUID /
+    datetime / Decimal so outer ``json.dumps`` cannot ``TypeError``.
+
+    Switch trigger: if the CLI ever registers a codec (unlikely for one-shot
+    tool), drop the outer ``json.dumps`` and pass ``_to_jsonable(summary)``
+    dict directly — codec encoder serialises via internal ``json.dumps``.
+    """
+    await conn.execute(
+        _UPDATE_BACKTEST_RUN_COMPLETION_SQL,
+        status.value,
+        json.dumps(_to_jsonable(summary)),
+        finished_at,
+        run_id,
+    )
+
+
+@non_idempotent
+async def copy_paper_trades_to_backtest(
+    conn: _DbExecutor,
+    *,
+    run_id: UUID,
+    bot_id: str,
+) -> int:
+    """T-507b OQ-3=A: post-replay SQL copy ``paper_trades`` → ``backtest_trades``.
+
+    Per OQ-D=C Belt-and-suspenders: NO time-window filter — replay-clock
+    makes paper trade timestamps historical, but defensive against
+    clock-edge cases (e.g., last-candle SL fires just after to_at).
+    Operator-discipline: run backtest against fresh / truncated
+    ``paper_trades``, OR accept that prior-run trades for same bot could
+    be re-copied (cross-bot leakage prevented by ``WHERE bot_id = $2``).
+
+    Returns INSERT row count. ``@non_idempotent`` because re-running
+    re-copies same rows (no UNIQUE constraint on
+    ``backtest_trades.(run_id, signal_id)`` per migration 0013).
+    """
+    result = await conn.execute(
+        _COPY_PAPER_TRADES_TO_BACKTEST_SQL,
+        run_id,
+        bot_id,
+    )
+    # asyncpg returns "INSERT 0 N" command tag.
+    return int(result.split()[-1])
 
 
 # ---------------------------------------------------------------------------

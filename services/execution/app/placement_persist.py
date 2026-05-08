@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     import asyncpg
     from structlog.stdlib import BoundLogger
 
-    from packages.bus import MessageEnvelope, NatsClient
+    from packages.bus import BusProtocol, MessageEnvelope
     from packages.bus.schemas.orders import OrderRequest
     from packages.core import BotId, CorrelationId
     from packages.exchange.protocols import ExchangeClient
@@ -174,7 +174,7 @@ class OrderRequestDedupConsumer(DedupingConsumer["MessageEnvelope"]):
 async def emergency_close(
     *,
     adapter: ExchangeClient,
-    bus: NatsClient,
+    bus: BusProtocol,
     pool: asyncpg.Pool,
     bound_logger: BoundLogger,
     bot_id: BotId,
@@ -465,7 +465,7 @@ async def persist_placement_tx(
 
 async def emit_post_commit_events(
     *,
-    bus: NatsClient,
+    bus: BusProtocol,
     bot_id: BotId,
     correlation_id: CorrelationId,
     order_placed_payload: OrderPlaced,
