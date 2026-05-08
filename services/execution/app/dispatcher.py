@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from asyncpg.pool import PoolConnectionProxy
     from structlog.stdlib import BoundLogger
 
-    from packages.bus import NatsClient
+    from packages.bus import BusProtocol
     from packages.bus.schemas.orders import OrderClosed
     from packages.core import BotId, CorrelationId
     from packages.exchange.protocols import ExchangeClient
@@ -83,7 +83,7 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
         *,
         bot_id: BotId,
         pool: asyncpg.Pool,
-        bus: NatsClient,
+        bus: BusProtocol,
         bound_logger: BoundLogger,
         capacity: int,
         now_fn: Callable[[], datetime],

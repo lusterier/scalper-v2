@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     import asyncpg
     from structlog.stdlib import BoundLogger
 
-    from packages.bus import NatsClient
+    from packages.bus import BusProtocol
     from packages.bus.schemas.signals import SignalValidated
 
 
@@ -110,7 +110,7 @@ class FeatureResolver:
     def __init__(
         self,
         *,
-        bus: NatsClient,
+        bus: BusProtocol,
         pool: asyncpg.Pool,
         bound_logger: BoundLogger,
         now_fn: Callable[[], datetime] = now_utc,

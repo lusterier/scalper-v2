@@ -20,14 +20,19 @@ from .client import ConnectionState, NatsClient
 from .dedup import DedupingConsumer
 from .envelope import MessageEnvelope
 from .errors import BusError, NotConnectedError, PublishError, SubscribeError
+from .protocol import BusProtocol
+from .replay_bus import ReplayBus, ReplaySubscription
 
 __all__ = [
     "BusError",
+    "BusProtocol",
     "ConnectionState",
     "DedupingConsumer",
     "MessageEnvelope",
     "NatsClient",
     "NotConnectedError",
     "PublishError",
+    "ReplayBus",
+    "ReplaySubscription",
     "SubscribeError",
 ]

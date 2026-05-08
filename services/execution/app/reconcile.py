@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from asyncpg.pool import PoolConnectionProxy
     from structlog.stdlib import BoundLogger
 
-    from packages.bus import NatsClient
+    from packages.bus import BusProtocol
     from packages.core import CorrelationId
     from packages.exchange.protocols import ExchangeClient
 
@@ -164,7 +164,7 @@ async def reconcile_close(
 
 async def emit_post_commit_close_event(
     *,
-    bus: NatsClient,
+    bus: BusProtocol,
     bot_id: str,
     correlation_id: CorrelationId,
     order_closed_payload: OrderClosed,

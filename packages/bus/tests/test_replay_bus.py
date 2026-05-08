@@ -56,7 +56,7 @@ async def test_timestamp_ordering_across_subjects() -> None:
     async def handler(env: MessageEnvelope) -> None:
         received.append((env.published_at, env.payload.get("tag", "")))
 
-    bus.subscribe(">", handler)
+    await bus.subscribe(">", handler)
     # Publish OUT OF ORDER: t=100, t=50, t=150.
     await bus.publish(
         "market.ohlc.1m.BTC",
@@ -84,7 +84,7 @@ async def test_exact_subject_match() -> None:
     async def handler(env: MessageEnvelope) -> None:
         received.append(env.payload.get("tag", ""))
 
-    bus.subscribe("market.ohlc.1m.BTC", handler)
+    await bus.subscribe("market.ohlc.1m.BTC", handler)
     await bus.publish("market.ohlc.1m.BTC", _envelope(_T_BASE, {"tag": "btc"}))
     await bus.publish(
         "market.ohlc.1m.ETH", _envelope(_T_BASE + timedelta(seconds=1), {"tag": "eth"})
@@ -101,7 +101,7 @@ async def test_wildcard_single_token() -> None:
     async def handler(env: MessageEnvelope) -> None:
         received.append(env.payload.get("tag", ""))
 
-    bus.subscribe("market.ohlc.*.BTC", handler)
+    await bus.subscribe("market.ohlc.*.BTC", handler)
     await bus.publish("market.ohlc.1m.BTC", _envelope(_T_BASE, {"tag": "1m"}))
     await bus.publish(
         "market.ohlc.5m.BTC", _envelope(_T_BASE + timedelta(seconds=1), {"tag": "5m"})
@@ -121,7 +121,7 @@ async def test_wildcard_tail() -> None:
     async def handler(env: MessageEnvelope) -> None:
         received.append(env.payload.get("tag", ""))
 
-    bus.subscribe(">", handler)
+    await bus.subscribe(">", handler)
     await bus.publish("market.ohlc.1m.BTC", _envelope(_T_BASE, {"tag": "ohlc"}))
     await bus.publish(
         "signals.validated", _envelope(_T_BASE + timedelta(seconds=1), {"tag": "sig"})
@@ -142,8 +142,8 @@ async def test_multiple_subscribers_same_subject() -> None:
     async def handler_b(env: MessageEnvelope) -> None:
         b_received.append("b")
 
-    bus.subscribe("X", handler_a)
-    bus.subscribe("X", handler_b)
+    await bus.subscribe("X", handler_a)
+    await bus.subscribe("X", handler_b)
     await bus.publish("X", _envelope(_T_BASE))
     await bus.run_until_empty()
     assert a_received == ["a"]
@@ -158,7 +158,7 @@ async def test_same_timestamp_tie_break_by_insertion_order() -> None:
     async def handler(env: MessageEnvelope) -> None:
         received.append(env.payload.get("tag", ""))
 
-    bus.subscribe(">", handler)
+    await bus.subscribe(">", handler)
     same_ts = _T_BASE
     await bus.publish("A", _envelope(same_ts, {"tag": "first"}))
     await bus.publish("B", _envelope(same_ts, {"tag": "second"}))
@@ -179,7 +179,7 @@ async def test_handler_exception_does_not_kill_drain() -> None:
             raise RuntimeError(msg)
         received.append(tag)
 
-    bus.subscribe(">", handler)
+    await bus.subscribe(">", handler)
     await bus.publish("X", _envelope(_T_BASE, {"tag": "boom"}))
     await bus.publish("X", _envelope(_T_BASE + timedelta(seconds=1), {"tag": "ok"}))
     await bus.run_until_empty()
@@ -195,7 +195,7 @@ async def test_run_until_empty_then_publish_again_drains_new() -> None:
     async def handler(env: MessageEnvelope) -> None:
         received.append(env.payload.get("tag", ""))
 
-    bus.subscribe(">", handler)
+    await bus.subscribe(">", handler)
     # First batch.
     await bus.publish("X", _envelope(_T_BASE, {"tag": "a"}))
     await bus.publish("X", _envelope(_T_BASE + timedelta(seconds=1), {"tag": "b"}))
@@ -227,7 +227,7 @@ async def test_subscribe_on_closed_bus_raises() -> None:
         pass
 
     with pytest.raises(RuntimeError, match="subscribe on closed"):
-        bus.subscribe("X", handler)
+        await bus.subscribe("X", handler)
 
 
 async def test_close_idempotent() -> None:
@@ -237,14 +237,14 @@ async def test_close_idempotent() -> None:
     await bus.close()  # must NOT raise
 
 
-def test_subscribe_returns_subscription_handle() -> None:
+async def test_subscribe_returns_subscription_handle() -> None:
     """subscribe() returns ReplaySubscription with subject_pattern + handler + active=True."""
     bus = ReplayBus()
 
     async def handler(env: MessageEnvelope) -> None:
         pass
 
-    sub = bus.subscribe("market.ohlc.>", handler)
+    sub = await bus.subscribe("market.ohlc.>", handler)
     assert isinstance(sub, ReplaySubscription)
     assert sub.subject_pattern == "market.ohlc.>"
     assert sub.handler is handler
@@ -259,7 +259,7 @@ async def test_unsubscribe_via_active_false_skips_handler() -> None:
     async def handler(env: MessageEnvelope) -> None:
         received.append("called")
 
-    sub = bus.subscribe("X", handler)
+    sub = await bus.subscribe("X", handler)
     sub.active = False
     await bus.publish("X", _envelope(_T_BASE))
     await bus.run_until_empty()
@@ -272,3 +272,26 @@ def test_dotted_pattern_token_count_mismatch_no_match() -> None:
     assert _subject_matches("a.b.c", "a.b") is False
     # With > tail wildcard, shorter pattern matches longer subject.
     assert _subject_matches("a.>", "a.b.c") is True
+
+
+# --- T-507a KV stubs ------------------------------------------------------
+
+
+async def test_kv_get_returns_none() -> None:
+    """T-507a: ReplayBus.kv_get returns None unconditionally (replay has no KV state)."""
+    bus = ReplayBus()
+    assert await bus.kv_get("any-bucket", "any-key") is None
+
+
+async def test_kv_put_raises_not_implemented() -> None:
+    """T-507a: ReplayBus.kv_put raises NotImplementedError (write op meaningless in replay)."""
+    bus = ReplayBus()
+    with pytest.raises(NotImplementedError, match="kv_put"):
+        await bus.kv_put("bucket", "key", b"value")
+
+
+async def test_kv_update_raises_not_implemented() -> None:
+    """T-507a: ReplayBus.kv_update raises NotImplementedError (CAS meaningless in replay)."""
+    bus = ReplayBus()
+    with pytest.raises(NotImplementedError, match="kv_update"):
+        await bus.kv_update("bucket", "key", b"value", last_revision=0)

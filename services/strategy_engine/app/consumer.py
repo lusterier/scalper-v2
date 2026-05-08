@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     import asyncpg
     from structlog.stdlib import BoundLogger
 
-    from packages.bus import NatsClient
+    from packages.bus import BusProtocol
     from packages.core import BotId
     from packages.scoring import BotConfig, FeatureResolver
 
@@ -77,7 +77,7 @@ def make_signal_handler(
     bot_config: BotConfig,
     resolver: FeatureResolver,
     pool: asyncpg.Pool,
-    bus: NatsClient,
+    bus: BusProtocol,
     trading_logger: BoundLogger,
     system_logger: BoundLogger,
     audit_logger: BoundLogger,
@@ -238,7 +238,7 @@ async def _publish_order_request(
     signal: SignalValidated,
     signal_id: int,
     envelope: MessageEnvelope,
-    bus: NatsClient,
+    bus: BusProtocol,
     audit_logger: BoundLogger,
     system_logger: BoundLogger,
 ) -> None:
@@ -294,7 +294,7 @@ async def _publish_signal_rejected(
     threshold: float,
     rejected_at: datetime,
     envelope: MessageEnvelope,
-    bus: NatsClient,
+    bus: BusProtocol,
     audit_logger: BoundLogger,
     system_logger: BoundLogger,
 ) -> None:

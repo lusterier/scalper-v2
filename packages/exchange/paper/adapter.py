@@ -86,7 +86,7 @@ if TYPE_CHECKING:
 
     import asyncpg
 
-    from packages.bus import MessageEnvelope, NatsClient
+    from packages.bus import BusProtocol, MessageEnvelope
     from packages.core import BotId
 
     from .historical_ohlc_source import HistoricalOHLCSource, OHLCRow
@@ -160,7 +160,8 @@ class PaperExchange:
       ``"proportional_to_qty"``, ``"half_spread"`` per §12.1.
     * ``fee_rate: Decimal`` — per-trade fee rate.
     * ``bot_id: BotId`` — identity for paper_* writes (T-213b).
-    * ``bus: NatsClient`` — NATS subscriber for ``market.ohlc.1m.>``.
+    * ``bus: BusProtocol`` — pub/sub bus (NatsClient or ReplayBus);
+      subscribes ``market.ohlc.1m.>`` in live mode.
     * ``slippage_params: dict[str, Decimal]`` — per-model coefficient
       keyed by parameter name (validated via
       :data:`_REQUIRED_KEYS_PER_MODEL` at construction).
@@ -175,7 +176,7 @@ class PaperExchange:
         slippage_model: SlippageModel,
         fee_rate: Decimal,
         bot_id: BotId,
-        bus: NatsClient,
+        bus: BusProtocol,
         slippage_params: dict[str, Decimal],
         now_fn: Callable[[], datetime] = now_utc,
         pool: asyncpg.Pool,

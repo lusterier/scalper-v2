@@ -42,6 +42,8 @@ import heapq
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from packages.core import idempotent
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from datetime import datetime
@@ -117,10 +119,15 @@ class ReplayBus:
         )
         self._insertion_seq += 1
 
-    def subscribe(self, subject_pattern: str, handler: Handler) -> ReplaySubscription:
+    async def subscribe(self, subject_pattern: str, handler: Handler) -> ReplaySubscription:
         """Register handler on subject pattern; return handle for later sub.active=False.
 
-        Synchronous (no I/O) — deviation from NatsClient.subscribe(async).
+        T-507a: ``async def`` to satisfy :class:`packages.bus.BusProtocol`
+        signature parity with :meth:`packages.bus.NatsClient.subscribe`.
+        Body has no actual I/O (pure dict registration); the ``async``
+        marker is interface compliance only — all 3 production call-sites
+        already ``await bus.subscribe(...)``.
+
         Raises ``RuntimeError`` on closed bus.
         """
         if self._closed:
@@ -161,3 +168,33 @@ class ReplayBus:
         self._closed = True
         self._subscriptions.clear()
         self._heap.clear()
+
+    @idempotent
+    async def kv_get(self, bucket: str, key: str) -> tuple[bytes, int] | None:
+        """T-507a: Replay has no KV state — always return ``None``.
+
+        :class:`packages.scoring.FeatureResolver` ``_try_kv`` handles
+        ``None`` via DB-fallback per
+        ``packages/scoring/resolver.py:181-182``. Args ignored;
+        signature matches :meth:`packages.bus.NatsClient.kv_get` for
+        :class:`packages.bus.BusProtocol` satisfaction.
+
+        ``@idempotent`` per symmetry with NatsClient.kv_get
+        (`packages/bus/client.py:277`) — reads are replay-safe by
+        definition.
+        """
+        return None
+
+    async def kv_put(self, bucket: str, key: str, value: bytes) -> int:
+        """T-507a: Replay does not support KV writes — fail loud per §0.4.
+
+        ``@idempotent`` / ``@non_idempotent`` decorator skipped because
+        the method unconditionally raises — failure semantic dominates.
+        """
+        msg = "ReplayBus.kv_put: KV writes are not supported in replay mode"
+        raise NotImplementedError(msg)
+
+    async def kv_update(self, bucket: str, key: str, value: bytes, last_revision: int) -> int:
+        """T-507a: Replay does not support KV CAS — fail loud per §0.4."""
+        msg = "ReplayBus.kv_update: KV CAS writes are not supported in replay mode"
+        raise NotImplementedError(msg)
