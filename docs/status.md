@@ -1,5 +1,46 @@
 # Session status
 
+## 2026-05-08 (late-night V — T-512b mandatory kill-during-variant integration test shipped; F5 E3 partially satisfied; in-process simulated restart per OQ-1=A; T-513b sole remaining E3 gating sub-task)
+
+**F5 phase: 22/22 numbered tasks done (~100%).** Master HEAD pre-merge `6aa96a9` (`chore(tasks)` for T-513a). Shadow runtime cluster 10/11 sub-tasks done (T-510a + T-510b + T-511a + T-511b1 + T-511b2a + T-511b2 + T-512a + T-512b + T-513a + T-514; T-513b remaining as the only gating sub-task for full F5 E3 exit-criterion sign-off).
+
+### T-512b delivered — verification half of H-023 + F5 E3 sign-off pin
+
+- **All 4 review gates passed**: plan-reviewer single-pass APPROVE 2026-05-08 (10-item Write-time guidance) → drift-checker ON TRACK (4 staged files; all WG#1..#10 + AC#1..#15 verified) → brief-reviewer SHIP → math-validator VERIFIED — out of scope per CLAUDE.md Gate 4 (no `services/execution/app/` source touched; src LOC = 0).
+- Implements **BRIEF §19:2589 verbatim** *"Shadow variants persist across restart (verified by killing execution-service mid-variant)"* + **BRIEF §20:2787 verbatim test name** `test_shadow_variant_survives_restart_via_replay`.
+- **In-process simulated restart per operator OQ-1=A 2026-05-08**: mirror existing repo integration patterns (signal-gateway e2e + T-221 reconcile); subprocess+SIGTERM is novel-infra deferred since BRIEF §13.7:2037 says "Integration: full variant lifecycle under testcontainers with simulated ticks" — does not specifically mandate subprocess.
+- **NEW directory `services/execution/tests/integration/`**: `__init__.py` (empty) + `conftest.py` (157 LOC; 6 fixtures env-gated on `POSTGRES_TEST_DSN` + `NATS_TEST_URL` mirror signal-gateway pattern) + `test_shadow_restart.py` (520 LOC; 5 helpers + 2 test functions).
+- **Test #1 replay-finalize path** (verbatim test name): paper_trade + variant + ohlc_1m s candle 4 low (64600) crossing SL (64675 = 65000 × 0.995); after restart asserts `terminal_outcome='sl_hit'` + non-null realized_pnl/mfe_pct/mae_pct.
+- **Test #2 replay-resume path**: same setup s no-trigger candles; after restart asserts row stays terminated_at NULL + ShadowWorker B `_active_tasks[parent_trade_id]` má registered live continuation task.
+- **Path A synthetic publish per WG#1**: ShadowWorker A self-INSERTs row + spawns variant task → variant id captured BEFORE stop() per WG#2 → cancellation-does-not-finalize contract verified (shadow_worker.py:388 try/finally — `update_shadow_variant_terminal` is INSIDE try:, NOT in finally:).
+- **Cleanup discipline per WG#5 + WG#9**: cancel + drain via `contextlib.suppress + await` BEFORE pool fixture teardown (otherwise pool.close blocks on outstanding-conn timeout).
+- 2 nové testy (2039 → 2041 expected post-merge by skip-state); 0 regressions.
+
+### §0.3 LOC kalibrácia — 4. dátový bod L-014/L-016
+
+- **src LOC = 0** (test-only); §0.3 cap N/A per BRIEF §0.3 (test code excluded).
+- **Test body ~677 LOC vs plan target ~420** (~+61% overshoot). 4. dátový bod kalibrácia (T-511b1 +70%, T-512a +150%, T-513a +58%, T-512b +61%); FSM/integration tasks systematically over plan-budget. L-014/L-016 active control already enforced; no new lesson, just calibration data point. Pre-authorized waiver line v pláne §6 mirroring T-511b1 / T-512a / T-513a precedent.
+
+### F5 E3 exit-criterion partial satisfaction
+
+- **E3 verbatim**: BRIEF §19:2589 *"Shadow variants persist across restart (verified by killing execution-service mid-variant)."*
+- **T-512b satisfies the variant half** per `test_shadow_variant_survives_restart_via_replay` + replay-resume companion test.
+- **T-513b kill-test mirror remains** — rejected-signal observation FSM kill-during-observation integration test (mirror T-512b pattern but for `shadow_rejected` table). Full E3 sign-off needs both T-512b + T-513b. Plus T-513b's own scope additionally needs replay-recovery infra (mirror T-512a `shadow_replay.py` for rejected-observation FSM) — surface in T-513b plan stage per OQ.
+
+### Watch-outs for next session
+
+- **T-513b sole remaining critical-path pickup** — rejected-signal kill-test + replay-recovery infra. Heavy: ~150 LOC src (replay-recovery side mirror T-512a) + ~280 LOC integration test body. Pre-emptive split T-513b1 (replay infra) + T-513b2 (kill-test) likely warranted per L-007 + L-014 mirror T-512a/T-512b pattern. Plan stage will surface OQs.
+- **UI tasks T-516 + T-517** — already unblocked since T-513a; can prep frontend mockup work in parallel with T-513b.
+- **F5 phase ~100% numbered scope complete**: 22/22 numbered tasks shipped. Remaining work is T-513b (E3 second half) + T-516/T-517 (UI) + T-518..T-522 (backend polish + ops + close-out runbook). Pace: 5-6 tasks remaining; ~5-7 days realistic at current cadence.
+- **Today total**: 27+ master commits anticipated post-merge (16 prior + T-511b2a feat + chore + fix + T-511b2 feat + chore + UI feat + T-512a feat + chore + L-016 lesson + T-513a feat + chore + T-512b feat + chore).
+
+### Lessons surfaced
+
+- **L-014 / L-016 calibration confirmed (4th data point)**: T-512b ~+61% over plan target consistent s prior data points (T-511b1 +70%, T-512a +150%, T-513a +58%); plan-reviewer Gate 1 calibration multiplier 1.5-1.8× holds; brief-reviewer Gate 3 commit-body waiver discipline holds. No new lesson — calibration band is well-established.
+- **In-process simulated restart pattern viable for kill-tests**: T-512b proves that the `cancellation-does-not-finalize` contract from shadow_worker.py:388 try/finally placement allows in-process restart simulation to faithfully exercise the H-023 replay-finalize + replay-resume code paths. Mirror this approach for T-513b's rejected-observation kill-test (parent finalizer placement in shadow_rejected_worker.py is symmetric per T-513a shipped contract).
+
+---
+
 ## 2026-05-08 (late-night IV — T-513a rejected-signal observation FSM + producer shipped; BRIEF §13.5 4-outcome classification; T-513b kill-test deferred per OQ-3=A pre-emptive split)
 
 **F5 phase: 21/22 numbered tasks done (~95%).** Master HEAD pre-merge `374afdd` (feat T-513a). Shadow runtime cluster 9/11 sub-tasks (T-510a + T-510b + T-511a + T-511b1 + T-511b2a + T-511b2 + T-512a + T-513a + T-514; T-512b + T-513b remaining — both gating E3 exit criterion).
