@@ -7,13 +7,17 @@ dependencies = [
     "asyncpg==0.30.0",
     "pydantic==2.13.2",
     "pydantic-settings==2.13.1",
+    "scalper-v2-bus",
     "scalper-v2-core",
     "scalper-v2-db",
+    "scalper-v2-observability",
 ]
 
 [tool.uv.sources]
+scalper-v2-bus = { workspace = true }
 scalper-v2-core = { workspace = true }
 scalper-v2-db = { workspace = true }
+scalper-v2-observability = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

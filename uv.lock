@@ -1625,8 +1625,10 @@ dependencies = [
     { name = "asyncpg" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "scalper-v2-bus" },
     { name = "scalper-v2-core" },
     { name = "scalper-v2-db" },
+    { name = "scalper-v2-observability" },
 ]
 
 [package.metadata]
@@ -1634,8 +1636,10 @@ requires-dist = [
     { name = "asyncpg", specifier = "==0.30.0" },
     { name = "pydantic", specifier = "==2.13.2" },
     { name = "pydantic-settings", specifier = "==2.13.1" },
+    { name = "scalper-v2-bus", editable = "packages/bus" },
     { name = "scalper-v2-core", editable = "packages/core" },
     { name = "scalper-v2-db", editable = "packages/db" },
+    { name = "scalper-v2-observability", editable = "packages/observability" },
 ]
 
 [[package]]

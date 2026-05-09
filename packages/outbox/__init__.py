@@ -24,11 +24,13 @@ from .queries import (
     mark_outbox_event_published,
     select_pending_outbox_events,
 )
+from .relay import OutboxRelayWorker
 from .types import OutboxEvent, OutboxRelaySettings
 
 __all__ = [
     "OutboxEvent",
     "OutboxRelaySettings",
+    "OutboxRelayWorker",
     "insert_outbox_event",
     "mark_outbox_event_failed",
     "mark_outbox_event_published",
