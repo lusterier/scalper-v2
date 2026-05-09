@@ -1406,6 +1406,16 @@ class FeatureUpdate(BaseModel):
 - Backward-compatible changes (add optional field) bump the schema version's minor. Old consumers tolerate unknown fields.
 - Breaking changes require a new schema version and a migration period where both are published in parallel. ADR required.
 
+### 8.7 Transactional outbox pattern (T-537 cluster)
+
+For services where business-state writes and event publishes must be atomic (signal-gateway, execution-service, strategy-engine), use the transactional outbox pattern instead of `bus.publish` directly:
+
+1. **Write event-intent** inside the same DB transaction as the business state via `packages.outbox.queries.insert_outbox_event`. Single generic `outbox_events` table (migration 0016) with `service` discriminator column shared across services. Payload uses codec-immune `json.dumps(_to_jsonable(payload))` form per L-013.
+2. **Relay worker** (T-537a2 — `packages.outbox.relay.OutboxRelayWorker`) hosted in each service's lifespan polls `select_pending_outbox_events` (`FOR UPDATE SKIP LOCKED` + backoff window via PG `least(base * power(2.0, attempts), cap)`), publishes to NATS, marks via `mark_outbox_event_published` on success or `mark_outbox_event_failed` on transient failure (exponential backoff capped per `OutboxRelaySettings`).
+3. **Failed events** (after `max_attempts` exhaustion) keep `failed_at` set forever per OQ-3 round 2 — admin replay via `UPDATE published_at = NULL`. No vacuum.
+
+Audit-bug origin: Items 2 + 7 of operator audit 2026-05-08 (signal-loss between dedup-record and publish + generic publish-after-persist gap). See `docs/plans/T-537a1-outbox-queries-types-migration.md` for the infra cycle.
+
 ---
 
 ## 9. Service Specifications
