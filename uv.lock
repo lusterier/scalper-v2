@@ -18,6 +18,7 @@ members = [
     "scalper-v2-market",
     "scalper-v2-market-data",
     "scalper-v2-observability",
+    "scalper-v2-outbox",
     "scalper-v2-scoring",
     "scalper-v2-signal-gateway",
     "scalper-v2-strategy-engine",
@@ -1614,6 +1615,27 @@ requires-dist = [
     { name = "prometheus-client", specifier = "==0.25.0" },
     { name = "scalper-v2-core", editable = "packages/core" },
     { name = "structlog", specifier = "==25.5.0" },
+]
+
+[[package]]
+name = "scalper-v2-outbox"
+version = "0.1.0"
+source = { editable = "packages/outbox" }
+dependencies = [
+    { name = "asyncpg" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "scalper-v2-core" },
+    { name = "scalper-v2-db" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "asyncpg", specifier = "==0.30.0" },
+    { name = "pydantic", specifier = "==2.13.2" },
+    { name = "pydantic-settings", specifier = "==2.13.1" },
+    { name = "scalper-v2-core", editable = "packages/core" },
+    { name = "scalper-v2-db", editable = "packages/db" },
 ]
 
 [[package]]

@@ -1,0 +1,28 @@
+[project]
+name = "scalper-v2-outbox"
+version = "0.1.0"
+description = "Transactional outbox primitives for reliable NATS publish (T-537a1; BRIEF §8)."
+requires-python = ">=3.12"
+dependencies = [
+    "asyncpg==0.30.0",
+    "pydantic==2.13.2",
+    "pydantic-settings==2.13.1",
+    "scalper-v2-core",
+    "scalper-v2-db",
+]
+
+[tool.uv.sources]
+scalper-v2-core = { workspace = true }
+scalper-v2-db = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+include = ["*.py", "py.typed"]
+exclude = ["tests/**", "**/__pycache__/**"]
+dev-mode-dirs = ["."]
+
+[tool.hatch.build.targets.wheel.sources]
+"" = "packages/outbox"
