@@ -1,5 +1,30 @@
 # Session status
 
+## 2026-05-09 (late-night XXI — T-516b shadow variants section shipped; F5 counter advances 32/52 → 33/52; T-516 trio CLOSED; placeholder #4 now real renderer in BOTH drill-down routes)
+
+**F5 phase counter advances 32/52 → 33/52** per L-007 split convention (numerator+1 only; T-516b already in denominator since T-516 reorg 2026-05-08). T-516 trio (T-516a1 backend + T-516a2 UI routes + T-516b shadow variants section) now FULLY CLOSED.
+
+### T-516b — shadow variants per-trade drill-down section (closes BRIEF §13.6)
+
+- **Origin**: F5 numbered task closing BRIEF §13.6 dashboard integration verbatim ("per-trade drill-down shows all 5 variants alongside the live outcome"). Just-unblocked after T-516a2 (DONE 2026-05-09 earlier today). Replaces placeholder #4 in BOTH `trades.$tradeId.tsx` (live) + `paper-trades.$paperTradeId.tsx` (paper) routes with real `<ShadowVariantsView />`.
+- **All 4 review gates passed**: plan-reviewer pass-1 REVISE 3 CONCERNs (test paths convention drift `packages/db/queries/tests/` → `packages/db/tests/test_queries_shadow.py`; test-gating mode mismatch — operator wanted full mirror per OQ-4 but plan over-applied L-021 testcontainer claim; testid discipline binding for placeholder count 5→4 transition) → pass-2 REVISE 1 CONCERN (Estimate sec carrying old paths post pass-1 fix) → pass-3 APPROVE with 7-item Write-time guidance → drift-checker mid + final ON TRACK → brief-reviewer SHIP (7/7 WG verified) → math-validator out-of-scope (UI render + read-only analytics-api).
+- **Operator OQs (4 OQs)**: OQ-1 = Split per parent_kind (mirror existing convention); OQ-2 = 7-col compact table (variant_name + side + entry/qty + outcome pill + PriceDelta + MFE/MAE); OQ-3 = Separate Live parent row at top of variants table per BRIEF §13.6 verbatim; OQ-4 = Full mirror tests (non-default; extensive coverage with parent_kind=live vs paper distinct cases).
+- **Implementation**: NEW DB helper `select_shadow_variants_by_parent` (parameterized SQL; mock-based AsyncMock tests). NEW Pydantic models in `services/analytics_api/app/models/shadow_variants.py` (15-col mirror; `use_enum_values=True` for ShadowVariantTerminal StrEnum + Decimal-as-string per §5.3). NEW endpoints in `routers/trades.py` + `routers/paper_trades.py` with `parent_kind` hardcoded per route (NOT query param per WG#3). NEW UI component `ShadowVariantsView.tsx` (198 LOC; 8-col table + Live parent row + variant rows + Pill helper + formatPctPair; `data-testid='shadow-variants-view'` root + `'shadow-variants-loading'` skeleton; NO `timeline-placeholder`). Both routes replace placeholder #4 with `<ShadowVariantsView />` + parent prop pass-through (Trade | PaperTrade | undefined union).
+- **Tests**: 5 NEW DB + 5 NEW router + 6 NEW component (incl. L-017 dual-pin on parent-undefined test) + 2 NEW integration + 2 existing test updates (placeholder count 5→4). Backend pytest 34 pass; UI 195 tests / 42 files pass (+8 net new). 0 regressions. typecheck + lint clean.
+- **§0.3 LOC**: ~395 net src LOC; under 400 cap by ~5. Plan estimate was ~243 (+63% miss); component grew 198 vs 110 due to mechanical render code (table cells + Pill helper + formatPctPair) — no scope creep.
+- **No new deps (§0.9)**.
+- **ADR-0010 parent_kind discriminator routing pinned** via `test_router_shadow_variants.py` test #4 (`live_kwargs["parent_kind"]=="live"` + `paper_kwargs["parent_kind"]=="paper"`).
+- **Plan**: `docs/plans/T-516b.md` (3-pass APPROVED with 7 WG verbatim).
+- **Commit**: feat `4b8ff86` on `feat/T-516b-shadow-variants-section`; chore close pending.
+- **Closes T-516 trio**: T-516a1 backend (DONE 2026-05-08) + T-516a2 UI routes + shared module (DONE 2026-05-09 earlier) + T-516b shadow variants (DONE now). Placeholder #4 slot in BOTH drill-down routes is now real component.
+
+### Next session pickup
+
+- **T-517** — per-symbol best-variant aggregate + per-rejected-signal explorer (BRIEF §13.6 second + third bullets; pre-emptively split-flagged per L-007).
+- **T-518..T-521** F5 backend polish + close-out gating.
+- **T-524..T-536** pre-live operational hardening cluster (12 mandatory tasks per ADR-0011) — biggest remaining cluster, mandatory pre E6 Live-ready.
+- **T-522** Live-ready close-out runbook (E5 + E6 sign-off).
+
 ## 2026-05-09 (late-night XX — T-516a2 paper-trade UI drill-down shipped; F5 counter advances 31/52 → 32/52; T-516b unblocked)
 
 **F5 phase counter advances 31/52 → 32/52** per L-007 split convention (numerator+1 only; T-516a2 already in denominator since T-516 reorg 2026-05-08).
