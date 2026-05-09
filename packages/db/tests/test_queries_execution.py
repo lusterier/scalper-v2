@@ -446,41 +446,67 @@ async def test_select_position_state_returns_row_with_sl_type_and_remaining_qty(
 async def test_update_position_state_after_fill_subtracts_remaining_qty() -> None:
     """new_sl_type=None branch — keeps existing sl_type unchanged."""
     conn = MagicMock()
-    conn.execute = AsyncMock()
-    await update_position_state_after_fill(
+    conn.execute = AsyncMock(return_value="UPDATE 1")
+    rows = await update_position_state_after_fill(
         conn,
         bot_id="alpha",
         symbol="BTCUSDT",
+        trade_id=42,
         qty_delta=Decimal("0.0005"),
         new_sl_type=None,
         updated_at=_FIXED_NOW,
     )
+    assert rows == 1
     sql_args = conn.execute.await_args.args
     sql = sql_args[0]
     assert "UPDATE position_state" in sql
     assert "remaining_qty = remaining_qty - $1" in sql
     assert "sl_type" not in sql  # branch sans sl_type write
+    assert "AND trade_id = $5" in sql  # T-217c / H-033
     assert sql_args[1] == Decimal("0.0005")
+    assert sql_args[5] == 42
 
 
 async def test_update_position_state_after_fill_sets_sl_type_when_provided() -> None:
     """OQ-5 partial_tp → sl_type='trail' surface — write-side Literal type-narrowing."""
     conn = MagicMock()
-    conn.execute = AsyncMock()
-    await update_position_state_after_fill(
+    conn.execute = AsyncMock(return_value="UPDATE 1")
+    rows = await update_position_state_after_fill(
         conn,
         bot_id="alpha",
         symbol="BTCUSDT",
+        trade_id=42,
         qty_delta=Decimal("0.0005"),
         new_sl_type="trail",
         updated_at=_FIXED_NOW,
     )
+    assert rows == 1
     sql_args = conn.execute.await_args.args
     sql = sql_args[0]
     assert "remaining_qty = remaining_qty - $1" in sql
     assert "sl_type = $2" in sql
+    assert "AND trade_id = $6" in sql  # T-217c / H-033
     assert sql_args[1] == Decimal("0.0005")
     assert sql_args[2] == "trail"
+    assert sql_args[6] == 42
+
+
+async def test_update_position_state_after_fill_returns_zero_on_zero_rows_tag() -> None:
+    """T-217c / H-033 — caller halts on 0 rows; helper returns parsed count."""
+    conn = MagicMock()
+    conn.execute = AsyncMock(return_value="UPDATE 0")
+    rows = await update_position_state_after_fill(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        trade_id=99,
+        qty_delta=Decimal("0.0005"),
+        new_sl_type=None,
+        updated_at=_FIXED_NOW,
+    )
+    assert rows == 0
+    sql = conn.execute.await_args.args[0]
+    assert "AND trade_id = $5" in sql
 
 
 async def test_update_trade_fees_incremental_uses_pk_only_where_id() -> None:

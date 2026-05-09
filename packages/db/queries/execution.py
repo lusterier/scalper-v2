@@ -638,46 +638,60 @@ async def update_position_state_after_fill(
     *,
     bot_id: str,
     symbol: str,
+    trade_id: int,
     qty_delta: Decimal,
     new_sl_type: Literal["protective", "be", "trail"] | None,
     updated_at: datetime,
-) -> None:
+) -> int:
     """Subtract ``qty_delta`` from remaining_qty; optionally set ``sl_type``.
 
-    Composite PK ``(bot_id, symbol)``. T-218b body invokes after each
-    execution event: ``new_sl_type=None`` keeps existing sl_type
-    (open / close / sl / trail fills); ``new_sl_type='trail'`` applies
-    on partial_tp per OQ-5 trailing-on-TP-hit.
+    Composite PK ``(bot_id, symbol)`` plus ``trade_id`` in WHERE clause
+    per T-217c / H-033 — guards against composite-PK row identity churn
+    under close→reopen race (same `(bot_id, symbol)` reused across
+    sequential trades). T-218b body invokes after each execution event:
+    ``new_sl_type=None`` keeps existing sl_type (open / close / sl /
+    trail fills); ``new_sl_type='trail'`` applies on partial_tp per
+    OQ-5 trailing-on-TP-hit.
+
+    Returns rows updated count (parsed from asyncpg command tag).
+    Caller MUST check ``== 0`` for trade_id mismatch detection — H-033 /
+    T-217c: 0 rows updated means the position_state row's trade_id no
+    longer matches the derived trade_id (late WS event arrived after
+    close→reopen race; T2's row exists in place of T1's row).
 
     Write-side ``new_sl_type`` is tightened to ``Literal[...] | None``
     (mypy-narrowed) so typos at the call-site fail compile-time. Read
     projection (:class:`PositionStateRow.sl_type`) stays loose ``str | None``.
     """
     if new_sl_type is None:
-        await conn.execute(
+        result = await conn.execute(
             """
             UPDATE position_state
             SET remaining_qty = remaining_qty - $1, updated_at = $2
-            WHERE bot_id = $3 AND symbol = $4
+            WHERE bot_id = $3 AND symbol = $4 AND trade_id = $5
             """,
             qty_delta,
             updated_at,
             bot_id,
             symbol,
+            trade_id,
         )
     else:
-        await conn.execute(
+        result = await conn.execute(
             """
             UPDATE position_state
             SET remaining_qty = remaining_qty - $1, sl_type = $2, updated_at = $3
-            WHERE bot_id = $4 AND symbol = $5
+            WHERE bot_id = $4 AND symbol = $5 AND trade_id = $6
             """,
             qty_delta,
             new_sl_type,
             updated_at,
             bot_id,
             symbol,
+            trade_id,
         )
+    # asyncpg returns "UPDATE <n>" command tag for UPDATE statements.
+    return int(result.split()[-1])
 
 
 async def update_trade_fees_incremental(

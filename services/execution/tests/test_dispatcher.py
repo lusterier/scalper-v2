@@ -188,7 +188,9 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "select_position_state": AsyncMock(return_value=None),
         "select_open_order_id_by_trade_id": AsyncMock(return_value=100),
         "insert_execution": AsyncMock(return_value=None),
-        "update_position_state_after_fill": AsyncMock(return_value=None),
+        # T-217c / H-033: helper now returns int rows-updated count; default
+        # 1 = success path. Tests for the halt-on-mismatch path override to 0.
+        "update_position_state_after_fill": AsyncMock(return_value=1),
         "update_trade_fees_incremental": AsyncMock(return_value=None),
         "reconcile_close": AsyncMock(
             return_value=(fake_payload, CorrelationId("cid-default"), "ord-1")
@@ -482,6 +484,9 @@ async def test_process_partial_tp_inferred_from_position_state_when_no_orders_ro
     assert insert_call.kwargs["order_id"] == 100  # via select_open_order_id_by_trade_id
     update_call = patched_queries["update_position_state_after_fill"].call_args
     assert update_call.kwargs["new_sl_type"] == "trail"
+    assert (
+        update_call.kwargs["trade_id"] == 1
+    )  # T-217c / H-033 — Path B trade_id from _ps_row default
     patched_queries["reconcile_close"].assert_not_called()
 
 
@@ -500,6 +505,9 @@ async def test_process_trail_inferred_when_remaining_zeroes_with_sl_type_trail(
     assert insert_call.kwargs["exec_type"] == "trail"
     update_call = patched_queries["update_position_state_after_fill"].call_args
     assert update_call.kwargs["new_sl_type"] is None
+    assert (
+        update_call.kwargs["trade_id"] == 1
+    )  # T-217c / H-033 — Path B trade_id from _ps_row default
     patched_queries["reconcile_close"].assert_called_once()
     patched_queries["emit_post_commit_close_event"].assert_called_once()
 
@@ -654,6 +662,42 @@ async def test_process_overfill_halts_with_runtime_error_preserves_remaining_qty
     assert "execution.dispatcher_overfill_halt" in error_event_names
     patched_queries["insert_execution"].assert_not_called()
     patched_queries["update_position_state_after_fill"].assert_not_called()
+
+
+async def test_dispatcher_halts_on_position_state_trade_id_mismatch_during_fill_update(
+    patched_queries: dict[str, Any],
+) -> None:
+    """T-217c / H-033 — composite-PK row identity churn detection.
+
+    Late WS event for T1's close arrives after T2's position_state row exists
+    on same `(bot_id, symbol)`. SQL helper now anchors WHERE on trade_id;
+    when derived trade_id ≠ position_state.trade_id, helper returns 0 rows
+    updated. Dispatcher MUST halt (ERROR log + raise RuntimeError); no
+    downstream fees update; transaction rolls back.
+    """
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(remaining_qty=Decimal("10"), sl_type="protective"),  # 1st: derivation
+    ]
+    patched_queries["update_position_state_after_fill"].return_value = 0  # mismatch
+    dispatcher, logger = _build()
+    event = _execution_event_v(side="sell", qty=Decimal("5"))
+    with pytest.raises(RuntimeError, match=r"position_state\.trade_id mismatch"):
+        await dispatcher.consume(event)
+    error_event_names = [call.args[0] for call in logger.error.call_args_list]
+    assert "execution.dispatcher_position_state_trade_id_mismatch" in error_event_names
+    error_call = next(
+        call
+        for call in logger.error.call_args_list
+        if call.args[0] == "execution.dispatcher_position_state_trade_id_mismatch"
+    )
+    assert error_call.kwargs["bot_id"] == "alpha"
+    assert error_call.kwargs["symbol"] == "BTCUSDT"
+    assert error_call.kwargs["event_trade_id"] == 1
+    assert "exchange_exec_id" in error_call.kwargs
+    assert "exchange_order_id" in error_call.kwargs
+    # Transaction-rollback semantics: fees update never reached.
+    patched_queries["update_trade_fees_incremental"].assert_not_called()
+    patched_queries["reconcile_close"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------

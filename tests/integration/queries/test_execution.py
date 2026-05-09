@@ -29,6 +29,7 @@ from packages.db.queries.execution import (
     insert_order,
     insert_position_state,
     insert_trade,
+    update_position_state_after_fill,
     update_position_state_monitor_tick,
 )
 
@@ -134,6 +135,102 @@ async def test_update_position_state_monitor_tick_writes_correct_columns_against
         assert row["mfe_price"] == Decimal("110")
         assert row["mae_price"] == Decimal("98")
         assert row["running_pnl"] == Decimal("0.1234")
+        assert row["updated_at"] == _T_TICK
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_update_position_state_after_fill_returns_zero_when_trade_id_mismatches(
+    migrated_db_dsn: str,
+) -> None:
+    """T-217c / H-033 — composite-PK guard against close→reopen race.
+
+    Seeds position_state row with trade_id=10; calls helper with trade_id=11
+    (simulating late WS event for closed T1 arriving after T2 reopened on
+    same `(bot_id, symbol)`). Helper returns 0 (no rows updated; WHERE
+    clause anchored on trade_id rejected the mismatched id). Row state
+    must remain UNCHANGED — remaining_qty stays at the seeded value, no
+    silent corruption of T2's row.
+    """
+    conn = await asyncpg.connect(dsn=migrated_db_dsn)
+    try:
+        await _seed_position_state(conn)
+        seeded_trade_id = await conn.fetchval(
+            "SELECT trade_id FROM position_state WHERE bot_id = $1 AND symbol = $2",
+            "alpha",
+            "BTCUSDT",
+        )
+        mismatched_trade_id = seeded_trade_id + 1
+        rows_updated = await update_position_state_after_fill(
+            conn,
+            bot_id="alpha",
+            symbol="BTCUSDT",
+            trade_id=mismatched_trade_id,
+            qty_delta=Decimal("3"),
+            new_sl_type=None,
+            updated_at=_T_TICK,
+        )
+        assert rows_updated == 0
+        row = await conn.fetchrow(
+            """
+            SELECT trade_id, remaining_qty, sl_type, updated_at
+            FROM position_state
+            WHERE bot_id = $1 AND symbol = $2
+            """,
+            "alpha",
+            "BTCUSDT",
+        )
+        assert row is not None
+        assert row["trade_id"] == seeded_trade_id  # T2's row identity unchanged
+        assert row["remaining_qty"] == Decimal("10")  # not decremented
+        assert row["sl_type"] == "protective"  # not mutated
+        assert row["updated_at"] == _T_ENTRY  # not bumped
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_update_position_state_after_fill_returns_one_when_trade_id_matches(
+    migrated_db_dsn: str,
+) -> None:
+    """T-217c / H-033 — happy-path round-trip: matching trade_id mutates the row.
+
+    Companion to the mismatch test above; pins the positive path for the
+    new SQL signature against real PG (catches potential $N bind ordering
+    regression on the new trade_id parameter).
+    """
+    conn = await asyncpg.connect(dsn=migrated_db_dsn)
+    try:
+        await _seed_position_state(conn)
+        seeded_trade_id = await conn.fetchval(
+            "SELECT trade_id FROM position_state WHERE bot_id = $1 AND symbol = $2",
+            "alpha",
+            "BTCUSDT",
+        )
+        rows_updated = await update_position_state_after_fill(
+            conn,
+            bot_id="alpha",
+            symbol="BTCUSDT",
+            trade_id=seeded_trade_id,
+            qty_delta=Decimal("4"),
+            new_sl_type="trail",
+            updated_at=_T_TICK,
+        )
+        assert rows_updated == 1
+        row = await conn.fetchrow(
+            """
+            SELECT trade_id, remaining_qty, sl_type, updated_at
+            FROM position_state
+            WHERE bot_id = $1 AND symbol = $2
+            """,
+            "alpha",
+            "BTCUSDT",
+        )
+        assert row is not None
+        assert row["trade_id"] == seeded_trade_id
+        assert row["remaining_qty"] == Decimal("6")  # 10 - 4
+        assert row["sl_type"] == "trail"  # mutated per new_sl_type
         assert row["updated_at"] == _T_TICK
     finally:
         await conn.close()

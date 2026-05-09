@@ -222,14 +222,39 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
                 new_sl_type: Literal["protective", "be", "trail"] | None = (
                     "trail" if exec_type == "partial_tp" else None
                 )
-                await update_position_state_after_fill(
+                # T-217c / H-033: composite-PK UPDATE must verify trade_id
+                # alignment. _derive_exec_type Path A sources trade_id from
+                # `trades` table; under close→reopen race, position_state row
+                # identity may have changed (composite PK (bot_id, symbol)
+                # reused for new trade). SQL helper now includes trade_id in
+                # WHERE; 0 rows updated → halt + raise (T-221 reconciliation
+                # owns recovery via NATS redelivery + Bybit-OPEN/DB-CLOSED
+                # divergence detection).
+                assert trade_id is not None  # exec_type != "open" → Path A/B both produce non-None
+                rows_updated = await update_position_state_after_fill(
                     conn,
                     bot_id=self._bot_id,
                     symbol=message.symbol,
+                    trade_id=trade_id,
                     qty_delta=message.qty,
                     new_sl_type=new_sl_type,
                     updated_at=self._now_fn(),
                 )
+                if rows_updated == 0:
+                    self._bound_logger.error(
+                        "execution.dispatcher_position_state_trade_id_mismatch",
+                        bot_id=self._bot_id,
+                        symbol=message.symbol,
+                        event_trade_id=trade_id,
+                        exchange_exec_id=message.exchange_exec_id,
+                        exchange_order_id=message.exchange_order_id,
+                    )
+                    msg = (
+                        f"position_state.trade_id mismatch with derived "
+                        f"trade_id={trade_id}: 0 rows updated (composite PK row "
+                        "identity changed under concurrent close→reopen race)"
+                    )
+                    raise RuntimeError(msg)
 
             if trade_id is not None:
                 await update_trade_fees_incremental(
