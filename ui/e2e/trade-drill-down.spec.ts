@@ -26,11 +26,15 @@ test("Trade explorer: list → row click → drill-down 8 sections", async ({ pa
   await expect(page.getByText("Order events")).toBeVisible();
   await expect(page.getByText("Fills")).toBeVisible();
   await expect(page.getByText("SL moves")).toBeVisible();
-  await expect(page.getByText("Shadow variants")).toBeVisible();
+  // T-516a2 placeholder #4 wording change: "Coming T-516b (shadow
+  // variants section per ADR-0010 parent_kind=live)" causes substring
+  // collision with the section title "Shadow variants". Use exact match.
+  await expect(page.getByText("Shadow variants", { exact: true })).toBeVisible();
   await expect(page.getByText("Post-close price snapshots")).toBeVisible();
 
-  // Verify at least 1 placeholder explicitly shows "Coming F4+" / "F5+".
-  await expect(page.getByText(/Coming F[45]\+/).first()).toBeVisible();
+  // Verify at least 1 placeholder explicitly shows "Coming F4+" / "F5+"
+  // OR T-516a2's "Coming T-516b" wording for the Shadow variants slot.
+  await expect(page.getByText(/Coming (F[45]\+|T-516b)/).first()).toBeVisible();
 
   // Back link present.
   await expect(page.getByRole("link", { name: "Back to Trades" })).toBeVisible();
