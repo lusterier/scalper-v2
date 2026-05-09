@@ -72,6 +72,10 @@ async def test_webhook_full_round_trip(webhook_e2e: E2EFixture) -> None:
         b'{"symbol":"BTCUSDT.P","action":"LONG","source":"e2e",'
         b'"idempotency_key":"e2e-happy-1","rsi":14.2}'
     )
+    # T-537b: TestClient context KEPT OPEN through _wait_for_messages so the
+    # outbox relay (lifespan-hosted asyncio task) stays alive long enough to
+    # poll + publish. Pre-T-537b webhook published directly inside the request
+    # so the wait could happen post-context. Now publish is async via relay.
     with TestClient(webhook_e2e.app) as c:
         response = c.post(
             "/webhook",
@@ -79,35 +83,37 @@ async def test_webhook_full_round_trip(webhook_e2e: E2EFixture) -> None:
             headers={"X-Signature": _hmac_sig(body)},
         )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert "signal_id" in payload
-    signal_id = payload["signal_id"]
-    assert isinstance(signal_id, int)
+        assert response.status_code == 200
+        payload = response.json()
+        assert "signal_id" in payload
+        signal_id = payload["signal_id"]
+        assert isinstance(signal_id, int)
 
-    dsn = os.environ["DATABASE_URL"]
-    conn = await asyncpg.connect(dsn=dsn)
-    try:
-        row = await conn.fetchrow(
-            "SELECT id, symbol, original_symbol, action, source, "
-            "idempotency_key, ingestion_status, payload, correlation_id "
-            "FROM signals WHERE id = $1",
-            signal_id,
+        dsn = os.environ["DATABASE_URL"]
+        conn = await asyncpg.connect(dsn=dsn)
+        try:
+            row = await conn.fetchrow(
+                "SELECT id, symbol, original_symbol, action, source, "
+                "idempotency_key, ingestion_status, payload, correlation_id "
+                "FROM signals WHERE id = $1",
+                signal_id,
+            )
+        finally:
+            await conn.close()
+        assert row is not None
+        assert row["symbol"] == "BTCUSDT"
+        assert row["original_symbol"] == "BTCUSDT.P"
+        assert row["action"] == "LONG"
+        assert row["source"] == "e2e"
+        assert row["idempotency_key"] == "e2e-happy-1"
+        assert row["ingestion_status"] == "validated"
+        assert row["correlation_id"] == "e2e-happy-1"
+        db_payload = (
+            json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
         )
-    finally:
-        await conn.close()
-    assert row is not None
-    assert row["symbol"] == "BTCUSDT"
-    assert row["original_symbol"] == "BTCUSDT.P"
-    assert row["action"] == "LONG"
-    assert row["source"] == "e2e"
-    assert row["idempotency_key"] == "e2e-happy-1"
-    assert row["ingestion_status"] == "validated"
-    assert row["correlation_id"] == "e2e-happy-1"
-    db_payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
-    assert db_payload == {"rsi": 14.2}
+        assert db_payload == {"rsi": 14.2}
 
-    await _wait_for_messages(webhook_e2e.received, 1)
+        await _wait_for_messages(webhook_e2e.received, 1)
     envelope = webhook_e2e.received[0]
     assert envelope.publisher == "signal-gateway"
     assert envelope.correlation_id == "e2e-happy-1"
@@ -129,26 +135,29 @@ async def test_webhook_duplicate_round_trip(webhook_e2e: E2EFixture) -> None:  #
     """Same idempotency_key twice -> first 200 'validated', second 202 'duplicate', 2 PG rows."""
     body = b'{"symbol":"BTCUSDT.P","action":"LONG","source":"e2e","idempotency_key":"e2e-dup-1"}'
     sig = _hmac_sig(body)
+    # T-537b: TestClient context KEPT OPEN through _wait_for_messages — see
+    # test_webhook_full_round_trip for rationale.
     with TestClient(webhook_e2e.app) as c:
         first = c.post("/webhook", content=body, headers={"X-Signature": sig})
         second = c.post("/webhook", content=body, headers={"X-Signature": sig})
 
-    assert first.status_code == 200
-    assert second.status_code == 202
-    assert second.json() == {"status": "duplicate"}
+        assert first.status_code == 200
+        assert second.status_code == 202
+        assert second.json() == {"status": "duplicate"}
 
-    dsn = os.environ["DATABASE_URL"]
-    conn = await asyncpg.connect(dsn=dsn)
-    try:
-        rows = await conn.fetch(
-            "SELECT ingestion_status FROM signals WHERE idempotency_key = $1 ORDER BY received_at",
-            "e2e-dup-1",
-        )
-    finally:
-        await conn.close()
-    statuses = [r["ingestion_status"] for r in rows]
-    assert statuses == ["validated", "duplicate"]
+        dsn = os.environ["DATABASE_URL"]
+        conn = await asyncpg.connect(dsn=dsn)
+        try:
+            rows = await conn.fetch(
+                "SELECT ingestion_status FROM signals "
+                "WHERE idempotency_key = $1 ORDER BY received_at",
+                "e2e-dup-1",
+            )
+        finally:
+            await conn.close()
+        statuses = [r["ingestion_status"] for r in rows]
+        assert statuses == ["validated", "duplicate"]
 
-    await _wait_for_messages(webhook_e2e.received, 1)
+        await _wait_for_messages(webhook_e2e.received, 1)
     assert len(webhook_e2e.received) == 1
     assert webhook_e2e.received[0].correlation_id == "e2e-dup-1"
