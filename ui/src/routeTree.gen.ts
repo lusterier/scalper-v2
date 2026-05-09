@@ -15,10 +15,12 @@ import { Route as AuditRouteImport } from './routes/audit'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TradesIndexRouteImport } from './routes/trades.index'
 import { Route as ScoringIndexRouteImport } from './routes/scoring.index'
+import { Route as PaperTradesIndexRouteImport } from './routes/paper-trades.index'
 import { Route as BacktestsIndexRouteImport } from './routes/backtests.index'
 import { Route as TradesTradeIdRouteImport } from './routes/trades.$tradeId'
 import { Route as StrategyBotIdRouteImport } from './routes/strategy.$botId'
 import { Route as ScoringSignalIdRouteImport } from './routes/scoring.$signalId'
+import { Route as PaperTradesPaperTradeIdRouteImport } from './routes/paper-trades.$paperTradeId'
 import { Route as BotBotIdRouteImport } from './routes/bot.$botId'
 import { Route as BacktestsRunIdRouteImport } from './routes/backtests.$runId'
 
@@ -52,6 +54,11 @@ const ScoringIndexRoute = ScoringIndexRouteImport.update({
   path: '/scoring/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PaperTradesIndexRoute = PaperTradesIndexRouteImport.update({
+  id: '/paper-trades/',
+  path: '/paper-trades/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BacktestsIndexRoute = BacktestsIndexRouteImport.update({
   id: '/backtests/',
   path: '/backtests/',
@@ -72,6 +79,11 @@ const ScoringSignalIdRoute = ScoringSignalIdRouteImport.update({
   path: '/scoring/$signalId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PaperTradesPaperTradeIdRoute = PaperTradesPaperTradeIdRouteImport.update({
+  id: '/paper-trades/$paperTradeId',
+  path: '/paper-trades/$paperTradeId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BotBotIdRoute = BotBotIdRouteImport.update({
   id: '/bot/$botId',
   path: '/bot/$botId',
@@ -90,10 +102,12 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
+  '/paper-trades/$paperTradeId': typeof PaperTradesPaperTradeIdRoute
   '/scoring/$signalId': typeof ScoringSignalIdRoute
   '/strategy/$botId': typeof StrategyBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
   '/backtests/': typeof BacktestsIndexRoute
+  '/paper-trades/': typeof PaperTradesIndexRoute
   '/scoring/': typeof ScoringIndexRoute
   '/trades/': typeof TradesIndexRoute
 }
@@ -104,10 +118,12 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
+  '/paper-trades/$paperTradeId': typeof PaperTradesPaperTradeIdRoute
   '/scoring/$signalId': typeof ScoringSignalIdRoute
   '/strategy/$botId': typeof StrategyBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
   '/backtests': typeof BacktestsIndexRoute
+  '/paper-trades': typeof PaperTradesIndexRoute
   '/scoring': typeof ScoringIndexRoute
   '/trades': typeof TradesIndexRoute
 }
@@ -119,10 +135,12 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/backtests/$runId': typeof BacktestsRunIdRoute
   '/bot/$botId': typeof BotBotIdRoute
+  '/paper-trades/$paperTradeId': typeof PaperTradesPaperTradeIdRoute
   '/scoring/$signalId': typeof ScoringSignalIdRoute
   '/strategy/$botId': typeof StrategyBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
   '/backtests/': typeof BacktestsIndexRoute
+  '/paper-trades/': typeof PaperTradesIndexRoute
   '/scoring/': typeof ScoringIndexRoute
   '/trades/': typeof TradesIndexRoute
 }
@@ -135,10 +153,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/backtests/$runId'
     | '/bot/$botId'
+    | '/paper-trades/$paperTradeId'
     | '/scoring/$signalId'
     | '/strategy/$botId'
     | '/trades/$tradeId'
     | '/backtests/'
+    | '/paper-trades/'
     | '/scoring/'
     | '/trades/'
   fileRoutesByTo: FileRoutesByTo
@@ -149,10 +169,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/backtests/$runId'
     | '/bot/$botId'
+    | '/paper-trades/$paperTradeId'
     | '/scoring/$signalId'
     | '/strategy/$botId'
     | '/trades/$tradeId'
     | '/backtests'
+    | '/paper-trades'
     | '/scoring'
     | '/trades'
   id:
@@ -163,10 +185,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/backtests/$runId'
     | '/bot/$botId'
+    | '/paper-trades/$paperTradeId'
     | '/scoring/$signalId'
     | '/strategy/$botId'
     | '/trades/$tradeId'
     | '/backtests/'
+    | '/paper-trades/'
     | '/scoring/'
     | '/trades/'
   fileRoutesById: FileRoutesById
@@ -178,10 +202,12 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
   BacktestsRunIdRoute: typeof BacktestsRunIdRoute
   BotBotIdRoute: typeof BotBotIdRoute
+  PaperTradesPaperTradeIdRoute: typeof PaperTradesPaperTradeIdRoute
   ScoringSignalIdRoute: typeof ScoringSignalIdRoute
   StrategyBotIdRoute: typeof StrategyBotIdRoute
   TradesTradeIdRoute: typeof TradesTradeIdRoute
   BacktestsIndexRoute: typeof BacktestsIndexRoute
+  PaperTradesIndexRoute: typeof PaperTradesIndexRoute
   ScoringIndexRoute: typeof ScoringIndexRoute
   TradesIndexRoute: typeof TradesIndexRoute
 }
@@ -230,6 +256,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ScoringIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/paper-trades/': {
+      id: '/paper-trades/'
+      path: '/paper-trades'
+      fullPath: '/paper-trades/'
+      preLoaderRoute: typeof PaperTradesIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/backtests/': {
       id: '/backtests/'
       path: '/backtests'
@@ -258,6 +291,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ScoringSignalIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/paper-trades/$paperTradeId': {
+      id: '/paper-trades/$paperTradeId'
+      path: '/paper-trades/$paperTradeId'
+      fullPath: '/paper-trades/$paperTradeId'
+      preLoaderRoute: typeof PaperTradesPaperTradeIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/bot/$botId': {
       id: '/bot/$botId'
       path: '/bot/$botId'
@@ -282,10 +322,12 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   BacktestsRunIdRoute: BacktestsRunIdRoute,
   BotBotIdRoute: BotBotIdRoute,
+  PaperTradesPaperTradeIdRoute: PaperTradesPaperTradeIdRoute,
   ScoringSignalIdRoute: ScoringSignalIdRoute,
   StrategyBotIdRoute: StrategyBotIdRoute,
   TradesTradeIdRoute: TradesTradeIdRoute,
   BacktestsIndexRoute: BacktestsIndexRoute,
+  PaperTradesIndexRoute: PaperTradesIndexRoute,
   ScoringIndexRoute: ScoringIndexRoute,
   TradesIndexRoute: TradesIndexRoute,
 }

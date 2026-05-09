@@ -3,6 +3,7 @@ import {
   CandlestickChart,
   ClipboardList,
   Code2,
+  FileText,
   FlaskConical,
   LayoutDashboard,
   Radio,
@@ -89,6 +90,16 @@ function RootLayout() {
           >
             <CandlestickChart size={15} />
             Trade explorer
+          </Link>
+
+          <Link
+            to="/paper-trades"
+            className={navLinkBase}
+            activeProps={{ className: navLinkActive }}
+            data-testid="nav-paper-trades"
+          >
+            <FileText size={15} />
+            Paper trades
           </Link>
 
           <Link

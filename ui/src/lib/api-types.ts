@@ -151,6 +151,44 @@ export interface TradeListResponse {
   offset: number;
 }
 
+// T-516a2 — PaperTrade interface, exact 21-field mirror of services/
+// analytics_api/app/models/paper_trades.py:PaperTradeResponse (T-516a1
+// shipped 2026-05-09). NUMERIC fields → string per §5.3; DOUBLE PRECISION
+// → number per §5.13; JSONB → Record<string, unknown>; datetime → ISO-8601.
+// Structurally identical to Trade per backend §3.1:268 paper-live symmetry
+// invariant. Drift mitigation: TWO distinct interfaces (no `type PaperTrade
+// = Trade` alias) so future divergence triggers TS errors at usage sites.
+export interface PaperTrade {
+  id: number;
+  bot_id: string;
+  signal_id: number | null;
+  open_order_id: number;
+  close_order_id: number | null;
+  symbol: string;
+  side: string;
+  entry_price: string;
+  exit_price: string | null;
+  qty: string;
+  notional_usd: string;
+  realized_pnl: string | null;
+  fees_paid: string | null;
+  close_reason: string | null;
+  opened_at: string;
+  closed_at: string | null;
+  status: "open" | "closed" | "error";
+  mfe_pct: number | null;
+  mae_pct: number | null;
+  confidence_score: number | null;
+  meta: Record<string, unknown>;
+}
+
+export interface PaperTradeListResponse {
+  paper_trades: PaperTrade[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 // T-414 — full SignalDetail mirror of SignalResponse (11 fields). T-413
 // `Signal` is the 6-field SignalFeed subset; T-414 drill-down wants the
 // 5 OMITTED fields (schema_version + source + idempotency_key +

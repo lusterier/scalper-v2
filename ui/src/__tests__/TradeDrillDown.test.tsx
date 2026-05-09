@@ -189,7 +189,7 @@ describe("TradeDrillDown route (T-414)", () => {
     );
   });
 
-  it("5 placeholder sections (Tier 3-7) render with 'Coming F4+/F5+' subtitle", async () => {
+  it("5 placeholder sections (Tier 3-7) render with Coming subtitle (T-516a2 placeholder #4 wording updated)", async () => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/trades/7") return Promise.resolve(tradeWithSignal);
       if (url === "/api/signals/100") return Promise.resolve(sampleSignal);
@@ -203,10 +203,24 @@ describe("TradeDrillDown route (T-414)", () => {
     });
     const placeholders = screen.getAllByTestId("timeline-placeholder");
     expect(placeholders).toHaveLength(5);
-    // Each placeholder has Coming F4+ or F5+ wording.
-    placeholders.forEach((p) => {
+    // Per T-516a2 plan-reviewer WG#1: split forEach over 4 F4+/F5+
+    // placeholders + 1 separate assertion on placeholder #4 (Shadow
+    // variants) which now reads "Coming T-516b (... parent_kind=live)".
+    // Pins exact text + preserves count==5 contract.
+    const nonShadow = placeholders.filter(
+      (p) => !p.textContent?.includes("Coming T-516b"),
+    );
+    expect(nonShadow).toHaveLength(4);
+    nonShadow.forEach((p) => {
       expect(p.textContent).toMatch(/Coming F4\+|Coming F5\+/);
     });
+    const shadow = placeholders.find((p) =>
+      p.textContent?.includes("Coming T-516b"),
+    );
+    expect(shadow).toBeDefined();
+    expect(shadow?.textContent).toContain(
+      "Coming T-516b (shadow variants section per ADR-0010 parent_kind=live)",
+    );
   });
 
   it("404 handling per WG#2 + WG#6 — renders 'Trade #X not found' + downstream queries NOT fired", async () => {
