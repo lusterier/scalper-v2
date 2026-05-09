@@ -1,5 +1,37 @@
 # Session status
 
+## 2026-05-09 (late-night XIX — T-529 qty quantization shipped; F5 counter advances 30/51 → 31/52; audit Item 6 RESOLVED — LAST audit item; **7 of 7 audit items DONE; H-030..H-036 audit cluster fully CLOSED**; NEW H-036 hazard)
+
+**F5 phase counter advances 30/51 → 31/52** per WG#5 (numerator+1 for shipped T-529, denominator+1 for new T-529 numbered task per L-007 split convention). **Audit cluster H-030..H-036 fully shipped at this commit**. T-529 was the LAST of 7 audit items; pre-live blocker resolved.
+
+### T-529 — qty quantization / pre-flight validation (closes audit Item 6 — final)
+
+- **Origin**: derived from operator instruction 2026-05-09: *"Surface Item 6 as T-529 qty quantization/pre-flight validation: current concern is that placement may send raw request.qty to Bybit without instrument-aware qtyStep/minOrderQty/minNotional normalization. Treat it as a known-deferred critical pre-live blocker, not yet a newly verified concrete bug. Start plan-stage by auditing the sizing → placement → Bybit place_market_order path and existing instruments-info support, then decide whether T-529 is a single task or split into metadata cache + quantization + tests."* Audit found NO existing instruments-info support → single-task scope.
+- **All 4 review gates passed**: plan-reviewer pass-2 APPROVE 2026-05-09 (after pass-1 REVISE 1 BLOCKER + 2 CONCERNs — only 1 of 6 request.qty sites enumerated; AC#16 6-site enumeration with grep evidence + AC#17 5-site explicit test pin added) → drift-checker ON TRACK with 2 CONCERNs (AC#17 partial-coverage addressed post-drift via 5-site explicit spy pin; LOC +49% src 313/210 informational under §0.3 cap by 87 LOC) → brief-reviewer SHIP → math-validator VERIFIED (4-case hand-fixture independently confirmed; Decimal arithmetic precision-preserved).
+- **Bug**: `placement.py` forwarded raw `request.qty` to `adapter.place_market_order` with only warn-log stub `execution.qty_step_rounding_pending_t_f2_plus` (BLOCKER #3 visibility marker, T-216a-era). Non-pre-aligned qty configs → high reject rate via Bybit-side OrderRejected (retCode 110017 etc.). H-036 NEW invariant pinned.
+- **Fix shape**: NEW `packages/exchange/types.py InstrumentInfo` dataclass + NEW `errors.py QtyValidationError(ExchangeError)` + NEW `protocols.py @idempotent get_instrument_info(symbol)` Protocol method (12th method) + NEW `quantize.py quantize_qty(qty, info)` helper (Decimal floor-div). `BybitV5Adapter.get_instrument_info` HTTP GET `/v5/market/instruments-info?category=linear&symbol=...` with LRU/TTL cache (default 3600s; mirror set_leverage). `EndpointGroup` Literal extended with `"market"`. `PaperExchange.get_instrument_info` hardcoded fixture (BTCUSDT/ETHUSDT/SOLUSDT). `placement.py`: replaced BLOCKER #3 warn-only with pre-flight quantize; on QtyValidationError → log `execution.qty_validation_failed` + return; on (AuthError, NetworkTimeout, RateLimitError) → log `execution.get_instrument_info_failed` + return. **AC#16 6-site substitution**: quantized_qty (NOT request.qty) at place_market_order + compute_tp_size + compute_notional_usd + paper shadow_start emit + persist_placement_tx kwarg + emergency_close kwarg + live shadow_start emit + lifecycle qty kwarg (also covers 7th emergency_close site found mid-implementation). `placement_persist.py persist_placement_tx` + `emergency_close` gain `qty: Decimal` kwarg. minNotional pre-flight DEFERRED to T-529-future (requires last_price extra HTTP/OHLC); Bybit-side OrderRejected handles via existing taxonomy.
+- **Hand-verified fixture**: `Decimal("0.0015") // Decimal("0.001") = Decimal("1")`; `1 * Decimal("0.001") = Decimal("0.001")` exact (math-validator independent confirmation).
+- **Tests**: 4 NEW `test_quantize.py` unit tests (aligned + round-down + below-floor pre-round + below-floor post-round) + 5 NEW bybit_v5 (HTTP shape + cache hit + cache TTL expiry + OrderRejected on empty list + market limiter group) + 2 NEW paper get_instrument_info + 4 NEW placement integration tests (incl. AC#17 5-site spy pin via monkeypatch.setattr on compute_tp_size + compute_notional_usd + persist_placement_tx + bus.publish iteration). Existing `test_handler_logs_qty_rounding_pending_warning_before_place` REMOVED. 7 emergency_close + 1 persist_placement_tx test sites updated. Protocol conformance count 11 → 12.
+- **Repo baseline 2254 → 2268** (+14 net new). 0 regressions.
+- **§0.3 LOC**: ~313 src + ~250 tests = ~563 LOC delta. Under cap.
+- **NEW H-036 hazard** in BRIEF §20 (after H-035, before H-032; full audit cluster CLOSED). H-035 numbering note updated to reflect H-036 closure.
+- **Plan**: `docs/plans/T-529-qty-quantization.md` (APPROVED pass-2 with 5 WG verbatim).
+- **Commits**: feat `f90c382` on `feat/T-529-qty-quantization`; chore close pending.
+
+### Audit cluster H-030..H-036 — FULL CLOSURE TIMELINE
+
+| H-NNN | Audit Item | Task | Shipped |
+|-------|------------|------|---------|
+| H-030 | #1 open-fill remaining_qty contract | T-216 precedent | (pre-cluster) |
+| H-031 | #5 paper adapter must NOT feed live ExecutionDispatcher | precedent | (pre-cluster) |
+| H-032 | #3 retry loop transient-exception coverage | fix(T-216c) precedent | 2026-05-09 |
+| H-033 | #1.b composite-PK position_state UPDATE trade_id guard | fix(T-217c) precedent | 2026-05-09 |
+| H-034 | #2 + #7 outbox relay shutdown ordering | T-537a1+a2+b | 2026-05-09 |
+| H-035 | #4 fill_price MUST be VWAP across all exec rows | T-538 | 2026-05-09 |
+| H-036 | #6 qty MUST be quantized vs instrument qtyStep + minOrderQty | **T-529** | **2026-05-09** |
+
+**7 of 7 audit items CLOSED**. Pre-live blocker fully resolved.
+
 ## 2026-05-09 (late-night XVIII — T-538 VWAP fill price shipped; F5 counter advances 29/50 → 30/51; audit Item 4 RESOLVED; 6 of 7 audit items DONE; NEW H-035 hazard)
 
 **F5 phase counter advances 29/50 → 30/51** per WG#7 (numerator+1 for shipped T-538, denominator+1 for new T-538 numbered task). Audit cluster H-030..H-035 fully shipped.
