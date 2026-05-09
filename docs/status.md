@@ -1,5 +1,44 @@
 # Session status
 
+## 2026-05-09 (late-night XVIII — T-538 VWAP fill price shipped; F5 counter advances 29/50 → 30/51; audit Item 4 RESOLVED; 6 of 7 audit items DONE; NEW H-035 hazard)
+
+**F5 phase counter advances 29/50 → 30/51** per WG#7 (numerator+1 for shipped T-538, denominator+1 for new T-538 numbered task). Audit cluster H-030..H-035 fully shipped.
+
+### T-538 — VWAP fill price across all exec rows (closes audit Item 4)
+
+- **Origin**: derived from operator audit Item 4 (fill-price uses last-trade close, not VWAP) — 7-bug audit 2026-05-08; T-537 cluster shipped 2026-05-09 left only Items 4 + 6 unresolved; T-538 closes Item 4. Item 6 detail still pending operator.
+- **All 4 review gates passed**: plan-reviewer pass-2 APPROVE 2026-05-09 (after pass-1 REVISE 1 BLOCKER + 2 CONCERNs; final 3-item Write-time guidance) → drift-checker ON TRACK → brief-reviewer SHIP → math-validator VERIFIED — out of scope, hand-fixture confirmed per AC#14a (packages/exchange/{bybit_v5,paper}/ outside default Gate 4 scope; OQ-4 explicit hand-verification request honored).
+- **Operator decisions (4 OQs)**: OQ-1 = Single-page VWAP with explicit limit=100 + nextPageCursor warn; OQ-2 = VWAP parity for paper (NEW SUM/NULLIF helper); OQ-3 = NEW H-035 hazard; OQ-4 = Full hand-verification.
+- **Bug**: `bybit_v5/adapter.py:273-296 get_fill_price` returned `items[0]["execPrice"]` only; paper helper was `LIMIT 1 ORDER BY executed_at ASC`. For partial-fill orders, this is the FIRST leg's price NOT the VWAP. Errors compound through compute_sl_price + compute_tp_price + compute_notional_usd + P&L attribution.
+- **Fix shape**: bybit_v5 — VWAP loop Decimal arithmetic + explicit `limit=100` + nextPageCursor warn + zero-qty defensive None + warn. Paper — NEW `select_paper_execution_vwap_by_order_id` SUM(price*qty)/NULLIF(SUM(qty),0) helper; PaperExchange.get_fill_price repointed; old helper deprecated kept for backward-compat. `@idempotent` decorator preserved on both adapters.
+- **Hand-verified fixture (per OQ-4 + WG#2)**: prices=[100, 101, 99] * qty=[2, 5, 3] → numerator=1002, denominator=10, VWAP=Decimal("100.2") exact. Verbatim across bybit_v5 mock test + paper persistence testcontainer test.
+- **Tests**: 3 NEW bybit_v5 + 2 NEW paper persistence testcontainer-gated + 4 existing UPDATED (limit=100 / execQty / single-leg rename) + 2 mock repoints in test_paper_emission.py.
+- **Repo baseline 2249 → 2254** (+5 net new). 0 regressions.
+- **§0.3 LOC**: ~58 src + ~145 tests = ~205 LOC delta. Far under cap.
+- **NEW H-035 hazard** in BRIEF §20 (after H-034). Companion to H-030..H-035 audit cluster.
+- **Per L-021 active control**: testcontainer tests verified locally with POSTGRES_TEST_DSN BEFORE push.
+- **Plan**: `docs/plans/T-538-vwap-fill-price.md` (APPROVED pass-2 with 3 WG verbatim).
+- **Commits**: feat `e0ad247` on `feat/T-538-vwap-fill-price`; chore close pending.
+
+### 7-bug operator audit (2026-05-08) — final progress tracker
+
+| # | Title | Severity | Status |
+|---|-------|----------|--------|
+| 1 | Paper mode silent dispatcher kill | CRITICAL | DONE — `fix(T-218c-paper-dispatcher-skip)` 2026-05-08 |
+| 2 | Signal-loss between dedup-check and publish | HIGH | DONE — T-537 cluster 2026-05-09 |
+| 3 | position_state row identity could mismatch trade_id | HIGH | DONE — `fix(T-217c-position-state-trade-id-guard)` 2026-05-09 |
+| 4 | Fill-price uses last-trade close (not VWAP) | MEDIUM | **DONE — T-538 2026-05-09** |
+| 5 | Fill-price-fetch retry exception swallowing | HIGH | DONE — `fix(T-216c-fill-price-retry-exception)` 2026-05-09 |
+| 6 | Reserved (audit detail not yet pulled) | TBD | TBD — operator surface |
+| 7 | Outbox-publish reliability gap | HIGH | DONE — T-537 cluster 2026-05-09 |
+
+**6 of 7 audit items fully DONE**. Only Item 6 (detail-pending) remains. Audit cluster H-030..H-035 fully shipped (5 hazards from operator audit + 1 hazard from outbox cluster cross-reference).
+
+### Next session pickup
+
+- **Item 6 detail surface** — operator to surface the deferred audit detail.
+- **F5 numbered tasks remaining**: T-516a2 (UI routes for paper trades), T-516b (shadow variants section), T-518..T-521 (existing F5 backend polish), T-524..T-536 (pre-live operational hardening per ADR-0011), T-522 close-out + Live-ready sign-off.
+
 ## 2026-05-09 (late-night XVII — T-537b signal-gateway outbox integration shipped; F5 counter advances 28/49 → 29/50; T-537 cluster 3 of 3 done; audit Items 2 + 7 fully RESOLVED; NEW H-034 hazard)
 
 **F5 phase counter advances 28/49 → 29/50** per WG#7 (numerator+1 for shipped T-537b, denominator+1 for new T-537b numbered task). T-537 cluster (T-537a1 + T-537a2 + T-537b) FULLY COMPLETE.

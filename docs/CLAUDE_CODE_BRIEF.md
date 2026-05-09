@@ -2859,6 +2859,28 @@ For services hosting multiple outbox relays (future T-537c execution + T-537d st
 
 H-034 numbering note: companion to H-030 (open-fill remaining_qty) + H-031 (paper adapter must not feed live ExecutionDispatcher) + H-032 (retry loop exception coverage) + H-033 (composite-PK position_state UPDATE trade_id guard). H-030..H-034 all derive from operator audit 2026-05-08/05-09; H-034 specifically closes audit Items 2 + 7 (signal-loss publish-after-dedup + outbox-publish reliability gap) by enforcing relay-host shutdown contract.
 
+### H-035 — fill_price MUST be VWAP across all executions for an order
+
+**Context.** Both Bybit `/v5/execution/list` and `paper_executions` can return multiple exec rows for a single `order_id` when the order fills at multiple price levels (partial fills due to orderbook depth, sweeping multiple price ticks, or split execution across maker/taker). The `fill_price` threaded into SL/TP/notional/P&L computations MUST be VWAP across ALL exec rows (`Σ(price*qty)/Σ(qty)`), NOT the first row's price. Pre-T-538 code returned `items[0]` price only — for a 3-leg fill at `[100, 101, 99]` qty `[2, 5, 3]`, returned 100 instead of correct 100.2. Errors compound through SL/TP pin, notional_usd, P&L attribution. Operator-discovered audit Item 4 (2026-05-08); fixed via T-538 (2026-05-09).
+
+**Policy.** `ExchangeClient.get_fill_price` MUST compute VWAP using Decimal arithmetic (NEVER float). For Bybit live: single GET `/v5/execution/list` with explicit `limit=100` (Bybit doc max for this endpoint), VWAP across returned items, warn-log if `nextPageCursor` present (truncation indicator via `bybit_v5.get_fill_price_paginated_truncation`). For paper: SQL aggregate `SUM(price * qty) / NULLIF(SUM(qty), 0)` across `paper_executions` rows joined to `paper_orders` by `exchange_order_id`. Empty result → `None` (caller's T-216c retry path handles). Defensive: zero total qty → `None` + warn-log (`bybit_v5.get_fill_price_zero_total_qty` for live; SQL `NULLIF` for paper).
+
+**Test.** Hand-verifiable fixture (verbatim across both adapters' tests + plan §"Hand verification"):
+
+| Leg | execPrice | execQty |
+|-----|-----------|---------|
+| 1   | 100       | 2       |
+| 2   | 101       | 5       |
+| 3   | 99        | 3       |
+
+- Numerator = 100*2 + 101*5 + 99*3 = 1002
+- Denominator = 2 + 5 + 3 = 10
+- VWAP = 1002 / 10 = `Decimal("100.2")` exact
+
+Test sites: `packages/exchange/bybit_v5/tests/test_adapter.py::test_get_fill_price_returns_vwap_for_multi_leg_fill` (mock-based) + `packages/exchange/paper/tests/test_paper_persistence.py::test_select_paper_execution_vwap_by_order_id_returns_vwap_across_rows` (testcontainer-gated, real PG SUM/NULLIF aggregate).
+
+H-035 numbering note: companion to H-030..H-034 audit cluster (operator audit 2026-05-08/05-09). H-035 closes audit Item 4 (fill-price uses last-trade close not VWAP); H-030..H-035 = 6 of 7 audit items addressed (Item 6 detail still pending operator surface). All shipped 2026-05-08/05-09.
+
 ### H-032 — Retry loop over external adapter call must catch transient exceptions
 
 **Context.** `services/execution/app/placement.py` step 6 calls `adapter.get_fill_price(symbol, order_id)` inside `for attempt in range(fill_price_retry_attempts)` retry loop. The `await` site originally had no try/except — when adapter raised `NetworkTimeout` / `RateLimitError` / `AuthError` from underlying HTTP call (Bybit `/v5/execution/list` per `bybit_v5/adapter.py:273-296`) or asyncpg errors (paper `select_paper_execution_price_by_order_id` per `paper/adapter.py:1299-1309`), the exception bypassed the retry counter, the `await asyncio.sleep(backoff)` step, AND the post-loop `if fill_price is None: DLQ + FillPriceUnresolvedError` contract. Exception propagated up to `bus.subscribe()` framework-level swallow with minimal operator-facing context. Operator-discovered shipped-code bug 2026-05-08; fix shipped via `fix(T-216c-fill-price-retry-exception)` precedent 2026-05-09.
