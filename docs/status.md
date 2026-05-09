@@ -1,5 +1,29 @@
 # Session status
 
+## 2026-05-09 (late-night XX — T-516a2 paper-trade UI drill-down shipped; F5 counter advances 31/52 → 32/52; T-516b unblocked)
+
+**F5 phase counter advances 31/52 → 32/52** per L-007 split convention (numerator+1 only; T-516a2 already in denominator since T-516 reorg 2026-05-08).
+
+### T-516a2 — paper-trade UI drill-down routes + nav entry + shared trade-drill module
+
+- **Origin**: F5 numbered task; UI half of paper-trade drill-down per BRIEF §14.3:2068-2078. Backend `/api/paper-trades/*` shipped via T-516a1 (DONE 2026-05-08); T-516a2 wires those into routes + nav.
+- **All 4 review gates passed**: plan-reviewer pass-1 APPROVE 2026-05-09 (7-item Write-time guidance, no REVISE — clean first-pass) → drift-checker mid + final ON TRACK → brief-reviewer SHIP → math-validator out-of-scope (UI render).
+- **Operator decisions (4 OQs)**: OQ-1 = Union prop type `Trade | PaperTrade` (no kind discriminator field; backend §3.1:268 paper-live symmetry); OQ-2 = Placeholder #4 wording = "Coming T-516b (... parent_kind=paper)" + parallel update to live route; OQ-3 = Slim contract test scope; OQ-4 = `FileText` lucide-react icon for nav.
+- **Implementation**: NEW shared module `ui/src/components/trade-drill/` (TradeSummary + SignalDetailView lifted from `trades.$tradeId.tsx`; Row helper internal-only per WG#6 NOT in barrel). NEW api-types `PaperTrade` + `PaperTradeListResponse` with JSDoc citation per WG#3 (cites backend source + §3.1:268 + drift mitigation TWO distinct interfaces, no `type PaperTrade = Trade` alias). NEW route `paper-trades.$paperTradeId.tsx` (133 LOC) with "Paper trade #N not found" 404 fallback per WG#4 + L-017 strict not-called assertions on tests #3/#4. NEW route `paper-trades.index.tsx` (234 LOC) paginated list mirror. Refactored `trades.$tradeId.tsx` (-77 LOC) uses shared module; placeholder #4 = "Coming T-516b (... parent_kind=live)" per WG#1. NEW nav entry `__root.tsx` FileText icon + `data-testid="nav-paper-trades"` between Trade explorer + Backtest lab per WG#5.
+- **Tests**: 4 NEW test files (PaperTradeDrillDown 6/6 + PaperTradesIndex 6/6 + PaperTradesNav 1/1) + TradeDrillDown.test.tsx placeholder split. Full UI suite **187 tests / 40 files / 0 regressions** (excl. e2e Playwright). `pnpm typecheck` + `pnpm lint` clean.
+- **§0.3 LOC**: ~461 net src LOC; **+15% over 400 cap**. **Operator §0.3 waiver granted 2026-05-09** — mirror+lift task (paper-trades.index.tsx 234 = 1:1 mirror of trades.index.tsx 233); trim would require NEW `TradesListPage` shared abstraction outside plan-reviewer scope.
+- **No new deps (§0.9)**. All required libs already in `ui/package.json`.
+- **Plan**: `docs/plans/T-516a2.md` (APPROVED pass-1 with 7 WG verbatim).
+- **Commit**: feat `8b76db5` on `feat/T-516a2-paper-trades-ui`; chore close pending.
+- **Unblocks T-516b**: shadow variants section now has both `trades.$tradeId.tsx` + `paper-trades.$paperTradeId.tsx` placeholder slots ready (parent_kind=live + parent_kind=paper).
+
+### Next session pickup
+
+- **T-516b** — shadow variants drill-down section (now unblocked per T-516a2 placeholder slots).
+- **T-518..T-521** F5 backend polish + close-out gating (T-519 hazard audit blocked-by ALL T-501..T-518 passing).
+- **T-524..T-536** pre-live operational hardening cluster (12 tasks per ADR-0011) — not yet started; biggest remaining cluster.
+- **T-522** Live-ready close-out runbook (E5 + E6 sign-off; blocked-by T-507 + T-508 + T-509 + T-512 + T-516 + T-518 + T-519 + T-521 + T-524..T-536).
+
 ## 2026-05-09 (late-night XIX — T-529 qty quantization shipped; F5 counter advances 30/51 → 31/52; audit Item 6 RESOLVED — LAST audit item; **7 of 7 audit items DONE; H-030..H-036 audit cluster fully CLOSED**; NEW H-036 hazard)
 
 **F5 phase counter advances 30/51 → 31/52** per WG#5 (numerator+1 for shipped T-529, denominator+1 for new T-529 numbered task per L-007 split convention). **Audit cluster H-030..H-036 fully shipped at this commit**. T-529 was the LAST of 7 audit items; pre-live blocker resolved.
