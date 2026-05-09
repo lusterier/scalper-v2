@@ -79,6 +79,8 @@ def _envelope(payload: dict[str, Any] | None = None) -> MessageEnvelope:
 
 
 def _ok_adapter() -> MagicMock:
+    from packages.exchange.types import InstrumentInfo
+
     adapter = MagicMock()
     adapter.set_leverage = AsyncMock()
     adapter.place_market_order = AsyncMock(
@@ -89,6 +91,16 @@ def _ok_adapter() -> MagicMock:
     )
     adapter.get_fill_price = AsyncMock(return_value=Decimal("45000.50"))
     adapter.set_trading_stop = AsyncMock()
+    # T-529 / H-036: pre-flight qty validation requires get_instrument_info.
+    # Default fixture: BTCUSDT canonical Bybit values; aligned with _request_payload qty=0.001.
+    adapter.get_instrument_info = AsyncMock(
+        return_value=InstrumentInfo(
+            symbol="BTCUSDT",
+            qty_step=Decimal("0.001"),
+            min_order_qty=Decimal("0.001"),
+            min_notional_usd=Decimal("5"),
+        )
+    )
     return adapter
 
 
@@ -279,12 +291,175 @@ async def test_handler_calls_set_leverage_then_place_market_order_then_get_fill_
     adapter.get_fill_price.assert_awaited_once_with("BTCUSDT", "ord-1")
 
 
-async def test_handler_logs_qty_rounding_pending_warning_before_place() -> None:
-    """BLOCKER #3 pin — operator visibility hook until T-F2+ step-size cache lands."""
-    handler, _, _, logger = _build()
+# T-529 / H-036: BLOCKER #3 warn key `execution.qty_step_rounding_pending_t_f2_plus`
+# REMOVED at T-529 ship — replaced by pre-flight quantize_qty + get_instrument_info
+# block. Old test_handler_logs_qty_rounding_pending_warning_before_place deleted.
+
+
+async def test_placement_quantizes_qty_before_place_market_order() -> None:
+    """T-529 / H-036 / AC#16 — request.qty=0.0015 → place_market_order called with quantized 0.001.
+
+    Hand-fixture: qty_step=0.001, request.qty=0.0015 → 0.0015 // 0.001 = 1;
+    1 * 0.001 = Decimal("0.001") exact (round-down semantic per OQ-1).
+    """
+    from packages.exchange.types import InstrumentInfo
+
+    adapter = _ok_adapter()
+    adapter.get_instrument_info = AsyncMock(
+        return_value=InstrumentInfo(
+            symbol="BTCUSDT",
+            qty_step=Decimal("0.001"),
+            min_order_qty=Decimal("0.001"),
+            min_notional_usd=Decimal("5"),
+        )
+    )
+    handler, _, _, _ = _build(adapter=adapter)
+    await handler(_envelope(_request_payload(qty="0.0015")))
+    adapter.place_market_order.assert_awaited_once()
+    call = adapter.place_market_order.await_args
+    # Third positional arg is qty per BybitV5Adapter.place_market_order signature.
+    assert call.args[2] == Decimal("0.001")
+
+
+async def test_placement_pre_flight_rejects_when_qty_below_min_order_qty() -> None:
+    """T-529 / H-036 / AC#7 — qty < min_order_qty → log execution.qty_validation_failed + return."""
+    from packages.exchange.types import InstrumentInfo
+
+    adapter = _ok_adapter()
+    adapter.get_instrument_info = AsyncMock(
+        return_value=InstrumentInfo(
+            symbol="BTCUSDT",
+            qty_step=Decimal("0.001"),
+            min_order_qty=Decimal("0.001"),
+            min_notional_usd=Decimal("5"),
+        )
+    )
+    handler, _, _, logger = _build(adapter=adapter)
+    await handler(_envelope(_request_payload(qty="0.0005")))
+    # No place_market_order call — pre-flight reject.
+    adapter.place_market_order.assert_not_called()
+    error_keys = [call.args[0] for call in logger.error.call_args_list]
+    assert "execution.qty_validation_failed" in error_keys
+    qty_fail_call = next(
+        c for c in logger.error.call_args_list if c.args[0] == "execution.qty_validation_failed"
+    )
+    assert qty_fail_call.kwargs["constraint"] == "min_order_qty"
+    assert qty_fail_call.kwargs["actual_qty"] == "0.0005"
+
+
+async def test_placement_pre_flight_logs_when_get_instrument_info_raises_auth_error() -> None:
+    """T-529 / H-036 / AC#7 — AuthError from get_instrument_info → log + return; no Bybit call."""
+    from packages.exchange.errors import AuthError
+
+    adapter = _ok_adapter()
+    adapter.get_instrument_info = AsyncMock(side_effect=AuthError("bad sig"))
+    handler, _, _, logger = _build(adapter=adapter)
     await handler(_envelope())
-    log_keys = [call.args[0] for call in logger.warning.call_args_list]
-    assert "execution.qty_step_rounding_pending_t_f2_plus" in log_keys
+    adapter.place_market_order.assert_not_called()
+    error_keys = [call.args[0] for call in logger.error.call_args_list]
+    assert "execution.get_instrument_info_failed" in error_keys
+
+
+async def test_placement_uses_quantized_qty_in_all_downstream_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-529 / H-036 / AC#17 — request.qty=0.0015 → quantized 0.001 at ALL downstream sites.
+
+    L-019 mirror: guards in main path can be bypassed by sibling code; verify ALL sites
+    explicitly per plan AC#17 (place_market_order + compute_tp_size + compute_notional_usd
+    + persist_placement_tx kwarg + NATS publish payload). Spy on each site to capture
+    actual qty argument.
+    """
+    from packages.bus.schemas.orders import OrderPlaced, SLMoved
+    from packages.exchange.types import InstrumentInfo
+
+    captured_compute_tp_size: list[Decimal] = []
+    captured_compute_notional: list[Decimal] = []
+    captured_persist_qty: list[Decimal] = []
+
+    from services.execution.app import placement as placement_mod
+
+    real_compute_tp_size = placement_mod.compute_tp_size  # type: ignore[attr-defined]
+    real_compute_notional_usd = placement_mod.compute_notional_usd  # type: ignore[attr-defined]
+
+    def _spy_compute_tp_size(qty: Decimal, tp_qty_pct: Decimal) -> Decimal:
+        captured_compute_tp_size.append(qty)
+        return real_compute_tp_size(qty, tp_qty_pct)
+
+    def _spy_compute_notional_usd(qty: Decimal, price: Decimal) -> Decimal:
+        captured_compute_notional.append(qty)
+        return real_compute_notional_usd(qty, price)
+
+    async def _spy_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
+        captured_persist_qty.append(kwargs["qty"])
+        return (
+            OrderPlaced(
+                bot_id="alpha",
+                order_id=1,
+                exchange_order_id="ord-1",
+                symbol="BTCUSDT",
+                timestamp=_FIXED_NOW,
+            ),
+            SLMoved(
+                bot_id="alpha",
+                order_id=1,
+                exchange_order_id="ord-1",
+                symbol="BTCUSDT",
+                timestamp=_FIXED_NOW,
+                new_sl_price=Decimal("1"),
+                sl_type="protective",
+            ),
+            1,
+        )
+
+    monkeypatch.setattr("services.execution.app.placement.compute_tp_size", _spy_compute_tp_size)
+    monkeypatch.setattr(
+        "services.execution.app.placement.compute_notional_usd", _spy_compute_notional_usd
+    )
+    monkeypatch.setattr("services.execution.app.placement.persist_placement_tx", _spy_persist)
+
+    adapter = _ok_adapter()
+    adapter.get_instrument_info = AsyncMock(
+        return_value=InstrumentInfo(
+            symbol="BTCUSDT",
+            qty_step=Decimal("0.001"),
+            min_order_qty=Decimal("0.001"),
+            min_notional_usd=Decimal("5"),
+        )
+    )
+    handler, _, bus, _ = _build(adapter=adapter)
+    await handler(_envelope(_request_payload(qty="0.0015")))
+
+    # AC#17 site #1 — place_market_order kwarg.
+    pmm_call = adapter.place_market_order.await_args
+    assert pmm_call.args[2] == Decimal("0.001"), "place_market_order qty"
+
+    # AC#17 site #2 — compute_tp_size first arg.
+    assert captured_compute_tp_size == [Decimal("0.001")], "compute_tp_size qty"
+
+    # AC#17 site #3 — compute_notional_usd first arg.
+    assert captured_compute_notional == [Decimal("0.001")], "compute_notional_usd qty"
+
+    # AC#17 site #4 — persist_placement_tx qty kwarg.
+    assert captured_persist_qty == [Decimal("0.001")], "persist_placement_tx qty kwarg"
+
+    # AC#17 site #5 — NATS emit payload qty (orders.events publish).
+    publish_qtys = [
+        call.args[1].payload.get("qty")
+        for call in bus.publish.await_args_list
+        if hasattr(call.args[1], "payload")
+        and isinstance(call.args[1].payload, dict)
+        and "qty" in call.args[1].payload
+    ]
+    # Note: placement happy-path emits OrderPlaced + SLMoved (no qty in either payload by
+    # default OrderPlaced/SLMoved schema); shadow_start emit has qty in payload.
+    # If shadow_variants empty (default _request_payload), no shadow emit fires; the
+    # `qty=quantized_qty` substitution at L412/L426 is verified by static-grep instead.
+    # Test passes if the captured qtys list contains only 0.001 OR is empty (no qty-bearing
+    # publishes on default fixture).
+    for q in publish_qtys:
+        if q is not None:
+            assert q == "0.001" or q == Decimal("0.001"), f"NATS publish qty={q}"
 
 
 # ---------------------------------------------------------------------------

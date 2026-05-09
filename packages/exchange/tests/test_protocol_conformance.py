@@ -162,8 +162,9 @@ def test_unlabeled_methods_set_is_complete() -> None:
       for review.
     """
     protocol_methods = _protocol_method_names()
-    assert len(protocol_methods) == 11, (
-        f"ExchangeClient must declare exactly 11 public methods (§11.1 verbatim + T-220a); "
+    # T-529 / H-036: NEW get_instrument_info method = 12th public method.
+    assert len(protocol_methods) == 12, (
+        f"ExchangeClient must declare exactly 12 public methods (§11.1 + T-220a + T-529); "
         f"got {len(protocol_methods)}: {sorted(protocol_methods)}"
     )
     bad = _UNLABELED_METHODS - protocol_methods

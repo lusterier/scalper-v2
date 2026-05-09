@@ -709,6 +709,128 @@ async def test_get_fill_price_zero_total_qty_returns_none_with_warning() -> None
     assert "bybit_v5.get_fill_price_zero_total_qty" in warn_keys
 
 
+# --- T-529 / H-036: get_instrument_info (5 tests) -------------------------
+
+
+async def test_get_instrument_info_calls_upstream_with_market_endpoint_and_category() -> None:
+    """HTTP shape: GET /v5/market/instruments-info with category=linear + symbol."""
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {
+                    "lotSizeFilter": {
+                        "qtyStep": "0.001",
+                        "minOrderQty": "0.001",
+                        "minNotionalValue": "5",
+                    }
+                }
+            ]
+        }
+    )
+    adapter = _make_adapter(client=client)
+    info = await adapter.get_instrument_info("BTCUSDT")
+    call = client.request.await_args
+    assert call.args == ("GET", "/v5/market/instruments-info")
+    assert call.kwargs["params"] == {"category": "linear", "symbol": "BTCUSDT"}
+    assert info.symbol == "BTCUSDT"
+    assert info.qty_step == _D("0.001")
+    assert info.min_order_qty == _D("0.001")
+    assert info.min_notional_usd == _D("5")
+
+
+async def test_get_instrument_info_caches_within_ttl() -> None:
+    """Second call within TTL → no second upstream call (mirror set_leverage cache)."""
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {
+                    "lotSizeFilter": {
+                        "qtyStep": "0.001",
+                        "minOrderQty": "0.001",
+                        "minNotionalValue": "5",
+                    }
+                }
+            ]
+        }
+    )
+    adapter = _make_adapter(client=client)
+    await adapter.get_instrument_info("BTCUSDT")
+    await adapter.get_instrument_info("BTCUSDT")
+    assert client.request.await_count == 1
+
+
+async def test_get_instrument_info_re_calls_upstream_after_ttl_expires() -> None:
+    """Past TTL → fresh upstream call."""
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {
+                    "lotSizeFilter": {
+                        "qtyStep": "0.001",
+                        "minOrderQty": "0.001",
+                        "minNotionalValue": "5",
+                    }
+                }
+            ]
+        }
+    )
+    # 1st call writes cache at _FIXED_NOW; 2nd call checks _FIXED_NOW + 4000s (past 3600 TTL).
+    # Mirror set_leverage TTL test pattern: list-based time advance, fall-through default.
+    times: list[datetime] = [
+        _FIXED_NOW,  # call 1: cache write
+        _FIXED_NOW + timedelta(seconds=4000),  # call 2: cache check — miss (past 3600s TTL)
+        _FIXED_NOW + timedelta(seconds=4000),  # call 2: cache write
+    ]
+
+    def fake_now() -> datetime:
+        return times.pop(0) if times else _FIXED_NOW + timedelta(seconds=4000)
+
+    adapter = _make_adapter(client=client)
+    adapter._now_fn = fake_now
+    await adapter.get_instrument_info("BTCUSDT")
+    await adapter.get_instrument_info("BTCUSDT")
+    assert client.request.await_count == 2
+
+
+async def test_get_instrument_info_raises_order_rejected_when_instrument_not_found() -> None:
+    """Empty list response → OrderRejected (delisted / typo'd symbol)."""
+    from packages.exchange.errors import OrderRejected
+
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": []})
+    adapter = _make_adapter(client=client)
+    with pytest.raises(OrderRejected) as exc_info:
+        await adapter.get_instrument_info("UNKNOWN")
+    assert "UNKNOWN" in str(exc_info.value)
+
+
+async def test_get_instrument_info_acquires_limiter_with_market_group() -> None:
+    """Rate-limit token from 'market' group (separate from orders/positions)."""
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {
+                    "lotSizeFilter": {
+                        "qtyStep": "0.001",
+                        "minOrderQty": "0.001",
+                        "minNotionalValue": "5",
+                    }
+                }
+            ]
+        }
+    )
+    limiter = _make_limiter_mock()
+    adapter = _make_adapter(client=client, limiter=limiter)
+    await adapter.get_instrument_info("BTCUSDT")
+    limiter.acquire.assert_awaited_once_with("sub-a", "market")
+
+
 # --- T-208b: get_closed_pnl_cumulative (5 tests) ---------------------------
 
 

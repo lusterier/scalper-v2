@@ -431,6 +431,26 @@ async def test_get_fill_price_returns_none_when_no_match(
     assert price is None
 
 
+async def test_get_instrument_info_returns_fixture_for_btcusdt() -> None:
+    """T-529 / H-036 — paper hardcoded fixture lookup (BTCUSDT canonical Bybit values)."""
+    pe = _make_paper_exchange()
+    info = await pe.get_instrument_info("BTCUSDT")
+    assert info.symbol == "BTCUSDT"
+    assert info.qty_step == Decimal("0.001")
+    assert info.min_order_qty == Decimal("0.001")
+    assert info.min_notional_usd == Decimal("5")
+
+
+async def test_get_instrument_info_raises_order_rejected_for_unknown_symbol() -> None:
+    """T-529 / H-036 — fixture miss → OrderRejected (mirror live behavior)."""
+    from packages.exchange.errors import OrderRejected
+
+    pe = _make_paper_exchange()
+    with pytest.raises(OrderRejected) as exc_info:
+        await pe.get_instrument_info("UNKNOWN-COIN-USDT")
+    assert "UNKNOWN-COIN-USDT" in str(exc_info.value)
+
+
 async def test_get_closed_pnl_cumulative_raises_on_sub_account_mismatch() -> None:
     """OQ-5 default A: exact str equality; mismatch → ValueError."""
     pe = _make_paper_exchange()

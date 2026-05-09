@@ -239,6 +239,7 @@ async def test_sl_set_exhaustion_triggers_emergency_close_and_records() -> None:
         envelope=_envelope(),
         place_result=_place_result(),
         fill_price=Decimal("45000.50"),
+        qty=Decimal("0.001"),
         now_fn=lambda: _FIXED_NOW,
     )
     # Reduce-only opposite-side place_market_order called.
@@ -270,6 +271,7 @@ async def test_emergency_close_uses_opposite_side_with_reduce_only_True() -> Non
         envelope=_envelope(),
         place_result=_place_result(),
         fill_price=Decimal("45000.50"),
+        qty=Decimal("0.001"),
         now_fn=lambda: _FIXED_NOW,
     )
     call_args = adapter.place_market_order.await_args.args
@@ -294,6 +296,7 @@ async def test_emergency_close_returns_on_UnknownState_without_persistence() -> 
         envelope=_envelope(),
         place_result=_place_result(),
         fill_price=Decimal("45000.50"),
+        qty=Decimal("0.001"),
         now_fn=lambda: _FIXED_NOW,
     )
     # No DB writes attempted.
@@ -319,6 +322,7 @@ async def test_emergency_close_uses_now_fn_for_close_at_timestamps() -> None:
         envelope=_envelope(),
         place_result=_place_result(),
         fill_price=Decimal("45000.50"),
+        qty=Decimal("0.001"),
         now_fn=lambda: captured_at,
     )
     # close_at value flows into update_trade_close + close orders INSERT.
@@ -350,6 +354,7 @@ async def test_emergency_close_publish_failure_does_not_short_circuit_second_pub
         envelope=_envelope(),
         place_result=_place_result(),
         fill_price=Decimal("45000.50"),
+        qty=Decimal("0.001"),
         now_fn=lambda: _FIXED_NOW,
     )
     # Both publishes attempted (2 events: OrderPlaced + OrderClosed).
@@ -420,6 +425,7 @@ async def test_emergency_close_persists_open_orders_status_emergency_closed_per_
         envelope=_envelope(),
         place_result=_place_result(),
         fill_price=Decimal("45000.50"),
+        qty=Decimal("0.001"),
         now_fn=lambda: _FIXED_NOW,
     )
     # 2 insert_order calls: open + close.
@@ -464,6 +470,7 @@ async def test_emergency_close_logs_persist_failed_on_db_error() -> None:
         envelope=_envelope(),
         place_result=_place_result(),
         fill_price=Decimal("45000.50"),
+        qty=Decimal("0.001"),
         now_fn=lambda: _FIXED_NOW,
     )
     log_keys = [call.args[0] for call in logger.error.call_args_list]
@@ -542,6 +549,7 @@ async def _call_persist_tx(
         tp_size=Decimal("0.0005"),
         notional_usd=Decimal("45.0005"),
         sl_set_at=sl_set_at,
+        qty=Decimal("0.001"),  # T-529 / H-036: post-quantize qty kwarg.
     )
 
 

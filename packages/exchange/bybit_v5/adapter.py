@@ -30,9 +30,10 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from packages.core import idempotent, non_idempotent, now_utc
-from packages.exchange.errors import NetworkTimeout, RateLimitError, UnknownState
+from packages.exchange.errors import NetworkTimeout, OrderRejected, RateLimitError, UnknownState
 from packages.exchange.types import (
     ExecutionEvent,
+    InstrumentInfo,
     OrderPlaceResult,
     Position,
     PositionEvent,
@@ -55,6 +56,7 @@ __all__ = ["BybitV5Adapter"]
 _CATEGORY = "linear"
 # Q9 brief default — 1h TTL; operator-tunable via ctor kwarg per L-001 §N9.
 _DEFAULT_LEVERAGE_CACHE_TTL_S = 3600.0
+_DEFAULT_INSTRUMENTS_INFO_CACHE_TTL_S = 3600.0  # T-529 / H-036; mirror leverage TTL
 _BUY: Literal["Buy"] = "Buy"
 _SELL: Literal["Sell"] = "Sell"
 # T-208b: F2 single-bot scale ceiling (Bybit limit=200 x 10 = 2000 closed
@@ -121,6 +123,7 @@ class BybitV5Adapter:
         sub_account: str,
         metrics_counter: Counter | None = None,
         leverage_cache_ttl_s: float = _DEFAULT_LEVERAGE_CACHE_TTL_S,
+        instruments_info_cache_ttl_s: float = _DEFAULT_INSTRUMENTS_INFO_CACHE_TTL_S,
         now_fn: Callable[[], datetime] = now_utc,
     ) -> None:
         self._client = client
@@ -130,9 +133,13 @@ class BybitV5Adapter:
         self._sub_account = sub_account
         self._metrics_counter = metrics_counter
         self._leverage_cache_ttl_s = leverage_cache_ttl_s
+        self._instruments_info_cache_ttl_s = instruments_info_cache_ttl_s
         self._now_fn = now_fn
         # Per-instance leverage cache: key=(symbol, leverage), value=cached_at.
         self._leverage_cache: dict[tuple[str, int], datetime] = {}
+        # T-529 / H-036: per-instance instruments-info cache.
+        # key=symbol, value=(InstrumentInfo, cached_at).
+        self._instruments_info_cache: dict[str, tuple[InstrumentInfo, datetime]] = {}
 
     @idempotent
     async def set_leverage(self, symbol: str, leverage: int) -> None:
@@ -334,6 +341,53 @@ class BybitV5Adapter:
             )
             return None
         return numerator / denominator
+
+    @idempotent
+    async def get_instrument_info(self, symbol: str) -> InstrumentInfo:
+        """Return cached :class:`InstrumentInfo` for ``symbol``.
+
+        T-529 / H-036 — pre-flight qty validation source. Mirrors
+        :meth:`set_leverage` cache pattern: dict-keyed on symbol; check
+        ``_now_fn() - timestamp <= ttl`` BEFORE upstream call. Cache size
+        bounded by symbol diversity (typically <20 in operator's bots.yaml).
+
+        HTTP: GET /v5/market/instruments-info?category=linear&symbol=<symbol>.
+        Response shape: ``result.list[0].lotSizeFilter.{qtyStep, minOrderQty,
+        minNotionalValue}``. Decimal arithmetic preserved per §5.3.
+
+        Empty list response → :class:`OrderRejected` (instrument not found
+        on exchange — delisted or typo'd symbol).
+        """
+        cached = self._instruments_info_cache.get(symbol)
+        if cached is not None and (self._now_fn() - cached[1]) < timedelta(
+            seconds=self._instruments_info_cache_ttl_s,
+        ):
+            return cached[0]
+        await self._limiter.acquire(self._sub_account, "market")
+        try:
+            result = await self._client.request(
+                "GET",
+                "/v5/market/instruments-info",
+                params={"category": _CATEGORY, "symbol": symbol},
+                retries=3,
+            )
+        except RateLimitError:
+            await self._on_rate_limit_hit("market")
+            raise
+        items = result.get("list", [])
+        if not items:
+            msg = f"instrument not found on exchange: {symbol}"
+            raise OrderRejected(msg)
+        raw = items[0]
+        lot = raw["lotSizeFilter"]
+        info = InstrumentInfo(
+            symbol=symbol,
+            qty_step=Decimal(lot["qtyStep"]),
+            min_order_qty=Decimal(lot["minOrderQty"]),
+            min_notional_usd=Decimal(lot.get("minNotionalValue", "0")),
+        )
+        self._instruments_info_cache[symbol] = (info, self._now_fn())
+        return info
 
     @idempotent
     async def get_closed_pnl_cumulative(self, sub_account: str) -> Decimal:

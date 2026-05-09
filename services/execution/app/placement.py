@@ -61,9 +61,11 @@ from packages.exchange.errors import (
     AuthError,
     NetworkTimeout,
     OrderRejected,
+    QtyValidationError,
     RateLimitError,
     UnknownState,
 )
+from packages.exchange.quantize import quantize_qty
 
 from .lifecycle import run_position_monitor_for_trade
 from .placement_persist import (
@@ -151,13 +153,33 @@ def make_per_bot_handler(
                 subject_bot_id=bot_id,
                 payload_bot_id=request.bot_id,
             )
-        # BLOCKER #3 — pre-place qty-step rounding TODO (operator visibility).
-        logger.warning(
-            "execution.qty_step_rounding_pending_t_f2_plus",
-            bot_id=bot_id,
-            symbol=request.symbol,
-            qty=str(request.qty),
-        )
+        # 3a. T-529 / H-036: pre-flight qty quantization + validation.
+        # Replaces pre-T-529 BLOCKER #3 warn-only marker. Live = Bybit
+        # GET /v5/market/instruments-info; paper = hardcoded fixture.
+        # On QtyValidationError (qty_step / min_order_qty) → log + return
+        # early (no Bybit round-trip; no NATS publish; no rate-limit token).
+        try:
+            instrument_info = await adapter.get_instrument_info(request.symbol)
+            quantized_qty = quantize_qty(request.qty, instrument_info)
+        except QtyValidationError as exc:
+            logger.error(
+                "execution.qty_validation_failed",
+                bot_id=bot_id,
+                symbol=request.symbol,
+                constraint=exc.constraint,
+                actual_qty=str(exc.actual_qty),
+                qty_step=str(exc.info.qty_step),
+                min_order_qty=str(exc.info.min_order_qty),
+            )
+            return
+        except (AuthError, NetworkTimeout, RateLimitError) as exc:
+            logger.error(
+                "execution.get_instrument_info_failed",
+                bot_id=bot_id,
+                symbol=request.symbol,
+                error=str(exc),
+            )
+            return
         # 4. set_leverage (LRU cached adapter-internal).
         try:
             await adapter.set_leverage(request.symbol, request.leverage)
@@ -174,7 +196,7 @@ def make_per_bot_handler(
             place_result = await adapter.place_market_order(
                 request.symbol,
                 request.side,
-                request.qty,
+                quantized_qty,
             )
         except UnknownState as exc:
             logger.error(
@@ -251,8 +273,8 @@ def make_per_bot_handler(
         # T-216b1+T-216b2 — post-fill_price pipeline (§9.5 steps 6-9).
         sl_price = compute_sl_price(request.side, fill_price, request.sl_pct)
         tp_price = compute_tp_price(request.side, fill_price, request.tp_pct)
-        tp_size = compute_tp_size(request.qty, request.tp_qty_pct)
-        notional_usd = compute_notional_usd(request.qty, fill_price)
+        tp_size = compute_tp_size(quantized_qty, request.tp_qty_pct)
+        notional_usd = compute_notional_usd(quantized_qty, fill_price)
 
         # 7. Paper-bot fork — PaperExchange persists paper_* internally;
         # T-218 emits OrderFilled from stream_executions. Skip persistence + emit.
@@ -283,7 +305,7 @@ def make_per_bot_handler(
                     symbol=request.symbol,
                     side=request.side,
                     entry_price=fill_price,
-                    qty=request.qty,
+                    qty=quantized_qty,
                     shadow_variants=list(request.shadow_variants),
                     bound_logger=logger,
                 )
@@ -314,6 +336,7 @@ def make_per_bot_handler(
                 envelope=envelope,
                 place_result=place_result,
                 fill_price=fill_price,
+                qty=quantized_qty,
                 now_fn=now_fn,
             )
             return
@@ -352,6 +375,7 @@ def make_per_bot_handler(
                     tp_size=tp_size,
                     notional_usd=notional_usd,
                     sl_set_at=sl_set_at,
+                    qty=quantized_qty,
                 )
         except Exception as exc:
             logger.error(
@@ -385,7 +409,7 @@ def make_per_bot_handler(
                 symbol=request.symbol,
                 side=request.side,
                 entry_price=fill_price,
-                qty=request.qty,
+                qty=quantized_qty,
                 shadow_variants=list(request.shadow_variants),
                 bound_logger=logger,
             )
@@ -399,7 +423,7 @@ def make_per_bot_handler(
                 trade_id=trade_id,
                 side=request.side,
                 entry_price=fill_price,
-                qty=request.qty,
+                qty=quantized_qty,
                 pool=pool,
                 bus=bus,
                 adapter=adapter,

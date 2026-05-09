@@ -184,6 +184,7 @@ async def emergency_close(
     envelope: MessageEnvelope,
     place_result: OrderPlaceResult,
     fill_price: Decimal,
+    qty: Decimal,
     now_fn: Callable[[], datetime],
 ) -> None:
     """H-004 emergency-close: reduce_only opposite-side market + tx persist closed trade.
@@ -191,6 +192,10 @@ async def emergency_close(
     Brief 'estimated fee P&L' deferred to T-220 reconciler per H-012
     closed-pnl source-of-truth invariant; placeholder ``Decimal('0')``
     avoids transient mis-reporting before cumulative-delta from T-219 lands.
+
+    T-529 / H-036: ``qty`` kwarg = post-quantize qty (caller passes
+    ``quantized_qty`` from placement.py pre-flight block). All DB-persisted
+    columns + Bybit reduce_only call use ``qty``, NOT raw ``request.qty``.
     """
     close_at = now_fn()
     close_exchange_order_id: str
@@ -198,7 +203,7 @@ async def emergency_close(
         close_result = await adapter.place_market_order(
             request.symbol,
             opposite_side(request.side),
-            request.qty,
+            qty,
             reduce_only=True,
         )
         close_exchange_order_id = close_result.exchange_order_id
@@ -211,7 +216,7 @@ async def emergency_close(
         )
         return
 
-    notional = compute_notional_usd(request.qty, fill_price)
+    notional = compute_notional_usd(qty, fill_price)
     placed_at = place_result.placed_at
     order_placed_payload = OrderPlaced(
         bot_id=str(bot_id),
@@ -242,7 +247,7 @@ async def emergency_close(
                 symbol=request.symbol,
                 side=request.side,
                 order_type="market",
-                qty=request.qty,
+                qty=qty,
                 price=fill_price,
                 status="emergency_closed",
                 requested_at=envelope.published_at,
@@ -260,7 +265,7 @@ async def emergency_close(
                 symbol=request.symbol,
                 side=opposite_side(request.side),
                 order_type="market",
-                qty=request.qty,
+                qty=qty,
                 price=fill_price,
                 status="filled",
                 requested_at=close_at,
@@ -276,7 +281,7 @@ async def emergency_close(
                 symbol=request.symbol,
                 side=request.side,
                 entry_price=fill_price,
-                qty=request.qty,
+                qty=qty,
                 notional_usd=notional,
                 opened_at=placed_at,
             )
@@ -368,6 +373,7 @@ async def persist_placement_tx(
     tp_size: Decimal,
     notional_usd: Decimal,
     sl_set_at: datetime,
+    qty: Decimal,
 ) -> tuple[OrderPlaced, SLMoved, int]:
     """Single-tx 5-INSERT for happy-path placement (§9.5 step 8).
 
@@ -379,6 +385,12 @@ async def persist_placement_tx(
     ``(OrderPlaced, SLMoved, trade_id)`` — caller emits post-commit via
     :func:`emit_post_commit_events` and uses ``trade_id`` to spawn the
     T-217a PositionLifecycle monitor task.
+
+    T-529 / H-036: ``qty`` kwarg is the post-quantize qty actually sent to
+    exchange — separate from ``request.qty`` (raw operator config) so all
+    DB-persisted columns (orders.qty, trades.qty, position_state.qty) reflect
+    the actual placed qty per AC#16 6-site substitution. Caller passes
+    ``quantized_qty`` from placement.py pre-flight block.
     """
     open_order_id = await insert_order(
         conn,
@@ -390,7 +402,7 @@ async def persist_placement_tx(
         symbol=request.symbol,
         side=request.side,
         order_type="market",
-        qty=request.qty,
+        qty=qty,
         price=fill_price,
         status="filled",
         requested_at=envelope.published_at,
@@ -411,7 +423,7 @@ async def persist_placement_tx(
         symbol=request.symbol,
         side=request.side,
         entry_price=fill_price,
-        qty=request.qty,
+        qty=qty,
         notional_usd=notional_usd,
         opened_at=place_result.placed_at,
         meta=fsm_params_meta,
@@ -423,8 +435,8 @@ async def persist_placement_tx(
         trade_id=trade_id,
         side=request.side,
         entry_price=fill_price,
-        qty=request.qty,
-        remaining_qty=request.qty,
+        qty=qty,
+        remaining_qty=qty,
         sl_price=sl_price,
         tp_price=tp_price,
         sl_type="protective",

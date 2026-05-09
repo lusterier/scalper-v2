@@ -14,13 +14,21 @@ concrete subclass to a decision per §11.3:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Literal
+
 from packages.core import ScalperError
+
+if TYPE_CHECKING:
+    from decimal import Decimal
+
+    from packages.exchange.types import InstrumentInfo
 
 __all__ = [
     "AuthError",
     "ExchangeError",
     "NetworkTimeout",
     "OrderRejected",
+    "QtyValidationError",
     "RateLimitError",
     "UnknownState",
 ]
@@ -81,3 +89,35 @@ class UnknownState(ExchangeError):
     def __init__(self, last_known_action: str, *args: object) -> None:
         super().__init__(last_known_action, *args)
         self.last_known_action = last_known_action
+
+
+class QtyValidationError(ExchangeError):
+    """Pre-flight qty validation failed (T-529 / H-036).
+
+    Raised BEFORE :meth:`ExchangeClient.place_market_order` HTTP call when
+    qty does not satisfy instrument constraints (qtyStep alignment OR
+    minOrderQty floor). Distinct from :class:`OrderRejected` which is
+    Bybit-side post-call reject.
+
+    Caller (placement.py) catches and emits ``execution.qty_validation_failed``
+    log + returns early (no Bybit round-trip; no NATS publish; no rate-limit
+    token spent).
+    """
+
+    def __init__(
+        self,
+        symbol: str,
+        constraint: Literal["qty_step", "min_order_qty"],
+        actual_qty: Decimal,
+        info: InstrumentInfo,
+    ) -> None:
+        msg = (
+            f"qty validation failed for {symbol}: constraint={constraint} "
+            f"actual_qty={actual_qty} qty_step={info.qty_step} "
+            f"min_order_qty={info.min_order_qty}"
+        )
+        super().__init__(msg)
+        self.symbol = symbol
+        self.constraint = constraint
+        self.actual_qty = actual_qty
+        self.info = info

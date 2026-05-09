@@ -75,17 +75,47 @@ from collections.abc import (  # noqa: TC003 — Awaitable used in runtime ctor 
 from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003 — runtime annotation on frozen dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from packages.bus import MessageEnvelope
 from packages.bus.payloads import TradeClosedPayload, subject_for_trade_closed
 from packages.bus.schemas import OhlcCandlePayload
 from packages.core import CorrelationId, idempotent, non_idempotent, now_utc
 from packages.exchange.errors import OrderRejected
-from packages.exchange.types import ExecutionEvent, OrderPlaceResult, Position, PositionEvent
+from packages.exchange.types import (
+    ExecutionEvent,
+    InstrumentInfo,
+    OrderPlaceResult,
+    Position,
+    PositionEvent,
+)
 
 from . import fees, persistence, slippage
 from .intra_candle import generate_intra_candle_path
+
+# T-529 / H-036: paper-side instrument fixture per OQ-3 (recommended).
+# Canonical Bybit values for common test symbols. Maintenance — add new
+# symbol → update this dict. Mirror live get_instrument_info contract.
+_PAPER_INSTRUMENT_FIXTURES: Final[dict[str, InstrumentInfo]] = {
+    "BTCUSDT": InstrumentInfo(
+        symbol="BTCUSDT",
+        qty_step=Decimal("0.001"),
+        min_order_qty=Decimal("0.001"),
+        min_notional_usd=Decimal("5"),
+    ),
+    "ETHUSDT": InstrumentInfo(
+        symbol="ETHUSDT",
+        qty_step=Decimal("0.01"),
+        min_order_qty=Decimal("0.01"),
+        min_notional_usd=Decimal("5"),
+    ),
+    "SOLUSDT": InstrumentInfo(
+        symbol="SOLUSDT",
+        qty_step=Decimal("0.1"),
+        min_order_qty=Decimal("0.1"),
+        min_notional_usd=Decimal("5"),
+    ),
+}
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -1312,6 +1342,20 @@ class PaperExchange:
                 conn,
                 exchange_order_id=order_id,
             )
+
+    @idempotent
+    async def get_instrument_info(self, symbol: str) -> InstrumentInfo:
+        """T-529 / H-036 — paper parity: hardcoded fixture for known test symbols.
+
+        Mirror live behavior for delisted/typo'd symbols (unknown → OrderRejected).
+        Maintenance: add new symbol → update :data:`_PAPER_INSTRUMENT_FIXTURES`
+        constant at module level.
+        """
+        info = _PAPER_INSTRUMENT_FIXTURES.get(symbol)
+        if info is None:
+            msg = f"paper instrument fixture not configured for symbol: {symbol}"
+            raise OrderRejected(msg)
+        return info
 
     @idempotent
     async def get_closed_pnl_cumulative(self, sub_account: str) -> Decimal:

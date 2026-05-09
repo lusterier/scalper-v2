@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
 
-    from .types import ExecutionEvent, OrderPlaceResult, Position, PositionEvent
+    from .types import ExecutionEvent, InstrumentInfo, OrderPlaceResult, Position, PositionEvent
 
 __all__ = ["ExchangeClient"]
 
@@ -107,6 +107,19 @@ class ExchangeClient(Protocol):
 
     @idempotent
     async def get_fill_price(self, symbol: str, order_id: str) -> Decimal | None: ...
+
+    @idempotent
+    async def get_instrument_info(self, symbol: str) -> InstrumentInfo:
+        """Return per-symbol metadata (qty_step + min_order_qty + min_notional_usd).
+
+        T-529 / H-036 — pre-flight qty validation source. Cached per-adapter
+        with TTL (default 1h). ``@idempotent`` because metadata is
+        deterministic for same symbol within cache TTL window.
+
+        Live: Bybit GET /v5/market/instruments-info; paper: hardcoded fixture.
+        Unknown symbol → :class:`OrderRejected`.
+        """
+        ...
 
     @idempotent
     async def get_closed_pnl_cumulative(self, sub_account: str) -> Decimal: ...

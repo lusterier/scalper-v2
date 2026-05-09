@@ -25,10 +25,32 @@ from typing import Literal
 
 __all__ = [
     "ExecutionEvent",
+    "InstrumentInfo",
     "OrderPlaceResult",
     "Position",
     "PositionEvent",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class InstrumentInfo:
+    """Per-symbol instrument metadata for qty pre-flight validation (T-529 / H-036).
+
+    Sourced from Bybit GET /v5/market/instruments-info (live) or hardcoded
+    fixture (paper). Cached per-adapter with TTL (default 1h via
+    ``instruments_info_cache_ttl_s`` ctor kwarg, mirroring set_leverage
+    ``_DEFAULT_LEVERAGE_CACHE_TTL_S`` precedent).
+
+    Decimal precision (§5.3) preserved on numeric fields. minNotional pre-flight
+    is DEFERRED to T-529-future (requires last_price; out of T-529 narrow
+    scope); ``min_notional_usd`` populated for forward-compat but not consumed
+    by ``quantize_qty`` in T-529.
+    """
+
+    symbol: str
+    qty_step: Decimal
+    min_order_qty: Decimal
+    min_notional_usd: Decimal
 
 
 @dataclass(frozen=True, slots=True)

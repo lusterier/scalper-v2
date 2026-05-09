@@ -54,7 +54,9 @@ if TYPE_CHECKING:
 
 __all__ = ["EndpointGroup", "SharedRateLimiter"]
 
-EndpointGroup = Literal["orders", "positions"]
+EndpointGroup = Literal[
+    "orders", "positions", "market"
+]  # T-529: "market" for /v5/market/* endpoints
 
 _BUCKET = "rate_limits"
 _PAUSE_KEY = "bybit:ip:pause"
