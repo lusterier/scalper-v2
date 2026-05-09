@@ -33,7 +33,13 @@ if TYPE_CHECKING:
 
 
 _TEST_HMAC_SECRET = "e2e-test-secret-padded-32chars!!"
-_NATS_DELIVERY_TIMEOUT_SECONDS = 5.0
+# T-537b: post-relay delivery latency budget.
+# Pre-T-537b: webhook published 'signals.validated' directly → expected ~50ms.
+# Post-T-537b: webhook commits outbox row in tx → relay polls every
+# poll_interval_s (default 1.0s) → publish + mark ≈ 1.5s typical.
+# 2x typical cushion = 3s; 10s defensive against CI runner slowness.
+# DO NOT trim below 10.0 without verifying CI test runtime headroom.
+_NATS_DELIVERY_TIMEOUT_SECONDS = 10.0
 
 
 def _hmac_sig(body: bytes, secret: str = _TEST_HMAC_SECRET) -> str:
@@ -56,7 +62,12 @@ async def _wait_for_messages(received: list[MessageEnvelope], count: int) -> Non
 
 
 async def test_webhook_full_round_trip(webhook_e2e: E2EFixture) -> None:
-    """Happy path: 200 + signal_id + DB row 'validated' + NATS envelope shape."""
+    """Happy path: 200 + signal_id + DB row 'validated' + NATS envelope shape.
+
+    T-537b: NATS envelope arrives via outbox + relay (poll → bus.publish →
+    mark_published), NOT via direct webhook publish. Latency budget extended
+    to 10s per `_NATS_DELIVERY_TIMEOUT_SECONDS` comment above.
+    """
     body = (
         b'{"symbol":"BTCUSDT.P","action":"LONG","source":"e2e",'
         b'"idempotency_key":"e2e-happy-1","rsi":14.2}'
@@ -112,7 +123,9 @@ async def test_webhook_full_round_trip(webhook_e2e: E2EFixture) -> None:
     assert expires_at - received_at == timedelta(seconds=120)
 
 
-async def test_webhook_duplicate_round_trip(webhook_e2e: E2EFixture) -> None:
+async def test_webhook_duplicate_round_trip(webhook_e2e: E2EFixture) -> None:  # noqa: D401, RUF100
+    # T-537b: post-relay delivery semantics — see test_webhook_full_round_trip
+    # docstring for the latency budget rationale.
     """Same idempotency_key twice -> first 200 'validated', second 202 'duplicate', 2 PG rows."""
     body = b'{"symbol":"BTCUSDT.P","action":"LONG","source":"e2e","idempotency_key":"e2e-dup-1"}'
     sig = _hmac_sig(body)

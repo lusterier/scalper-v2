@@ -1676,6 +1676,7 @@ dependencies = [
     { name = "scalper-v2-core" },
     { name = "scalper-v2-db" },
     { name = "scalper-v2-observability" },
+    { name = "scalper-v2-outbox" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "uvloop" },
 ]
@@ -1688,6 +1689,7 @@ requires-dist = [
     { name = "scalper-v2-core", editable = "packages/core" },
     { name = "scalper-v2-db", editable = "packages/db" },
     { name = "scalper-v2-observability", editable = "packages/observability" },
+    { name = "scalper-v2-outbox", editable = "packages/outbox" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.45.0" },
     { name = "uvloop", specifier = "==0.22.1" },
 ]

@@ -24,9 +24,9 @@ Wire order (canonical) — see ``docs/modules/signal_gateway.md``
     8. bind_correlation(idempotency_key)
     9. dedup.check_and_record       → 202 duplicate (DB row 'duplicate')
     10. symbol_cache.resolve        → 422 symbol_unknown (DB row 'invalid')
-    11. insert_signal(validated)    → 500 internal
-    12. publish signals.validated   → 500 internal
-    13. 200 {"signal_id": int}
+    11. insert_signal(validated) + insert_outbox_event in single tx
+                                    → 500 internal (tx rollback)
+    12. 200 {"signal_id": int}; outbox relay handles NATS publish post-commit (T-537b)
 
 Dual-status semantic for validation_failed: caller sees 400 if the
 audit row was written (DB up), 500 if the DB write failed (caller
@@ -60,10 +60,11 @@ from pydantic import ValidationError
 from structlog.stdlib import BoundLogger
 
 from packages.bus import MessageEnvelope, NatsClient
-from packages.bus.schemas.signals import SignalValidated, message_id_for
+from packages.bus.schemas.signals import SignalValidated
 from packages.core import CorrelationId, now_utc
 from packages.db.queries.signal_gateway import insert_signal
 from packages.observability import bind_correlation
+from packages.outbox import insert_outbox_event
 
 from .config import Settings
 from .dedup import DedupRing
@@ -405,9 +406,24 @@ async def webhook(
             reason="symbol_unknown",
         )
 
-    # Step 11 — DB write (validated).
+    # Step 11 — DB write (validated) + outbox row (publish-intent) in single tx.
+    # T-537b: insert_signal + insert_outbox_event commit atomically (audit Items
+    # 2 + 7 close). NATS publish handled by OutboxRelayWorker post-commit; if
+    # NATS is down the row stays in outbox_events and the relay retries
+    # exponentially until success or max_attempts exhaustion.
+    expires_at = received_at + timedelta(seconds=_SIGNAL_TTL_SECONDS)
+    validated_payload = SignalValidated(
+        source=envelope.source,
+        idempotency_key=envelope.idempotency_key,
+        received_at=received_at,
+        symbol=canonical,
+        original_symbol=envelope.symbol,
+        action=envelope.action,
+        expires_at=expires_at,
+        payload=envelope.payload,
+    )
     try:
-        async with pool.acquire() as conn:
+        async with pool.acquire() as conn, conn.transaction():
             signal_id = await insert_signal(
                 conn,
                 received_at=received_at,
@@ -420,6 +436,14 @@ async def webhook(
                 payload=envelope.payload,
                 ingestion_status="validated",
                 correlation_id=envelope.idempotency_key,
+            )
+            await insert_outbox_event(
+                conn,
+                service="signal-gateway",
+                subject="signals.validated",
+                correlation_id=envelope.idempotency_key,
+                payload=validated_payload.model_dump(mode="json"),
+                created_at=received_at,
             )
     except Exception as db_exc:
         metrics.errors.labels(
@@ -437,43 +461,7 @@ async def webhook(
             reason="internal",
         )
 
-    # Step 12 — signals.validated publish.
-    expires_at = received_at + timedelta(seconds=_SIGNAL_TTL_SECONDS)
-    validated_payload = SignalValidated(
-        source=envelope.source,
-        idempotency_key=envelope.idempotency_key,
-        received_at=received_at,
-        symbol=canonical,
-        original_symbol=envelope.symbol,
-        action=envelope.action,
-        expires_at=expires_at,
-        payload=envelope.payload,
-    )
-    try:
-        validated_envelope = MessageEnvelope(
-            message_id=message_id_for(envelope.idempotency_key),
-            correlation_id=CorrelationId(envelope.idempotency_key),
-            publisher="signal-gateway",
-            payload=validated_payload.model_dump(mode="json"),
-        )
-        await bus.publish("signals.validated", validated_envelope)
-    except Exception as pub_exc:
-        metrics.errors.labels(
-            service="signal-gateway",
-            error_class="publish_validated_failed",
-        ).inc()
-        system_log.error(
-            "webhook_error",
-            error_class="publish_validated_failed",
-            error=str(pub_exc),
-        )
-        return _err_response(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="internal error",
-            reason="internal",
-        )
-
-    # Step 13 — 200 OK.
+    # Step 12 — 200 OK (outbox relay handles NATS publish post-commit per T-537b).
     metrics.signals_validated.labels(status="validated").inc()
     trading_log.info(
         "signal_validated",

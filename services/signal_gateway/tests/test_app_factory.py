@@ -127,6 +127,14 @@ def test_trace_middleware_runs_before_rate_limit_middleware(
         "services.signal_gateway.app.main.NatsClient",
         MagicMock(return_value=mock_bus),
     )
+    # T-537b: stub OutboxRelayWorker (mirror conftest fixture pattern).
+    relay_stub = MagicMock()
+    relay_stub.run = AsyncMock(return_value=None)
+    relay_stub.stop = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "services.signal_gateway.app.main.OutboxRelayWorker",
+        MagicMock(return_value=relay_stub),
+    )
     app = create_app(settings=settings)
 
     # Patch on the limiter instance after middleware construction works because
@@ -148,4 +156,60 @@ def test_trace_middleware_runs_before_rate_limit_middleware(
         "trace_scope did NOT run on the 429 response — "
         "RateLimitMiddleware is currently outermost. Swap "
         "registration order in create_app()."
+    )
+
+
+def test_lifespan_shutdown_order_stops_relay_before_bus_close(
+    settings: Settings,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-537b / H-034 — lifespan teardown must call worker.stop → bus.close → pool.close.
+
+    Records exact call ordering via a shared list. If the order ever drifts,
+    the relay's in-flight tx may lose bus connectivity mid-publish (interface
+    error path documented in H-034 Context). Mock side_effects append a label
+    on each call; final assertion compares the list to the canonical sequence.
+    """
+    call_order: list[str] = []
+
+    relay_stub = MagicMock()
+    relay_stub.run = AsyncMock(return_value=None)
+
+    async def _relay_stop() -> None:
+        call_order.append("worker.stop")
+
+    relay_stub.stop = AsyncMock(side_effect=_relay_stop)
+
+    async def _bus_close() -> None:
+        call_order.append("bus.close")
+
+    mock_bus.close = AsyncMock(side_effect=_bus_close)
+
+    async def _pool_close() -> None:
+        call_order.append("pool.close")
+
+    mock_pool.close = AsyncMock(side_effect=_pool_close)
+
+    monkeypatch.setattr(
+        "services.signal_gateway.app.main.create_pool",
+        AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(
+        "services.signal_gateway.app.main.NatsClient",
+        MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(
+        "services.signal_gateway.app.main.OutboxRelayWorker",
+        MagicMock(return_value=relay_stub),
+    )
+
+    app = create_app(settings=settings)
+    with TestClient(app):
+        pass  # enter + exit lifespan immediately to capture shutdown order
+
+    # Canonical H-034 ordering: stop → bus.close → pool.close.
+    assert call_order == ["worker.stop", "bus.close", "pool.close"], (
+        f"H-034 shutdown order violated: got {call_order}"
     )

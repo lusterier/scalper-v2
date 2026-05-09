@@ -88,6 +88,16 @@ def app_with_mocks(
         "services.signal_gateway.app.main.NatsClient",
         MagicMock(return_value=mock_bus),
     )
+    # T-537b: stub OutboxRelayWorker so lifespan tests don't run the actual
+    # relay loop against the mocked pool. Tests that need to exercise relay
+    # ordering (e.g. test_lifespan_shutdown_order_*) use their own fixture.
+    relay_stub = MagicMock()
+    relay_stub.run = AsyncMock(return_value=None)
+    relay_stub.stop = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "services.signal_gateway.app.main.OutboxRelayWorker",
+        MagicMock(return_value=relay_stub),
+    )
     return create_app(settings=settings)
 
 

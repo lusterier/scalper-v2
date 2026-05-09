@@ -32,6 +32,7 @@ Wired surface:
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -48,6 +49,7 @@ from packages.observability import (
     new_trace_id,
     trace_scope,
 )
+from packages.outbox import OutboxRelayWorker
 
 from .config import Settings
 from .dedup import DedupRing
@@ -117,17 +119,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await bus.connect()
         symbol_cache = SymbolMapCache(pool)
 
+        # T-537b: outbox relay worker hosted in lifespan as asyncio.create_task.
+        # Shutdown ordering per H-034: outbox_relay.stop() → bus.close() →
+        # pool.close(). worker.stop() awaits in-flight tx so bus + pool stay
+        # alive until cancellation propagates.
+        outbox_relay = OutboxRelayWorker(
+            pool=pool,
+            bus=bus,
+            service="signal-gateway",
+            settings=settings.outbox_relay,
+            bound_logger=logger,
+        )
+        relay_task = asyncio.create_task(
+            outbox_relay.run(),
+            name="outbox-relay-signal-gateway",
+        )
+
         app.state.pool = pool
         app.state.bus = bus
         app.state.symbol_cache = symbol_cache
+        app.state.outbox_relay = outbox_relay
 
         logger.info("service_started", http_port=settings.http_port)
         try:
             yield
         finally:
+            # H-034 shutdown ordering — DO NOT reorder.
+            await outbox_relay.stop()
             await bus.close()
             await pool.close()
             logger.info("service_stopped")
+        # Hold reference until stop() awaits it (Ruff RUF006).
+        _ = relay_task
 
     app = FastAPI(lifespan=lifespan)
 

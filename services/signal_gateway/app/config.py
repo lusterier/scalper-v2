@@ -18,6 +18,8 @@ from typing import Annotated, Literal
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from packages.outbox import OutboxRelaySettings
+
 __all__ = ["LogLevel", "Settings"]
 
 
@@ -51,3 +53,7 @@ class Settings(BaseSettings):
     # handler, so we reject at startup. Validator runs at Settings()
     # construction; a short value fails the lifespan before port bind.
     signal_gateway_hmac_secret: Annotated[SecretStr, Field(min_length=32)]
+
+    # T-537b — outbox relay worker config (env_prefix=OUTBOX_RELAY_*; nested
+    # model loads its own env vars via pydantic-settings nested-model semantic).
+    outbox_relay: OutboxRelaySettings = Field(default_factory=OutboxRelaySettings)
