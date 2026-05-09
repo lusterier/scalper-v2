@@ -1,5 +1,49 @@
 # Session status
 
+## 2026-05-09 (late-night XVI — fix(T-537a1-sql-typecast) shipped; ci-full unblock; NEW L-021 lesson; F5 counter UNCHANGED 28/49)
+
+**F5 phase counter UNCHANGED at 28/49** (fix() commits don't count toward F5 numbered task counter; mirror `fix(T-218b)` + `fix(T-218c)` + `fix(T-216c)` + `fix(T-217c)` + `fix(T-511b2a)` precedent).
+
+### fix(T-537a1-sql-typecast) — explicit ::timestamptz casts (ci-full unblock)
+
+- **Origin**: T-537a1 (commit 6008ea0) ci-full FAILED 2026-05-09 with 7 testcontainer-gated tests in `tests/integration/queries/test_outbox.py`. T-537a2 (commit d30f36a) ci-full propagated the same failure. Master shipped broken; local pytest passed because tests skip without `POSTGRES_TEST_DSN` — L-008 sub-gap (tests existed but were never locally executed before push).
+- **All 4 review gates passed**: drift-checker ON TRACK → brief-reviewer SHIP → math-validator VERIFIED out-of-scope (trivial 13-LOC surgical SQL fix).
+- **Bug 1 (5 of 7 failures)**: `select_pending_outbox_events` SQL `last_attempt_at <= $2 - make_interval(...)`. Without explicit cast on `$2`, PG type-inference resolves to `interval - interval = interval`; `timestamptz <= interval` has no operator. Fix: `$2::timestamptz`.
+- **Bug 2 (2 of 7 failures)**: `mark_outbox_event_failed` SQL `failed_at = CASE WHEN ... THEN $5 ELSE NULL END`. CASE result-type defaults to text for untyped param + NULL branch. Fix: `$5::timestamptz`.
+- **Tests**: 2 NEW mock SQL string assertions pinning `$2::timestamptz - make_interval` + `$5::timestamptz ELSE NULL END` literals (regression guard).
+- **NEW L-021 lesson** in `docs/review-lessons.md`: PG parameter type-inference fails in non-column-direct contexts (arithmetic with operator overloading, CASE branches); active control requires explicit `::type` casts + locally-executed testcontainer tests before push (L-008 sub-gap closure).
+- **Verification**: `POSTGRES_TEST_DSN=postgresql://scalper:devpass@localhost:5432/postgres uv run pytest -q` → 2244 passed (+116 testcontainer-gated; 0 regressions; the 7 outbox testcontainer tests now pass).
+- **§0.3 LOC**: ~3 src + ~8 tests = ~11 LOC trivial.
+- **Branch**: `fix/T-537a1-sql-typecast`.
+- **Commits**: feat `d1b531d` on branch; chore close pending.
+
+### Process gap exposed (L-021 motivation)
+
+L-008 active control says "non-trivial SQL helpers need a testcontainer integration test." T-537a1 + T-537a2 BOTH satisfied this (test_outbox.py + test_relay.py already shipped 11 testcontainer-gated tests). But L-008 stops at "test exists" — does NOT mandate "test was executed locally before push." Result: master shipped broken twice in succession; CI was the first execution surface.
+
+L-021 closes this sub-gap — for any task adding a new testcontainer-gated test file (or modifying existing one with new SQL), implementation session MUST run `POSTGRES_TEST_DSN=... uv run pytest <test_file>` locally before push. Plus the deeper SQL-pattern lesson: PG parameter type-inference is fragile in non-column-direct contexts (arithmetic with operator overloading, CASE branches) — explicit `::type` casts are required defensive.
+
+### 7-bug operator audit (2026-05-08) — progress tracker
+
+| # | Title | Severity | Status |
+|---|-------|----------|--------|
+| 1 | Paper mode silent dispatcher kill | CRITICAL | DONE — `fix(T-218c-paper-dispatcher-skip)` 2026-05-08 |
+| 2 | Signal-loss between dedup-check and publish | HIGH | IN PROGRESS — T-537 cluster (T-537a1 + T-537a2 done; T-537b pending) |
+| 3 | position_state row identity could mismatch trade_id | HIGH | DONE — `fix(T-217c-position-state-trade-id-guard)` 2026-05-09 |
+| 4 | Fill-price uses last-trade close (not VWAP) | MEDIUM | DEFERRED → NEW T-538 VWAP fill price |
+| 5 | Fill-price-fetch retry exception swallowing | HIGH | DONE — `fix(T-216c-fill-price-retry-exception)` 2026-05-09 |
+| 6 | Reserved (audit detail not yet pulled) | TBD | TBD |
+| 7 | Outbox-publish reliability gap | HIGH | IN PROGRESS — T-537 cluster (T-537a1 + T-537a2 done; T-537b pending) |
+
+3 of 7 audit items fully DONE; Items 2 + 7 IN PROGRESS via T-537 cluster (infra + relay both shipped + green on CI after typecast fix); T-537b signal-gateway integration completes them.
+
+### Next session pickup
+
+- **NEW T-537b signal-gateway integration** (Items 2 + 7 final close): refactor `services/signal_gateway/app/webhook.py:411-474` + wire `OutboxRelayWorker` into lifespan + integration test. F5 counter 28/49 → 29/50.
+- **NEW T-538 VWAP fill price** (Item 4).
+- **Item 6 detail pull** still pending.
+- **F5 numbered tasks remaining**: T-516a2 + T-516b + T-518..T-521 + T-524..T-536 + T-522 close-out.
+
 ## 2026-05-09 (late-night XV — T-537a2 outbox relay worker shipped; F5 counter advances 27/48 → 28/49; T-537 cluster 2 of 3 done)
 
 **F5 phase counter advances 27/48 → 28/49** per WG#7 (numerator+1 for shipped T-537a2, denominator+1 for new T-537a2 numbered task). T-537b (signal-gateway integration) remains in pending column with denominator increment at its plan-stage time.
