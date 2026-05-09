@@ -144,7 +144,7 @@ async def select_pending_outbox_events(
           AND failed_at IS NULL
           AND (
               last_attempt_at IS NULL
-              OR last_attempt_at <= $2 - make_interval(
+              OR last_attempt_at <= $2::timestamptz - make_interval(
                   secs => least($3 * power(2.0, attempt_count), $4)
               )
           )
@@ -221,7 +221,7 @@ async def mark_outbox_event_failed(
         SET attempt_count = attempt_count + 1,
             last_attempt_at = $2,
             last_error = $3,
-            failed_at = CASE WHEN attempt_count + 1 >= $4 THEN $5 ELSE NULL END
+            failed_at = CASE WHEN attempt_count + 1 >= $4 THEN $5::timestamptz ELSE NULL END
         WHERE id = $1
 
     ``@non_idempotent``: each call advances ``attempt_count``. T-537a2
@@ -233,7 +233,7 @@ async def mark_outbox_event_failed(
         SET attempt_count = attempt_count + 1,
             last_attempt_at = $2,
             last_error = $3,
-            failed_at = CASE WHEN attempt_count + 1 >= $4 THEN $5 ELSE NULL END
+            failed_at = CASE WHEN attempt_count + 1 >= $4 THEN $5::timestamptz ELSE NULL END
         WHERE id = $1
         """,
         event_id,

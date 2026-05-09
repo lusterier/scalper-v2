@@ -151,6 +151,9 @@ async def test_select_pending_outbox_events_sql_shape() -> None:
     assert "failed_at IS NULL" in sql
     assert "make_interval" in sql
     assert "least($3 * power(2.0, attempt_count), $4)" in sql
+    # T-537a1 SQL typecast fix: PG type-inference picks `interval - interval`
+    # without explicit cast on $2 → operator-not-found. Cast pinned here.
+    assert "$2::timestamptz - make_interval" in sql
     assert "ORDER BY created_at ASC" in sql
     assert "LIMIT $5" in sql
     assert "FOR UPDATE SKIP LOCKED" in sql
@@ -263,6 +266,10 @@ async def test_mark_outbox_event_failed_sql_increments_and_case_flips() -> None:
     assert "last_attempt_at = $2" in sql
     assert "last_error = $3" in sql
     assert "CASE WHEN attempt_count + 1 >= $4" in sql
+    # T-537a1 SQL typecast fix: CASE result-type defaults to text for
+    # untyped param + NULL branch → DatatypeMismatch on TIMESTAMPTZ column
+    # assignment. Cast pinned here.
+    assert "$5::timestamptz ELSE NULL END" in sql
     assert "WHERE id = $1" in sql
     assert args[1] == 42
     assert args[2] == _FIXED_NOW
