@@ -1,5 +1,47 @@
 # Session status
 
+## 2026-05-09 (late-night XV — T-537a2 outbox relay worker shipped; F5 counter advances 27/48 → 28/49; T-537 cluster 2 of 3 done)
+
+**F5 phase counter advances 27/48 → 28/49** per WG#7 (numerator+1 for shipped T-537a2, denominator+1 for new T-537a2 numbered task). T-537b (signal-gateway integration) remains in pending column with denominator increment at its plan-stage time.
+
+### T-537a2 — outbox relay worker (OutboxRelayWorker + 11 unit tests)
+
+- **Origin**: T-537 cluster L-007 split per operator decision 2026-05-09 (parent T-537a → T-537a1 + T-537a2 + T-537b); consumes T-537a1 outbox base infra (queries + types + migration 0016 shipped 2026-05-09 commits 6008ea0 + d06aaee).
+- **All 4 review gates passed**: plan-reviewer pass-3 APPROVE 2026-05-09 (after pass-1 REVISE 2 BLOCKERs+4 CONCERNs + pass-2 REVISE 3 BLOCKERs+3 CONCERNs surfaced post-fix; final 5-item Write-time guidance baked) → drift-checker ON TRACK → brief-reviewer SHIP → math-validator VERIFIED — out of scope.
+- **Operator decisions (2 NEW T-537a2-specific OQs + 7 carried-forward)**: OQ-1 = Serial publish (FIFO order per service); OQ-2 = Silent cancel (cancellation = shutdown, not failure; no mark_failed on cancel; mirror dispatcher / shadow_worker precedents).
+- **Transaction & lock semantics — Variant B (batch-level tx)** per plan-reviewer pass-2 BLOCKER #1 fix: `async with pool.acquire() as conn, conn.transaction():` wraps entire batch; FOR UPDATE SKIP LOCKED holds rows through publish-and-mark; one COMMIT covers all marks at batch tx exit; partial-batch failure isolation via mark semantics (NOT per-event tx).
+- **Envelope construction from outbox row fields** per pass-2 BLOCKER #2 fix: payload column stores BUSINESS event dict; correlation_id is separate column; publisher = service; relay constructs `MessageEnvelope(correlation_id=CorrelationId(event.correlation_id or ""), publisher=self._service, payload=event.payload)` then `await bus.publish(event.subject, envelope)`.
+- **Per-event try/except** per WG#4: `except Exception` (NOT `except BaseException`) with `# noqa: BLE001`; CancelledError propagates UP uncaught; conn.transaction __aexit__ ROLLBACK; rows return to pending state. Test #7 pins via `mark_failed.assert_not_called()`.
+- **Logger keys** per WG#3: 5 module-level `Final[str]` constants + `_LOG_KEYS` frozenset registry; NO f-string concat; NO class-level constants.
+- **Tests**: 11 mock-based unit tests (9 planned + 2 bonus pins). SQL semantics already pinned at T-537a1 testcontainer level — no duplicate testcontainer test needed.
+- **Repo baseline 2117 → 2128** (+11 net new unit tests). 0 regressions.
+- **§0.3 LOC**: ~226 src under 400 cap (no waiver needed; smaller than T-537a1 at 365 LOC).
+- **`run_relay_for_service` adapter DROPPED** from T-537a2 scope per pass-1 BLOCKER #2 fix — T-537b owns its lifespan integration shape directly via `asyncio.create_task(worker.run())` + `worker.stop()`.
+- **No NEW lesson** for T-537a2 (no generalizable catch beyond existing L-007/L-008/L-014 active controls re-applied).
+- **Plan**: `docs/plans/T-537a2-outbox-relay-worker.md` (APPROVED pass-3 with 5 WG verbatim).
+- **Commits**: feat `d30f36a` on `feat/T-537a2-outbox-relay-worker`; chore close pending.
+
+### 7-bug operator audit (2026-05-08) — progress tracker
+
+| # | Title | Severity | Status |
+|---|-------|----------|--------|
+| 1 | Paper mode silent dispatcher kill | CRITICAL | DONE — `fix(T-218c-paper-dispatcher-skip)` 2026-05-08 |
+| 2 | Signal-loss between dedup-check and publish | HIGH | IN PROGRESS — T-537 cluster (T-537a1 + T-537a2 done; T-537b pending) |
+| 3 | position_state row identity could mismatch trade_id | HIGH | DONE — `fix(T-217c-position-state-trade-id-guard)` 2026-05-09 |
+| 4 | Fill-price uses last-trade close (not VWAP) | MEDIUM | DEFERRED → NEW T-538 VWAP fill price |
+| 5 | Fill-price-fetch retry exception swallowing | HIGH | DONE — `fix(T-216c-fill-price-retry-exception)` 2026-05-09 |
+| 6 | Reserved (audit detail not yet pulled) | TBD | TBD |
+| 7 | Outbox-publish reliability gap | HIGH | IN PROGRESS — T-537 cluster (T-537a1 + T-537a2 done; T-537b pending) |
+
+3 of 7 audit items fully DONE (Items 1 + 3 + 5); Items 2 + 7 IN PROGRESS — outbox infra (T-537a1) + relay worker (T-537a2) shipped; T-537b signal-gateway integration completes them.
+
+### Next session pickup
+
+- **NEW T-537b signal-gateway integration** (Items 2 + 7 final close): refactor `services/signal_gateway/app/webhook.py:411-474` to write event-intent via `insert_outbox_event` inside the same tx as `insert_signal` + remove direct `bus.publish("signals.validated")` call (relay handles it post-commit); wire `OutboxRelayWorker` into `services/signal_gateway/app/main.py` lifespan with shutdown ordering `worker.stop()` → `bus.close()` → `pool.close()`; `OutboxRelaySettings` composition into Settings; integration test exercising full pipeline (insert_signal → insert_outbox_event → relay polls → bus.publish → mark_published). F5 counter 28/49 → 29/50. Items 2 + 7 fully resolved at T-537b ship.
+- **NEW T-538 VWAP fill price** (Item 4; replace last-trade-close with VWAP across exec list).
+- **Item 6 detail pull** still pending — operator to surface.
+- **F5 numbered tasks remaining** (separate from outbox + audit fixes): T-516a2 (UI routes for paper trades), T-516b (shadow variants section), T-518..T-521 (existing F5 backend polish), T-524..T-536 (pre-live operational hardening per ADR-0011), T-522 close-out + Live-ready sign-off.
+
 ## 2026-05-09 (late-night XIV — T-537a1 outbox base infra shipped; F5 counter advances 26/47 → 27/48; T-537 cluster decomposed per L-007 split + operator hybrid scope)
 
 **F5 phase counter advances 26/47 → 27/48** per WG#7 (numerator+1 for shipped T-537a1, denominator+1 for new T-537a1 numbered task). T-537a2 (relay worker) + T-537b (signal-gateway integration) remain in pending column with their denominator increments at THEIR ship-time per existing TASKS.md narrative pattern.
