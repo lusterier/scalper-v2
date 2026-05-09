@@ -189,38 +189,29 @@ describe("TradeDrillDown route (T-414)", () => {
     );
   });
 
-  it("5 placeholder sections (Tier 3-7) render with Coming subtitle (T-516a2 placeholder #4 wording updated)", async () => {
+  it("4 placeholder sections (Tier 3-7 minus Shadow variants) render with Coming F4+/F5+ subtitle (T-516b shipped)", async () => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/trades/7") return Promise.resolve(tradeWithSignal);
       if (url === "/api/signals/100") return Promise.resolve(sampleSignal);
       if (url === "/api/scoring/by-signal/100")
         return Promise.resolve({ evaluations: [] });
+      if (url === "/api/trades/7/shadow-variants")
+        return Promise.resolve({ variants: [] });
       return Promise.reject(new Error("unmocked"));
     });
     mountAt("/trades/7");
     await waitFor(() => {
       expect(screen.getByText(/Order events/)).toBeInTheDocument();
     });
+    // T-516b: Shadow variants now real component (NOT placeholder);
+    // placeholder count drops 5 → 4 per AC#15a.
     const placeholders = screen.getAllByTestId("timeline-placeholder");
-    expect(placeholders).toHaveLength(5);
-    // Per T-516a2 plan-reviewer WG#1: split forEach over 4 F4+/F5+
-    // placeholders + 1 separate assertion on placeholder #4 (Shadow
-    // variants) which now reads "Coming T-516b (... parent_kind=live)".
-    // Pins exact text + preserves count==5 contract.
-    const nonShadow = placeholders.filter(
-      (p) => !p.textContent?.includes("Coming T-516b"),
-    );
-    expect(nonShadow).toHaveLength(4);
-    nonShadow.forEach((p) => {
+    expect(placeholders).toHaveLength(4);
+    placeholders.forEach((p) => {
       expect(p.textContent).toMatch(/Coming F4\+|Coming F5\+/);
     });
-    const shadow = placeholders.find((p) =>
-      p.textContent?.includes("Coming T-516b"),
-    );
-    expect(shadow).toBeDefined();
-    expect(shadow?.textContent).toContain(
-      "Coming T-516b (shadow variants section per ADR-0010 parent_kind=live)",
-    );
+    // Shadow variants section now renders the real component.
+    expect(screen.getByTestId("shadow-variants-view")).toBeInTheDocument();
   });
 
   it("404 handling per WG#2 + WG#6 — renders 'Trade #X not found' + downstream queries NOT fired", async () => {

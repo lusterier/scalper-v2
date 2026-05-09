@@ -35,9 +35,11 @@ from packages.db.queries.analytics import (
     select_paper_trade_by_id,
     select_paper_trades_paginated,
 )
+from packages.db.queries.shadow import select_shadow_variants_by_parent
 
 from ..deps import get_pool
 from ..models.paper_trades import PaperTradeListResponse, PaperTradeResponse
+from ..models.shadow_variants import ShadowVariantListResponse, ShadowVariantResponse
 
 __all__ = ["router"]
 
@@ -111,3 +113,21 @@ async def get_paper_trade(
             detail=f"paper trade {paper_trade_id} not found",
         )
     return PaperTradeResponse(**asdict(row))
+
+
+@router.get("/{paper_trade_id}/shadow-variants", response_model=ShadowVariantListResponse)
+async def list_shadow_variants_for_paper_trade(
+    paper_trade_id: int,
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+) -> ShadowVariantListResponse:
+    """All shadow variants for a paper trade (parent_kind='paper'). T-516b.
+
+    Empty list when no variants — NOT 404 (parent paper trade may have
+    run without shadow runtime). ``parent_kind`` hardcoded per route —
+    NOT a query parameter; cannot be tampered with from URL/body.
+    """
+    async with pool.acquire() as conn:
+        rows = await select_shadow_variants_by_parent(
+            conn, parent_trade_id=paper_trade_id, parent_kind="paper"
+        )
+    return ShadowVariantListResponse(variants=[ShadowVariantResponse(**asdict(r)) for r in rows])

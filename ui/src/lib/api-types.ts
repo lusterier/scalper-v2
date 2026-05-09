@@ -189,6 +189,36 @@ export interface PaperTradeListResponse {
   offset: number;
 }
 
+// T-516b — ShadowVariant interface, exact 15-field mirror of services/
+// analytics_api/app/models/shadow_variants.py:ShadowVariantResponse
+// (migration 0015 schema). NUMERIC fields → string per §5.3; DOUBLE
+// PRECISION → number per §5.13; JSONB → Record<string, unknown>;
+// datetime → ISO-8601 string. terminal_outcome StrEnum: 5 outcomes per
+// packages/core/types.py:77 ShadowVariantTerminal. parent_kind
+// discriminator per ADR-0010 routes parent_trade_id to either trades.id
+// (live) or paper_trades.id (paper).
+export interface ShadowVariant {
+  id: number;
+  parent_trade_id: number;
+  bot_id: string;
+  variant_name: string;
+  side: string;
+  entry_price: string;
+  qty: string;
+  created_at: string;
+  terminated_at: string | null;
+  terminal_outcome: "sl_hit" | "be_hit" | "tp_trail" | "tp_full" | "timeout" | null;
+  realized_pnl: string | null;
+  mfe_pct: number | null;
+  mae_pct: number | null;
+  meta: Record<string, unknown>;
+  parent_kind: "live" | "paper";
+}
+
+export interface ShadowVariantListResponse {
+  variants: ShadowVariant[];
+}
+
 // T-414 — full SignalDetail mirror of SignalResponse (11 fields). T-413
 // `Signal` is the 6-field SignalFeed subset; T-414 drill-down wants the
 // 5 OMITTED fields (schema_version + source + idempotency_key +

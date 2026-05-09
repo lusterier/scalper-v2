@@ -73,6 +73,7 @@ __all__ = [
     "select_all_active_shadow_variants",
     "select_shadow_rejected_by_id",
     "select_shadow_variant_by_id",
+    "select_shadow_variants_by_parent",
     "update_shadow_rejected_terminal",
     "update_shadow_variant_terminal",
 ]
@@ -163,6 +164,13 @@ _SELECT_ALL_ACTIVE_REJECTED_SQL = (
 _SELECT_VARIANT_BY_ID_SQL = (
     f"SELECT {_SHADOW_VARIANT_BASE_COLUMNS}"  # noqa: S608 — column whitelist constant, no user input  # nosec B608
     " FROM shadow_variants WHERE id = $1"
+)
+
+_SELECT_VARIANTS_BY_PARENT_SQL = (
+    f"SELECT {_SHADOW_VARIANT_BASE_COLUMNS}"  # noqa: S608 — column whitelist constant, no user input  # nosec B608
+    " FROM shadow_variants"
+    " WHERE parent_trade_id = $1 AND parent_kind = $2"
+    " ORDER BY variant_name ASC"
 )
 
 _SELECT_REJECTED_BY_ID_SQL = (
@@ -354,6 +362,30 @@ async def select_shadow_variant_by_id(
     """Return ShadowVariantRow on hit; None on miss."""
     row = await conn.fetchrow(_SELECT_VARIANT_BY_ID_SQL, variant_id)
     return _row_to_shadow_variant(row) if row is not None else None
+
+
+async def select_shadow_variants_by_parent(
+    conn: _DbExecutor,
+    *,
+    parent_trade_id: int,
+    parent_kind: Literal["live", "paper"],
+) -> list[ShadowVariantRow]:
+    """Return all variants (terminated + active) for ``parent_trade_id`` + ``parent_kind``.
+
+    ORDER BY ``variant_name`` ASC for stable render order. Used by T-516b
+    ``GET /api/trades/{id}/shadow-variants`` + ``GET /api/paper-trades/{id}/shadow-variants``
+    drill-down endpoints. Empty list if no variants match the
+    (parent_trade_id, parent_kind) tuple — caller treats empty as
+    valid (no 404).
+
+    ``parent_kind`` discriminator routes the query against the
+    composite key per ADR-0010 — migration 0015 dropped the original
+    0014 FK to ``trades.id`` so paper-mode parent IDs (``paper_trades.id``
+    BIGSERIAL) coexist with live-mode parent IDs without collision
+    constraints.
+    """
+    rows = await conn.fetch(_SELECT_VARIANTS_BY_PARENT_SQL, parent_trade_id, parent_kind)
+    return [_row_to_shadow_variant(row) for row in rows]
 
 
 async def select_shadow_rejected_by_id(

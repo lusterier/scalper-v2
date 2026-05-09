@@ -185,25 +185,26 @@ describe("PaperTradeDrillDown route (T-516a2)", () => {
     expect(scoringCall).toBeDefined();
   });
 
-  it("placeholder #4 reads 'Coming T-516b (... parent_kind=paper)' per OQ-2 default", async () => {
+  it("Shadow variants section renders ShadowVariantsView component (T-516b shipped) — placeholder count 5→4", async () => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/paper-trades/42") return Promise.resolve(paperTradeWithSignal);
       if (url === "/api/signals/200") return Promise.resolve(sampleSignal);
       if (url === "/api/scoring/by-signal/200")
         return Promise.resolve({ evaluations: [] });
+      if (url === "/api/paper-trades/42/shadow-variants")
+        return Promise.resolve({ variants: [] });
       return Promise.reject(new Error(`unmocked: ${url}`));
     });
     mountAt("/paper-trades/42");
     await waitFor(() => {
-      expect(screen.getByText(/Shadow variants/)).toBeInTheDocument();
+      expect(screen.getByTestId("shadow-variants-view")).toBeInTheDocument();
     });
+    // T-516b: Shadow variants now real component (NOT placeholder);
+    // placeholder count drops 5 → 4 per AC#15a.
     const placeholders = screen.getAllByTestId("timeline-placeholder");
-    const shadow = placeholders.find((p) =>
-      p.textContent?.includes("Coming T-516b"),
-    );
-    expect(shadow).toBeDefined();
-    expect(shadow?.textContent).toContain(
-      "Coming T-516b (shadow variants section per ADR-0010 parent_kind=paper)",
-    );
+    expect(placeholders).toHaveLength(4);
+    placeholders.forEach((p) => {
+      expect(p.textContent).toMatch(/Coming F4\+|Coming F5\+/);
+    });
   });
 });

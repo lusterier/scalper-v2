@@ -12,6 +12,7 @@ import { Link, createFileRoute } from "@tanstack/react-router";
 import * as React from "react";
 
 import { ScoringBreakdownView } from "@/components/ScoringBreakdownView";
+import { ShadowVariantsView } from "@/components/ShadowVariantsView";
 import { TimelineSection } from "@/components/TimelineSection";
 import { SignalDetailView, TradeSummary } from "@/components/trade-drill";
 import { apiFetch } from "@/lib/api-client";
@@ -120,10 +121,13 @@ function PaperTradeDrillDown(): React.JSX.Element {
         title="SL moves"
         placeholder={{ reason: "Coming F4+ (derives from trading_events; deferred)" }}
       />
-      <TimelineSection
-        title="Shadow variants"
-        placeholder={{ reason: "Coming T-516b (shadow variants section per ADR-0010 parent_kind=paper)" }}
-      />
+      <TimelineSection title="Shadow variants" loading={false}>
+        <ShadowVariantsView
+          parentTradeId={paperTradeId}
+          parentKind="paper"
+          parent={trade}
+        />
+      </TimelineSection>
       <TimelineSection
         title="Post-close price snapshots"
         placeholder={{ reason: "Coming F4+ (post_close_snapshots table deferred)" }}

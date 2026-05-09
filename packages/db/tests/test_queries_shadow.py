@@ -39,6 +39,7 @@ from packages.db.queries.shadow import (
     select_all_active_shadow_rejected,
     select_shadow_rejected_by_id,
     select_shadow_variant_by_id,
+    select_shadow_variants_by_parent,
     update_shadow_rejected_terminal,
     update_shadow_variant_terminal,
 )
@@ -517,3 +518,96 @@ def test_write_helpers_marked_non_idempotent(fn: Any) -> None:
     """All 4 write helpers @non_idempotent per §N3."""
     assert is_non_idempotent(fn)
     assert fn.__non_idempotent__ is True
+
+
+# ---------------------------------------------------------------------------
+# T-516b — select_shadow_variants_by_parent
+# ---------------------------------------------------------------------------
+
+
+async def test_select_shadow_variants_by_parent_returns_variants_for_live_parent() -> None:
+    """Live parent: rows with parent_kind='live'; decoder + parent_kind preservation."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _variant_row(row_id=1, parent_trade_id=42, parent_kind="live"),
+            _variant_row(row_id=2, parent_trade_id=42, parent_kind="live"),
+        ]
+    )
+    rows = await select_shadow_variants_by_parent(conn, parent_trade_id=42, parent_kind="live")
+    assert len(rows) == 2
+    assert all(r.parent_kind == "live" for r in rows)
+    assert all(r.parent_trade_id == 42 for r in rows)
+
+
+async def test_select_shadow_variants_by_parent_returns_variants_for_paper_parent() -> None:
+    """Paper parent symmetric: parent_kind='paper' rows returned."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _variant_row(row_id=10, parent_trade_id=42, parent_kind="paper"),
+            _variant_row(row_id=11, parent_trade_id=42, parent_kind="paper"),
+        ]
+    )
+    rows = await select_shadow_variants_by_parent(conn, parent_trade_id=42, parent_kind="paper")
+    assert len(rows) == 2
+    assert all(r.parent_kind == "paper" for r in rows)
+
+
+async def test_select_shadow_variants_by_parent_returns_empty_when_no_variants() -> None:
+    """Empty fetch result → empty list; no exception."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=[])
+    rows = await select_shadow_variants_by_parent(conn, parent_trade_id=999, parent_kind="live")
+    assert rows == []
+
+
+async def test_select_shadow_variants_by_parent_sql_pins_where_and_order() -> None:
+    """SQL: parameterized WHERE parent_trade_id=$1 AND parent_kind=$2 + ORDER BY variant_name."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_shadow_variants_by_parent(conn, parent_trade_id=7, parent_kind="live")
+    sql, *bind_args = captured[0]
+    assert "WHERE parent_trade_id = $1 AND parent_kind = $2" in sql
+    assert "ORDER BY variant_name ASC" in sql
+    assert bind_args == [7, "live"]
+
+
+async def test_select_shadow_variants_by_parent_returns_terminated_and_active_mix() -> None:
+    """Both terminated (terminated_at non-null) and active (terminated_at None) rows returned."""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            _variant_row(
+                row_id=1,
+                parent_trade_id=5,
+                parent_kind="live",
+                terminated_at=_TERMINATED_AT,
+                terminal_outcome="tp_full",
+                realized_pnl=Decimal("10.00"),
+            ),
+            _variant_row(
+                row_id=2,
+                parent_trade_id=5,
+                parent_kind="live",
+                terminated_at=None,
+            ),
+        ]
+    )
+    rows = await select_shadow_variants_by_parent(conn, parent_trade_id=5, parent_kind="live")
+    assert len(rows) == 2
+    # Active variant has None terminal_outcome/realized_pnl/terminated_at.
+    active = [r for r in rows if r.terminated_at is None]
+    terminated = [r for r in rows if r.terminated_at is not None]
+    assert len(active) == 1
+    assert len(terminated) == 1
+    assert active[0].terminal_outcome is None
+    assert active[0].realized_pnl is None
+    assert terminated[0].terminal_outcome is ShadowVariantTerminal.TP_FULL
+    assert terminated[0].realized_pnl == Decimal("10.00")
