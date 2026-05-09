@@ -1301,9 +1301,14 @@ class PaperExchange:
         symbol: str,
         order_id: str,
     ) -> Decimal | None:
-        """Decision #7: LIMIT 1 ORDER BY executed_at ASC. None if no match."""
+        """T-538 / H-035: VWAP across paper_executions; None if no match.
+
+        Migrated from `select_paper_execution_price_by_order_id` (LIMIT 1)
+        to `select_paper_execution_vwap_by_order_id` (SUM/NULLIF aggregate)
+        for parity with bybit_v5 live VWAP semantics. Audit Item 4 close.
+        """
         async with self._pool.acquire() as conn:
-            return await persistence.select_paper_execution_price_by_order_id(
+            return await persistence.select_paper_execution_vwap_by_order_id(
                 conn,
                 exchange_order_id=order_id,
             )

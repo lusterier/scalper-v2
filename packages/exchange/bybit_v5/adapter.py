@@ -275,6 +275,19 @@ class BybitV5Adapter:
         symbol: str,
         order_id: str,
     ) -> Decimal | None:
+        """Return VWAP across all execution items for ``order_id`` per H-035.
+
+        T-538 / H-035: VWAP = Σ(price * qty) / Σ(qty) across ALL items in the
+        single-page response. Pre-T-538 returned items[0]["execPrice"] only —
+        wrong for partial fills that swept multiple price levels. HTTP request
+        sets explicit ``limit=100`` (Bybit doc max for ``/v5/execution/list``).
+        If response carries ``nextPageCursor`` (truncation indicator for >100
+        partial fills, extremely rare), warn-log via
+        ``bybit_v5.get_fill_price_paginated_truncation``. Empty list → None
+        (caller's T-216c retry path handles). Defensive: zero total qty →
+        None + ``bybit_v5.get_fill_price_zero_total_qty`` warn (should never
+        fire — every Bybit exec row has qty > 0).
+        """
         await self._limiter.acquire(self._sub_account, "orders")
         try:
             result = await self._client.request(
@@ -284,6 +297,7 @@ class BybitV5Adapter:
                     "category": _CATEGORY,
                     "symbol": symbol,
                     "orderId": order_id,
+                    "limit": 100,
                 },
                 retries=3,
             )
@@ -293,7 +307,33 @@ class BybitV5Adapter:
         items = result.get("list", [])
         if not items:
             return None
-        return Decimal(items[0]["execPrice"])
+        if result.get("nextPageCursor"):
+            logger.warning(
+                "bybit_v5.get_fill_price_paginated_truncation",
+                extra={
+                    "symbol": symbol,
+                    "order_id": order_id,
+                    "page_size": len(items),
+                },
+            )
+        numerator = Decimal("0")
+        denominator = Decimal("0")
+        for item in items:
+            price = Decimal(item["execPrice"])
+            qty = Decimal(item["execQty"])
+            numerator += price * qty
+            denominator += qty
+        if denominator == 0:
+            logger.warning(
+                "bybit_v5.get_fill_price_zero_total_qty",
+                extra={
+                    "symbol": symbol,
+                    "order_id": order_id,
+                    "item_count": len(items),
+                },
+            )
+            return None
+        return numerator / denominator
 
     @idempotent
     async def get_closed_pnl_cumulative(self, sub_account: str) -> Decimal:

@@ -582,12 +582,13 @@ async def test_get_positions_preserves_zero_string_in_avg_price_and_unrealised_p
 # --- T-208b: get_fill_price (3 tests) --------------------------------------
 
 
-async def test_get_fill_price_returns_decimal_from_first_execution_row() -> None:
+async def test_get_fill_price_returns_decimal_from_single_leg_fill() -> None:
+    """T-538 / H-035 — single-leg fill: VWAP degenerate case = first row's price."""
     from decimal import Decimal as _D
 
     client = _make_client_mock()
     client.request = AsyncMock(
-        return_value={"list": [{"execPrice": "65032.5", "execId": "ex-1"}]},
+        return_value={"list": [{"execPrice": "65032.5", "execQty": "0.01", "execId": "ex-1"}]},
     )
     adapter = _make_adapter(client=client)
     price = await adapter.get_fill_price("BTCUSDT", "ord-abc")
@@ -603,12 +604,12 @@ async def test_get_fill_price_returns_none_when_no_executions() -> None:
 
 
 async def test_get_fill_price_preserves_price_string_through_decimal_round_trip() -> None:
-    """W#2 H-015 round-trip pin: isinstance + value + str triad."""
+    """W#2 H-015 round-trip pin: isinstance + value + str triad. Single-leg VWAP."""
     from decimal import Decimal as _D
 
     client = _make_client_mock()
     client.request = AsyncMock(
-        return_value={"list": [{"execPrice": "65000.123456789012"}]},
+        return_value={"list": [{"execPrice": "65000.123456789012", "execQty": "0.01"}]},
     )
     adapter = _make_adapter(client=client)
     price = await adapter.get_fill_price("BTCUSDT", "ord-abc")
@@ -618,6 +619,10 @@ async def test_get_fill_price_preserves_price_string_through_decimal_round_trip(
 
 
 async def test_get_fill_price_calls_upstream_with_bybit_v5_query_shape() -> None:
+    """T-538 / H-035 — request includes explicit limit=100 (Bybit doc max).
+
+    /v5/execution/list endpoint cap.
+    """
     client = _make_client_mock()
     client.request = AsyncMock(return_value={"list": []})
     adapter = _make_adapter(client=client)
@@ -628,7 +633,80 @@ async def test_get_fill_price_calls_upstream_with_bybit_v5_query_shape() -> None
         "category": "linear",
         "symbol": "BTCUSDT",
         "orderId": "ord-abc",
+        "limit": 100,
     }
+
+
+async def test_get_fill_price_returns_vwap_for_multi_leg_fill() -> None:
+    """T-538 / H-035 — VWAP across all exec items per OQ-1.
+
+    Hand-verified fixture (verbatim across both adapters' tests):
+      prices=[100, 101, 99] * qty=[2, 5, 3]
+      numerator = 100*2 + 101*5 + 99*3 = 200 + 505 + 297 = 1002
+      denominator = 2 + 5 + 3 = 10
+      VWAP = 1002 / 10 = 100.2 (exact in Decimal)
+    """
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {"execPrice": "100", "execQty": "2", "execId": "ex-1"},
+                {"execPrice": "101", "execQty": "5", "execId": "ex-2"},
+                {"execPrice": "99", "execQty": "3", "execId": "ex-3"},
+            ],
+        },
+    )
+    adapter = _make_adapter(client=client)
+    price = await adapter.get_fill_price("BTCUSDT", "ord-multileg")
+    assert price == _D("100.2")
+    assert isinstance(price, _D)
+
+
+async def test_get_fill_price_emits_warning_when_next_page_cursor_present() -> None:
+    """T-538 / H-035 — nextPageCursor warns about truncation per OQ-1."""
+    from unittest.mock import patch
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [{"execPrice": "100", "execQty": "1"}],
+            "nextPageCursor": "abc-cursor-token",
+        },
+    )
+    adapter = _make_adapter(client=client)
+    with patch("packages.exchange.bybit_v5.adapter.logger") as logger_mock:
+        await adapter.get_fill_price("BTCUSDT", "ord-truncated")
+    warn_calls = logger_mock.warning.call_args_list
+    warn_keys = [c.args[0] for c in warn_calls]
+    assert "bybit_v5.get_fill_price_paginated_truncation" in warn_keys
+    truncation_call = next(
+        c for c in warn_calls if c.args[0] == "bybit_v5.get_fill_price_paginated_truncation"
+    )
+    # stdlib logger uses extra={} kwarg per closed_pnl_pagination_capped precedent.
+    extra = truncation_call.kwargs["extra"]
+    assert extra["symbol"] == "BTCUSDT"
+    assert extra["order_id"] == "ord-truncated"
+    assert extra["page_size"] == 1
+
+
+async def test_get_fill_price_zero_total_qty_returns_none_with_warning() -> None:
+    """T-538 / H-035 — defensive: zero total qty (malformed Bybit response) → None + warn."""
+    from unittest.mock import patch
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [{"execPrice": "100", "execQty": "0"}, {"execPrice": "101", "execQty": "0"}]
+        },
+    )
+    adapter = _make_adapter(client=client)
+    with patch("packages.exchange.bybit_v5.adapter.logger") as logger_mock:
+        price = await adapter.get_fill_price("BTCUSDT", "ord-zeroqty")
+    assert price is None
+    warn_keys = [c.args[0] for c in logger_mock.warning.call_args_list]
+    assert "bybit_v5.get_fill_price_zero_total_qty" in warn_keys
 
 
 # --- T-208b: get_closed_pnl_cumulative (5 tests) ---------------------------

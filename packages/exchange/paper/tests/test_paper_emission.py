@@ -412,7 +412,7 @@ async def test_get_fill_price_returns_decimal_when_match(
     pe = _make_paper_exchange()
     _patch_persistence(
         monkeypatch,
-        select_paper_execution_price_by_order_id=AsyncMock(return_value=Decimal("65032.5")),
+        select_paper_execution_vwap_by_order_id=AsyncMock(return_value=Decimal("65032.5")),
     )
     price = await pe.get_fill_price("BTCUSDT", "paper-abc")
     assert price == Decimal("65032.5")
@@ -425,7 +425,7 @@ async def test_get_fill_price_returns_none_when_no_match(
     pe = _make_paper_exchange()
     _patch_persistence(
         monkeypatch,
-        select_paper_execution_price_by_order_id=AsyncMock(return_value=None),
+        select_paper_execution_vwap_by_order_id=AsyncMock(return_value=None),
     )
     price = await pe.get_fill_price("BTCUSDT", "paper-missing")
     assert price is None

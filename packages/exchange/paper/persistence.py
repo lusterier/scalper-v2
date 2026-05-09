@@ -40,6 +40,7 @@ __all__ = [
     "insert_paper_position",
     "insert_paper_trade",
     "select_paper_execution_price_by_order_id",
+    "select_paper_execution_vwap_by_order_id",
     "select_paper_positions",
     "select_paper_positions_for_hydrate",
     "sum_paper_trades_realized_pnl",
@@ -439,12 +440,16 @@ async def select_paper_execution_price_by_order_id(
     *,
     exchange_order_id: str,
 ) -> Decimal | None:
-    """SELECT the chronologically-first paper_executions.price for a given
-    paper_orders.exchange_order_id. Returns None if no match.
+    """DEPRECATED per T-538 / H-035. Returns the chronologically-first paper_executions.price.
 
-    Used by ``PaperExchange.get_fill_price``. Decision #7 — LIMIT 1
-    ORDER BY executed_at ASC defends against schema drift if a future
-    task synthesises additional executions per order.
+    Replaced by :func:`select_paper_execution_vwap_by_order_id` which
+    returns VWAP across ALL paper_executions rows for the order_id —
+    correct semantic for partial fills. PaperExchange.get_fill_price
+    (production caller) migrated 2026-05-09. This helper retained for
+    backward-compat; existing tests in test_paper_persistence.py:872+
+    pin its single-row behavior.
+
+    Removal scheduled when no callers remain (no concrete deadline).
     """
     row = await conn.fetchrow(
         """
@@ -460,6 +465,39 @@ async def select_paper_execution_price_by_order_id(
         return None
     price: Decimal = row["price"]
     return price
+
+
+async def select_paper_execution_vwap_by_order_id(
+    conn: _DbExecutor,
+    *,
+    exchange_order_id: str,
+) -> Decimal | None:
+    """SELECT VWAP across paper_executions for a given paper_orders.exchange_order_id.
+
+    T-538 / H-035: paper-side parity with bybit_v5 ``get_fill_price``
+    VWAP semantic. SQL aggregate ``SUM(price * qty) / NULLIF(SUM(qty), 0)``
+    handles the partial-fill case correctly (multiple paper_executions
+    rows summed, weighted by qty). Returns None if no match OR if the
+    NULLIF triggers (zero total qty — defensive; should never fire under
+    PaperExchange's qty-positive invariant).
+
+    Hand-verified fixture per plan §"Hand verification":
+        prices=[100, 101, 99] * qty=[2, 5, 3]
+        VWAP = (100*2 + 101*5 + 99*3) / (2 + 5 + 3) = 1002 / 10 = 100.2
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT (SUM(pe.price * pe.qty) / NULLIF(SUM(pe.qty), 0)) AS vwap
+        FROM paper_executions pe
+        JOIN paper_orders po ON po.id = pe.order_id
+        WHERE po.exchange_order_id = $1
+        """,
+        exchange_order_id,
+    )
+    if row is None or row["vwap"] is None:
+        return None
+    vwap: Decimal = row["vwap"]
+    return vwap
 
 
 async def sum_paper_trades_realized_pnl(

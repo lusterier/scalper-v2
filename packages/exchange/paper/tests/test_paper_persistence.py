@@ -903,6 +903,103 @@ async def test_select_paper_execution_price_by_order_id_returns_none_when_no_mat
     assert price is None
 
 
+async def test_select_paper_execution_vwap_by_order_id_returns_vwap_across_rows(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """T-538 / H-035 — VWAP across multiple paper_executions rows for one order.
+
+    Hand-verified fixture (verbatim across both adapters' tests + plan §"Hand
+    verification"):
+      prices=[100, 101, 99] * qty=[2, 5, 3]
+      VWAP = (100*2 + 101*5 + 99*3) / (2 + 5 + 3) = 1002 / 10 = 100.2 exact.
+
+    Inserts a paper_order + 3 synthetic paper_executions rows (bypassing
+    the PaperExchange synthesis path which currently produces single
+    fills); calls the new helper; asserts Decimal("100.2") exact.
+    """
+    from packages.exchange.paper import persistence
+
+    _pe, pool, _bot_id = paper_exchange
+    bot_id = "alpha-vwap"
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO bots (
+              bot_id, display_name, created_at, status, exchange_mode,
+              config_hash, config_applied_at
+            ) VALUES ($1, $1, $2, 'active', 'paper', 'sha256:vwap', $2)
+            ON CONFLICT (bot_id) DO NOTHING
+            """,
+            bot_id,
+            datetime(2026, 5, 9, 12, 0, 0, tzinfo=UTC),
+        )
+        # Insert paper_order; bot_id required + signal_id NULLable per migration 0008.
+        order_row = await conn.fetchrow(
+            """
+            INSERT INTO paper_orders (
+              bot_id, correlation_id, exchange_order_id, exchange, symbol,
+              side, order_type, qty, price, status, requested_at, filled_at, idempotent
+            ) VALUES ($1, $2, $3, 'paper', $4, 'buy', 'market', $5, $6,
+                      'filled', $7, $7, FALSE)
+            RETURNING id
+            """,
+            bot_id,
+            "cid-vwap-1",
+            "ord-vwap-1",
+            "BTCUSDT",
+            Decimal("10"),
+            Decimal("100"),
+            datetime(2026, 5, 9, 12, 0, 0, tzinfo=UTC),
+        )
+        assert order_row is not None
+        order_id = order_row["id"]
+
+        # Insert 3 synthetic paper_executions: hand-verifiable VWAP fixture.
+        legs = [
+            (Decimal("100"), Decimal("2")),
+            (Decimal("101"), Decimal("5")),
+            (Decimal("99"), Decimal("3")),
+        ]
+        for idx, (price, qty) in enumerate(legs):
+            await conn.execute(
+                """
+                INSERT INTO paper_executions (
+                  exchange_exec_id, order_id, bot_id, symbol, side,
+                  price, qty, fee, exec_type, executed_at
+                ) VALUES ($1, $2, $3, 'BTCUSDT', 'buy',
+                          $4, $5, 0, 'open', $6)
+                """,
+                f"vwap-exec-{idx}",
+                order_id,
+                bot_id,
+                price,
+                qty,
+                datetime(2026, 5, 9, 12, 0, idx, tzinfo=UTC),
+            )
+
+        vwap = await persistence.select_paper_execution_vwap_by_order_id(
+            conn, exchange_order_id="ord-vwap-1"
+        )
+
+    # Hand-verified: 1002 / 10 = 100.2 exact in NUMERIC arithmetic.
+    assert vwap == Decimal("100.2")
+
+
+async def test_select_paper_execution_vwap_by_order_id_returns_none_when_no_match(
+    paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
+) -> None:
+    """T-538 — non-existent order_id → None (NULLIF triggers row absence)."""
+    from packages.exchange.paper import persistence
+
+    _pe, pool, _bot_id = paper_exchange
+    async with pool.acquire() as conn:
+        vwap = await persistence.select_paper_execution_vwap_by_order_id(
+            conn, exchange_order_id="paper-vwap-does-not-exist"
+        )
+    assert vwap is None
+
+
 async def test_sum_paper_trades_realized_pnl_returns_decimal_zero_for_no_closed_trades(
     paper_exchange: tuple[PaperExchange, asyncpg.Pool, str],
 ) -> None:
