@@ -1,5 +1,46 @@
 # Session status
 
+## 2026-05-09 (late-night XIII — fix(T-217c-position-state-trade-id-guard) shipped; H-033 NEW hazard + L-020 NEW lesson; 7-bug operator audit Item 3 of 7 done; branch step restored)
+
+**F5 phase counter UNCHANGED at 26/47** (fix() commits don't count toward F5 numbered task counter; mirror `fix(T-218b)` + `fix(T-218c)` + `fix(T-216c)` + `fix(T-511b2a)` precedent).
+
+### fix(T-217c-position-state-trade-id-guard) — composite-PK position_state UPDATE must include trade_id in WHERE clause
+
+- **All 4 review gates passed**: plan-reviewer single-pass APPROVE 2026-05-09 (10-item Write-time guidance verbatim) → drift-checker ON TRACK (5 staged files; ~204 LOC; all 10 WG verified) → brief-reviewer SHIP (10/10 WG; §11.3 N/A; §N1/§N3/§N5/§N6/§N8 unchanged; §N4 TDD deviation justified) → math-validator VERIFIED — out of scope (composition-only at semantic level; SQL signature extension + integer comparison + log; no Decimal/float arithmetic; mirror T-218c/T-216c precedent).
+- **Bug**: `packages/db/queries/execution.py:636-680` `update_position_state_after_fill` modified `position_state` rows via composite PK `(bot_id, symbol)` only — `trade_id` was NOT in the WHERE clause. ExecutionDispatcher's `_derive_exec_type` Path A (`order_id_match is not None`) sources `trade_id` from the `trades` table; under a benign close→reopen race, the position_state row identity changed between derivation and write — UPDATE silently mutated the wrong trade's row. Phantom close cascade.
+- **Real-world impact**: Live: real money committed on T2 open; phantom-closed in DB → T-221 reconcile_orphan flow → emergency_close real position closure. Paper: corruption stays in DB; could mask paper P&L drift. Either mode (sibling L-018 active control: NOT a "dormant in mode" claim).
+- **Why not surfaced earlier**: T-218a/T-218b/T-218c reviewer focus was the `exec_type` derivation branch table; the WHERE-clause omission for `update_position_state_after_fill` slipped through because all existing test cases used a SINGLE trade per (bot_id, symbol) lifetime fixture (L-020 active control). Race-window observation requires sustained live operation across multiple close→reopen cycles.
+- **Fix shape per operator OQ-1=B (NOT default A; SQL WHERE trade_id extension chosen over composition-only dispatcher guard) + OQ-2=A + OQ-3=A + OQ-4=A**: SQL helper signature gains required kwarg `trade_id: int` + return type changed `None` → `int` (parsed from asyncpg `"UPDATE <n>"` command tag via `int(result.split()[-1])` mirror analytics.py:2108 precedent). Both UPDATE branches add `AND trade_id = $N` to WHERE. Dispatcher caller threads derived `trade_id` (`assert trade_id is not None` mypy-narrowing BEFORE call) + checks `rows_updated == 0` → ERROR log + raise RuntimeError. Transaction rolls back; NATS redelivery + T-221 reconciliation own recovery.
+- **Tests**: 2 existing unit tests updated with `trade_id` kwarg + `"UPDATE 1"` return mock + SQL assertion. NEW unit test `test_update_position_state_after_fill_returns_zero_on_zero_rows_tag`. NEW testcontainer-gated integration tests per L-008: `test_update_position_state_after_fill_returns_zero_when_trade_id_mismatches` (real PG round-trip; row UNCHANGED on mismatch) + companion `test_update_position_state_after_fill_returns_one_when_trade_id_matches` ($N bind regression guard). NEW dispatcher halt regression `test_dispatcher_halts_on_position_state_trade_id_mismatch_during_fill_update`. 2 existing dispatcher tests add `kwargs["trade_id"] == 1` (Path B trade_id from `_ps_row` default).
+- **Repo baseline 2095 → 2097** (+2 net new unit/dispatcher tests; +2 testcontainer-gated integration skipped without POSTGRES_TEST_DSN per F1 pattern). 0 regressions.
+- **§0.3 LOC**: ~50 src + ~165 tests = ~215 LOC delta in feat; under cap. Mid-cluster size (T-218b ~98, T-218c ~151, T-216c ~84, T-217c ~215 — expansion due to L-008 testcontainer integration test pair).
+- **NEW H-033 hazard entry** in BRIEF §20 (after H-032; companion forming execution-service operational hardening cluster H-030/H-031/H-032/H-033). H-018 vs H-033 scope clarification: H-018 governs `trades` table single-PK updates; H-033 governs `position_state` composite-PK updates under identity-reuse — different tables, different invariants.
+- **NEW L-020 lesson** in `docs/review-lessons.md`: composite-PK SQL update helpers under concurrent INSERT/DELETE-then-INSERT need authoritative-id verification at dispatch site; helpers returning rows-updated count must have callers check for 0 and halt-on-mismatch. Active control: plan-reviewer + brief-reviewer MUST grep callers for any composite-PK helper reused across distinct logical entities and verify authoritative identity threading.
+- **Branch step RESTORED**: `fix/T-217c-position-state-trade-id-guard` per CLAUDE.md branching policy. Recovery from T-216c slip documented in late-night XII process slip note. Branch flow followed verbatim: checkout -b → feat commit → chore commit → ff-merge → push → branch delete.
+- **Plan**: `docs/plans/T-217c-fix-position-state-trade-id-guard.md` (APPROVED single-pass with 10 WG verbatim).
+- **Commits**: feat `b74fca2` on `fix/T-217c-position-state-trade-id-guard`; chore close pending.
+
+### 7-bug operator audit (2026-05-08) — progress tracker
+
+| # | Title | Severity | Status |
+|---|-------|----------|--------|
+| 1 | Paper mode silent dispatcher kill | CRITICAL | DONE — `fix(T-218c-paper-dispatcher-skip)` 2026-05-08 |
+| 2 | Signal-loss between dedup-check and publish | HIGH | DEFERRED → NEW T-537 outbox pattern (combined with Item 7) |
+| 3 | position_state row identity could mismatch trade_id | HIGH | DONE — `fix(T-217c-position-state-trade-id-guard)` 2026-05-09 |
+| 4 | Fill-price uses last-trade close (not VWAP) | MEDIUM | DEFERRED → NEW T-538 VWAP fill price |
+| 5 | Fill-price-fetch retry exception swallowing | HIGH | DONE — `fix(T-216c-fill-price-retry-exception)` 2026-05-09 |
+| 6 | Reserved (audit detail not yet pulled) | TBD | TBD |
+| 7 | Outbox-publish reliability gap | HIGH | DEFERRED → NEW T-537 outbox pattern (combined with Item 2) |
+
+3 of 7 audit items DONE (Items 1 + 3 + 5). Items 2 + 7 → NEW T-537 (outbox); Item 4 → NEW T-538 (VWAP); Item 6 detail pending.
+
+### Next session pickup
+
+- **Item 6 detail pull** — operator to surface the deferred audit detail before any further T-NNN allocation; Items 2/4/7 already mapped to T-537/T-538/T-537.
+- **NEW T-537 outbox pattern** (Items 2 + 7; signal-loss publish-after-dedup + outbox-publish reliability gap). Full F5 task; will count toward F5 phase counter.
+- **NEW T-538 VWAP fill price** (Item 4; replace last-trade-close with VWAP). Full F5 task.
+- **F5 numbered tasks remaining** (separate from fixes): T-516a2 (UI routes for paper trades), T-516b (shadow variants section), T-518..T-521 (existing F5 backend polish), T-524..T-536 (pre-live operational hardening per ADR-0011), T-522 close-out + Live-ready sign-off.
+
 ## 2026-05-09 (late-night XII — fix(T-216c-fill-price-retry-exception) shipped; H-032 NEW hazard + L-019 NEW lesson; 7-bug operator audit Item 5 of 7 done)
 
 **F5 phase counter UNCHANGED at 26/47** (fix() commits don't count toward F5 numbered task counter; mirror `fix(T-218b)` + `fix(T-218c)` + `fix(T-511b2a)` precedent).

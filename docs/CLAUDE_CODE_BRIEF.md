@@ -2843,6 +2843,16 @@ H-031 numbering note: T-218b shipped H-030 (open-fill must not decrement remaini
 
 H-032 numbering note: companion to H-030 (open-fill remaining_qty contract) + H-031 (paper adapter must not feed live ExecutionDispatcher). Together H-030/H-031/H-032 form the execution-service operational hardening cluster surfaced via operator audit 2026-05-08/05-09.
 
+### H-033 — Composite-PK position_state UPDATE must include trade_id in WHERE clause
+
+**Context.** `position_state` table uses composite PK `(bot_id, symbol)` per migration 0004. Under operator's short-cycle scalping (1m–5m horizons; rapid close→reopen pattern), the same `(bot_id, symbol)` row identity can host multiple trades sequentially: T1 opens → T1 closes → row deleted → T2 opens → T2's row written. WS execution events for the closing fill of T1 may arrive LATE after T2's `position_state` row exists. ExecutionDispatcher's `_derive_exec_type` Path A (`order_id_match is not None`) sources `trade_id` from the `trades` table via `select_trade_by_open_order_id` / `select_trade_by_close_order_id` — this trade_id is T1's. The subsequent `update_position_state_after_fill(bot_id, symbol)` (composite PK only) modified T2's row using T1's qty_delta. Wrong target row mutation → `remaining_qty` corruption on T2 → potential phantom close cascade. Operator-discovered shipped-code bug 2026-05-08; fix shipped via `fix(T-217c-position-state-trade-id-guard)` precedent 2026-05-09.
+
+**Policy.** `update_position_state_after_fill` SQL helper MUST include `trade_id` in the WHERE clause: `WHERE bot_id = $X AND symbol = $Y AND trade_id = $Z`. The helper returns `rows_updated: int` (parsed from asyncpg command tag `"UPDATE <n>"`). ExecutionDispatcher caller threads the derived `trade_id` (from `_derive_exec_type` Path A trades-table lookup or Path B position_state.trade_id) and halts on `rows_updated == 0`: ERROR log key `execution.dispatcher_position_state_trade_id_mismatch` + raise `RuntimeError("position_state.trade_id mismatch with derived trade_id=...")`. Transaction rolls back; NATS redelivery + T-221 reconciliation own recovery.
+
+**Test.** `test_update_position_state_after_fill_returns_zero_on_zero_rows_tag` (unit; mock-based) + `test_update_position_state_after_fill_returns_zero_when_trade_id_mismatches` + `test_update_position_state_after_fill_returns_one_when_trade_id_matches` (testcontainer-gated integration round-trip per L-008 active control) + `test_dispatcher_halts_on_position_state_trade_id_mismatch_during_fill_update` (dispatcher integration via mocks).
+
+H-033 numbering note: companion to H-030 (open-fill remaining_qty contract) + H-031 (paper adapter must not feed live ExecutionDispatcher) + H-032 (retry loop over external adapter call must catch transient exceptions). Together H-030/H-031/H-032/H-033 form the execution-service operational hardening cluster surfaced via operator audit 2026-05-08/05-09. **H-018 vs H-033 scope clarification**: H-018 governs `trades` table single-PK updates (`WHERE id = ?`); H-033 governs `position_state` composite-PK updates under identity-reuse. H-033 is not a derogation of H-018 — different tables, different invariants.
+
 ---
 
 ## 21. Glossary
