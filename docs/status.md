@@ -1,5 +1,48 @@
 # Session status
 
+## 2026-05-09 (late-night XII — fix(T-216c-fill-price-retry-exception) shipped; H-032 NEW hazard + L-019 NEW lesson; 7-bug operator audit Item 5 of 7 done)
+
+**F5 phase counter UNCHANGED at 26/47** (fix() commits don't count toward F5 numbered task counter; mirror `fix(T-218b)` + `fix(T-218c)` + `fix(T-511b2a)` precedent).
+
+### fix(T-216c-fill-price-retry-exception) — get_fill_price retry must catch transient exceptions
+
+- **All 4 review gates passed**: plan-reviewer single-pass APPROVE 2026-05-09 (15-item Write-time guidance verbatim) → drift-checker ON TRACK (84 LOC staged; all 15 WG verified) → brief-reviewer SHIP (15/15 WG; §11.3 taxonomy mirror exact) → math-validator VERIFIED — out of scope (composition-only fix; no Decimal/float arithmetic; mirror T-218c Gate 4 verdict).
+- **Bug**: `services/execution/app/placement.py:205-232` retry loop iterated `for attempt in range(fill_price_retry_attempts)` over `await adapter.get_fill_price(...)` with NO try/except. Transient adapter exceptions (NetworkTimeout/RateLimitError/AuthError) bypassed (1) the retry counter, (2) the `await asyncio.sleep(backoff)` step, (3) the post-loop `if fill_price is None: DLQ + FillPriceUnresolvedError` contract. Sibling step 4 (set_leverage) + step 5 (place_market_order) DO wrap their await sites with explicit `(AuthError, OrderRejected, NetworkTimeout, RateLimitError)` catches per §11.3 taxonomy — step 6 retry block was forgotten.
+- **Real-world impact**: Live: position OPENS on exchange (real money) but DB persistence aborts mid-handler (no trades row, no position_state row, no SLMoved emit). Paper: transient asyncpg errors → similar fatal exit. Either mode: handler exception trips up out of consumer; bus-level swallow means no operator-facing trace. Operator's primary mode is paper per `deployment.md`; v2 multi-service NIE JE deployed; sibling v1 testnet stack disabled 2026-05-02; T-222 testnet smoke (F2 close-out) was never executed end-to-end. Kill-path was never observed at runtime.
+- **Why not surfaced earlier**: T-216a / T-216b1 / T-216b2 reviewer focus was post-fill_price pipeline + paper fork + persist-tx + emit ordering; the retry block's `await` site exception coverage slipped through both plan-reviewer and brief-reviewer Gate 3 because no `for attempt in range(*retry*)` audit pattern existed (now becomes L-019 active control).
+- **Fix shape per operator OQ-1=A + OQ-2=A + OQ-3=A + OQ-4=A 2026-05-09**: wrap `await adapter.get_fill_price(...)` in `try/except (AuthError, NetworkTimeout, RateLimitError) as exc` (mirror sibling step 5 trio per §11.3 taxonomy); on exception → warn-log key `execution.get_fill_price_transient_error` (kwargs `bot_id` + `exchange_order_id` + `attempt` 1-indexed + `error=str(exc)`) + defensive `fill_price = None` reset → retry counter advances + sleep on remaining attempts. After exhaustion falls through to existing DLQ + `FillPriceUnresolvedError` contract.
+- **Tests**: 4 NEW regression tests inserted after `test_handler_dlq_publish_failure_still_raises_FillPriceUnresolvedError`: `test_handler_retries_when_get_fill_price_raises_NetworkTimeout` + `test_handler_retries_when_get_fill_price_raises_RateLimitError` + `test_handler_retries_when_get_fill_price_raises_AuthError` + `test_fill_price_unresolved_after_all_exception_attempts_publishes_to_dlq_and_raises`. All 4 written FIRST + verified FAIL pre-fix per §N4 TDD ordering (4-failed → patch → 21-passed). Existing 4 None-path tests UNCHANGED.
+- **Repo baseline 2091 → 2095** (+4 net new tests; 0 regressions).
+- **§0.3 LOC**: ~15 src + ~69 tests = ~84 LOC delta in feat; smallest of the surgical-fix cluster (T-218b ~98, T-218c ~151, T-216c ~84).
+- **NEW H-032 hazard entry** in BRIEF §20 (after H-031; companion to H-030/H-031 forming execution-service operational hardening cluster).
+- **NEW L-019 lesson** in `docs/review-lessons.md`: retry loops over external calls must wrap `await` site with try/except matching the SAME error taxonomy as non-retried sibling calls in the same handler. Active control: plan-reviewer + brief-reviewer MUST grep `for ... in range(*retry*)` patterns and BLOCK any raw `await ext_call(...)` inside without exception handling.
+- **Plan**: `docs/plans/T-216c-fix-fill-price-retry-exception.md` (APPROVED single-pass with 15 WG verbatim).
+- **Commits**: feat `b9fed0b` directly on master (process slip — branch step skipped; resulting state functionally equivalent to ff-merge); chore close pending.
+
+### 7-bug operator audit (2026-05-08) — progress tracker
+
+| # | Title | Severity | Status |
+|---|-------|----------|--------|
+| 1 | Paper mode silent dispatcher kill | CRITICAL | DONE — `fix(T-218c-paper-dispatcher-skip)` 2026-05-08 |
+| 2 | Signal-loss between dedup-check and publish | HIGH | DEFERRED → NEW T-537 outbox pattern (combined with Item 7) |
+| 3 | position_state row identity could mismatch trade_id | HIGH | NEXT — `fix(T-217c-position-state-trade-id-guard)` |
+| 4 | Fill-price uses last-trade close (not VWAP) | MEDIUM | DEFERRED → NEW T-538 VWAP fill price |
+| 5 | Fill-price-fetch retry exception swallowing | HIGH | DONE — `fix(T-216c-fill-price-retry-exception)` 2026-05-09 |
+| 6 | Reserved (audit detail not yet pulled) | TBD | TBD |
+| 7 | Outbox-publish reliability gap | HIGH | DEFERRED → NEW T-537 outbox pattern (combined with Item 2) |
+
+Operator-chosen fix order (post-Item-1): Item 5 (DONE this commit) → Item 3 (`fix(T-217c-position-state-trade-id-guard)` next) → NEW T-537 + T-538.
+
+### Process slip note (2026-05-09)
+
+`fix(T-216c)` feat commit was made directly on master (`b9fed0b`) instead of on a `fix/T-216c-fill-price-retry-exception` branch per CLAUDE.md branching policy. Resulting state on master is functionally equivalent to ff-merge from branch (master HEAD pre-commit was `1321d0a` from T-218c chore; T-216c is the only delta on top). Future fix() tasks should restore the branch step explicitly. No corrective action needed for this commit; flagged here for next-session awareness only.
+
+### Next session pickup
+
+- **Next critical fix**: `fix(T-217c-position-state-trade-id-guard)` for Item 3 (position_state row identity could mismatch trade_id). Plan stage → plan-reviewer → implement → 4 gates → ff-merge.
+- **After T-217c**: NEW T-537 outbox pattern (Items 2 + 7) + NEW T-538 VWAP fill price (Item 4). Both are full F5 tasks (will count toward F5 phase counter; numbering depends on TASKS.md insertion order and operator OQ at plan time).
+- **F5 numbered tasks remaining** (separate from fixes): T-516a2 (UI routes for paper trades), T-516b (shadow variants section), T-518..T-521 (existing F5 backend polish), T-524..T-536 (pre-live operational hardening per ADR-0011), T-522 close-out + Live-ready sign-off.
+
 ## 2026-05-08 (late-night XI — fix(T-218c-paper-dispatcher-skip) shipped; H-031 NEW hazard + L-018 NEW lesson + T-218b retrospective correction; 7-bug operator audit Item 1 of 7 done)
 
 **F5 phase counter UNCHANGED at 26/47** (fix() commits don't count toward F5 numbered task counter; mirror `fix(T-218b)` + `fix(T-511b2a)` precedent).

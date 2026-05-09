@@ -2833,6 +2833,16 @@ H-numbering note: H-027/H-028/H-029 are reserved for ADR-0011 anticipated hazard
 
 H-031 numbering note: T-218b shipped H-030 (open-fill must not decrement remaining_qty) on 2026-05-08 LIVE-mode-protective; T-218c addresses the PAPER-mode separate kill-path. T-218b plan claim "bug dormant in paper mode" was incorrect — paper had its own (different) crash path documented here; see L-018 active control on "dormant in mode" claims requiring code-citation evidence.
 
+### H-032 — Retry loop over external adapter call must catch transient exceptions
+
+**Context.** `services/execution/app/placement.py` step 6 calls `adapter.get_fill_price(symbol, order_id)` inside `for attempt in range(fill_price_retry_attempts)` retry loop. The `await` site originally had no try/except — when adapter raised `NetworkTimeout` / `RateLimitError` / `AuthError` from underlying HTTP call (Bybit `/v5/execution/list` per `bybit_v5/adapter.py:273-296`) or asyncpg errors (paper `select_paper_execution_price_by_order_id` per `paper/adapter.py:1299-1309`), the exception bypassed the retry counter, the `await asyncio.sleep(backoff)` step, AND the post-loop `if fill_price is None: DLQ + FillPriceUnresolvedError` contract. Exception propagated up to `bus.subscribe()` framework-level swallow with minimal operator-facing context. Operator-discovered shipped-code bug 2026-05-08; fix shipped via `fix(T-216c-fill-price-retry-exception)` precedent 2026-05-09.
+
+**Policy.** Any retry loop over an external adapter call MUST wrap the `await` site with try/except matching the same error taxonomy as non-retried sibling calls in the same handler. For `placement.py` get_fill_price block: `(AuthError, NetworkTimeout, RateLimitError)` mirroring step 5 `place_market_order` catch (per `§11.3` error taxonomy). Exception treated as None: warn-log key `execution.get_fill_price_transient_error` + retry counter advances + sleep on remaining attempts + post-loop DLQ + `FillPriceUnresolvedError` contract preserved.
+
+**Test.** `test_handler_retries_when_get_fill_price_raises_NetworkTimeout` + `test_handler_retries_when_get_fill_price_raises_RateLimitError` + `test_handler_retries_when_get_fill_price_raises_AuthError` + `test_fill_price_unresolved_after_all_exception_attempts_publishes_to_dlq_and_raises`.
+
+H-032 numbering note: companion to H-030 (open-fill remaining_qty contract) + H-031 (paper adapter must not feed live ExecutionDispatcher). Together H-030/H-031/H-032 form the execution-service operational hardening cluster surfaced via operator audit 2026-05-08/05-09.
+
 ---
 
 ## 21. Glossary
