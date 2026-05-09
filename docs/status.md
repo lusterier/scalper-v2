@@ -1,5 +1,47 @@
 # Session status
 
+## 2026-05-09 (late-night XVII — T-537b signal-gateway outbox integration shipped; F5 counter advances 28/49 → 29/50; T-537 cluster 3 of 3 done; audit Items 2 + 7 fully RESOLVED; NEW H-034 hazard)
+
+**F5 phase counter advances 28/49 → 29/50** per WG#7 (numerator+1 for shipped T-537b, denominator+1 for new T-537b numbered task). T-537 cluster (T-537a1 + T-537a2 + T-537b) FULLY COMPLETE.
+
+### T-537b — signal-gateway outbox integration (closes audit Items 2 + 7)
+
+- **Origin**: final task of T-537 cluster L-007 split per operator decision 2026-05-09. Wires T-537a1 base infra + T-537a2 relay worker into signal-gateway lifespan + collapses webhook publish path through outbox.
+- **All 4 review gates passed**: plan-reviewer pass-2 APPROVE 2026-05-09 (after pass-1 REVISE 0 BLOCKERs+2 CONCERNs: test_webhook_e2e.py timing post-relay + docs/modules/signal_gateway.md drift; final 5-item Write-time guidance) → drift-checker ON TRACK → brief-reviewer SHIP → math-validator VERIFIED — out of scope.
+- **Operator decisions (4 OQs)**: OQ-1 = Single tx (atomic state-and-publish-intent); OQ-2 = Full removal of direct bus.publish; OQ-3 = NEW H-034 hazard; OQ-4 = Testcontainer PG + mocked NATS.
+- **Webhook refactor**: Step 11 + 12 collapse into `async with pool.acquire() as conn, conn.transaction():` wrapping insert_signal + insert_outbox_event. Direct bus.publish('signals.validated') REMOVED. Single error path on tx fail.
+- **Lifespan**: OutboxRelayWorker hosted as asyncio.create_task; H-034 shutdown ordering pinned (stop → bus.close → pool.close); `_ = relay_task` RUF006 dance.
+- **Settings**: `Settings.outbox_relay: OutboxRelaySettings = Field(default_factory=...)` nested env routing.
+- **Tests**: 3 NEW unit (validated path does NOT call bus.publish + same-tx via spy + tx-rollback) + 1 NEW lifespan H-034 ordering test (exact call ordering pin) + 2 NEW testcontainer-gated e2e (split into 2 to avoid TestClient cross-loop asyncio quirk per WG#3); 1 obsolete publish-failure test REMOVED. Existing test_webhook_e2e.py timeout 5.0 → 10.0 per WG#4 with explicit T-537b comment.
+- **NEW H-034 hazard** in BRIEF §20: outbox relay shutdown ordering must be `stop()` → `bus.close()` → `pool.close()` (in-flight tx needs bus + pool alive until cancellation propagates). Test pin via shared call_order list + exact equality assertion.
+- **BRIEF §9.1 step 12 reword**: removed direct publish reference, cites T-537 outbox routing.
+- **docs/modules/signal_gateway.md** 4 sites updated per pass-1 CONCERN #2 fix.
+- **Repo baseline 2244 → 2249** (+5 net new: 3 unit + 1 lifespan + 2 e2e). 0 regressions.
+- **§0.3 LOC**: net **-14 src LOC** (refactor reduces) + ~250 tests = ~250 total.
+- **Per L-021 active control**: testcontainer tests verified locally with `POSTGRES_TEST_DSN` BEFORE push (closes L-008 sub-gap that motivated L-021).
+- **Plan**: `docs/plans/T-537b-signal-gateway-outbox-integration.md` (APPROVED pass-2 with 5 WG verbatim).
+- **Commits**: feat `687ec82` on `feat/T-537b-signal-gateway-outbox-integration`; chore close pending.
+
+### 7-bug operator audit (2026-05-08) — final progress tracker
+
+| # | Title | Severity | Status |
+|---|-------|----------|--------|
+| 1 | Paper mode silent dispatcher kill | CRITICAL | DONE — `fix(T-218c-paper-dispatcher-skip)` 2026-05-08 |
+| 2 | Signal-loss between dedup-check and publish | HIGH | **DONE — T-537b 2026-05-09 (cluster: T-537a1 + T-537a2 + T-537b)** |
+| 3 | position_state row identity could mismatch trade_id | HIGH | DONE — `fix(T-217c-position-state-trade-id-guard)` 2026-05-09 |
+| 4 | Fill-price uses last-trade close (not VWAP) | MEDIUM | DEFERRED → NEW T-538 VWAP fill price |
+| 5 | Fill-price-fetch retry exception swallowing | HIGH | DONE — `fix(T-216c-fill-price-retry-exception)` 2026-05-09 |
+| 6 | Reserved (audit detail not yet pulled) | TBD | TBD |
+| 7 | Outbox-publish reliability gap | HIGH | **DONE — T-537b 2026-05-09 (same cluster)** |
+
+5 of 7 audit items fully DONE (Items 1 + 2 + 3 + 5 + 7); Item 4 → NEW T-538 (VWAP) deferred; Item 6 detail still pending operator. Audit cluster H-030..H-034 fully shipped.
+
+### Next session pickup
+
+- **NEW T-538 VWAP fill price** (Item 4; replace last-trade-close with VWAP across exec list).
+- **Item 6 detail pull** still pending — operator to surface.
+- **F5 numbered tasks remaining**: T-516a2 (UI routes for paper trades), T-516b (shadow variants section), T-518..T-521 (existing F5 backend polish), T-524..T-536 (pre-live operational hardening per ADR-0011), T-522 close-out + Live-ready sign-off.
+
 ## 2026-05-09 (late-night XVI — fix(T-537a1-sql-typecast) shipped; ci-full unblock; NEW L-021 lesson; F5 counter UNCHANGED 28/49)
 
 **F5 phase counter UNCHANGED at 28/49** (fix() commits don't count toward F5 numbered task counter; mirror `fix(T-218b)` + `fix(T-218c)` + `fix(T-216c)` + `fix(T-217c)` + `fix(T-511b2a)` precedent).

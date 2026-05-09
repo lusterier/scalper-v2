@@ -1440,7 +1440,7 @@ Each subsection describes one service: purpose, interfaces, internal structure, 
 5. Validate against `SignalEnvelope` Pydantic model (required fields: `symbol`, `action`, `source`, `idempotency_key`).
 6. Resolve symbol via `symbol_map` query (cached in-process for 60s).
 7. Write to `signals` with `ingestion_status='validated'` (or `'invalid'`/`'duplicate'`).
-8. Publish to `signals.raw` (audit) and `signals.validated` (for consumers).
+8. Publish to `signals.raw` (audit; direct `bus.publish` best-effort) and `signals.validated` via outbox per T-537 cluster (relay worker polls `outbox_events` and publishes; signal-gateway no longer publishes `signals.validated` directly — `insert_outbox_event` runs in the same tx as `insert_signal` so state-and-publish-intent are atomic per audit Items 2 + 7 fix).
 9. Respond 200 with signal ID.
 
 **Key design details:**
@@ -2842,6 +2842,22 @@ H-numbering note: H-027/H-028/H-029 are reserved for ADR-0011 anticipated hazard
 **Test.** `test_lifespan_does_not_create_dispatcher_task_for_paper_bots` + `test_build_adapter_pool_populates_paper_bot_ids`.
 
 H-031 numbering note: T-218b shipped H-030 (open-fill must not decrement remaining_qty) on 2026-05-08 LIVE-mode-protective; T-218c addresses the PAPER-mode separate kill-path. T-218b plan claim "bug dormant in paper mode" was incorrect — paper had its own (different) crash path documented here; see L-018 active control on "dormant in mode" claims requiring code-citation evidence.
+
+### H-034 — Outbox relay shutdown ordering: stop() → bus.close() → pool.close()
+
+**Context.** `OutboxRelayWorker` (T-537a2) holds an open DB tx during a batch publish (Variant B per T-537a2 plan §"Transaction & lock semantics"). The tx contains `select_pending_outbox_events` (FOR UPDATE SKIP LOCKED locks held through the publish + mark cycle), one or more `bus.publish` calls, and the mark_published / mark_failed writes that commit at batch tx exit. If the service lifespan tears down `bus` BEFORE `worker.stop()` cancels the relay task, an in-flight `bus.publish` raises `ConnectionClosedError` mid-batch → the per-event try/except catches it, marks the event failed → on next relay poll the event would be retried. Worse: if `pool` closes before `worker.stop()`, the in-flight tx loses its connection mid-mark → asyncpg `InterfaceError: connection is closed` propagates uncaught → tx is left in an indeterminate state. T-537b first shipped the wiring; precedent enforced via `services/signal_gateway/app/main.py` lifespan.
+
+**Policy.** Service lifespan teardown order MUST be:
+
+  1. `await worker.stop()` — cancels relay task; awaits termination; in-flight tx rolls back via CancelledError propagation.
+  2. `await bus.close()` — NATS unsubscribe + connection close. Safe AFTER stop because relay's bus.publish calls have completed (or rolled back).
+  3. `await pool.close()` — asyncpg pool drain. Safe AFTER bus.close because relay no longer holds a conn.
+
+For services hosting multiple outbox relays (future T-537c execution + T-537d strategy-engine, currently deferred), all relay `worker.stop()` calls run BEFORE bus.close.
+
+**Test.** `test_lifespan_shutdown_order_stops_relay_before_bus_close` (`services/signal_gateway/tests/test_app_factory.py`) — patches `bus.close` + `pool.close` + `OutboxRelayWorker.stop` with side_effect lambdas appending labels to a shared list; asserts `call_order == ["worker.stop", "bus.close", "pool.close"]` exact equality (NOT just presence).
+
+H-034 numbering note: companion to H-030 (open-fill remaining_qty) + H-031 (paper adapter must not feed live ExecutionDispatcher) + H-032 (retry loop exception coverage) + H-033 (composite-PK position_state UPDATE trade_id guard). H-030..H-034 all derive from operator audit 2026-05-08/05-09; H-034 specifically closes audit Items 2 + 7 (signal-loss publish-after-dedup + outbox-publish reliability gap) by enforcing relay-host shutdown contract.
 
 ### H-032 — Retry loop over external adapter call must catch transient exceptions
 

@@ -123,9 +123,9 @@ middleware: trace_scope (T-015a) → RateLimitMiddleware (T-015b2a) → handler
   8.  bind_correlation(idempotency_key)
   9.  dedup.check_and_record                  → 202 duplicate (DB row 'duplicate')
   10. symbol_cache.resolve                    → 422 symbol_unknown (DB row 'invalid')
-  11. insert_signal(ingestion_status=validated)  → 500 internal on DB fail
-  12. publish signals.validated               → 500 internal on publish fail
-  13. 200 {"signal_id": int}
+  11. insert_signal(ingestion_status=validated) + insert_outbox_event in single tx
+                                              → 500 internal on tx fail (T-537b)
+  12. 200 {"signal_id": int}; outbox relay handles signals.validated NATS publish post-commit
 ```
 
 Diffs vs the §9.1 numbered list:
@@ -183,7 +183,7 @@ values fail at body-construction time, never reach the wire.
 | `signal_received`  | `trading` | `trace_id`                             | `source_ip`                                                                          |
 | `signal_rejected`  | `trading` | `trace_id` (+ `correlation_id` post-validate) | `reason ∈ {hmac_invalid, rate_limit, invalid_json, duplicate, validation_error, symbol_unknown}` + reason-specific (`source_ip`, `idempotency_key`, `symbol`, `validation_errors[]`) |
 | `signal_validated` | `trading` | `trace_id` + `correlation_id`          | `signal_id`, `symbol`, `original_symbol`, `action`, `source`, `idempotency_key`      |
-| `webhook_error`    | `system`  | `trace_id` (+ `correlation_id` if bound) | `error_class ∈ {publish_raw_failed, publish_validated_failed, db_insert_failed, unhandled}`, `error` (exc str) |
+| `webhook_error`    | `system`  | `trace_id` (+ `correlation_id` if bound) | `error_class ∈ {publish_raw_failed, db_insert_failed, unhandled}`, `error` (exc str). T-537b: `publish_validated_failed` removed — Step 11+12 collapsed into single tx; outbox relay owns post-commit publish failures via attempt_count/last_error retry semantics. |
 
 `trace_id` is bound by the T-015a `bind_trace` HTTP middleware on every
 request; `correlation_id = idempotency_key` is bound by the handler
@@ -263,10 +263,12 @@ window and 60 s of rate-limit state never breaches the documented limit.
   blocked write surfaces to the handler as a 500 internal.
 - **NATS disconnects mid-flight.** `NatsClient` enters `DISCONNECTED`,
   auto-reconnect kicks in (`reconnect_time_wait=2 s`); `/ready` flips to
-  `503` until reconnected. Publish failures during the disconnect window
-  surface as 500 internal on `signals.validated` (publishing failure is
-  a partial-state condition — DB row already written; caller re-sends)
-  or as a logged best-effort skip on `signals.raw`.
+  `503` until reconnected. T-537b: `signals.validated` publish failures
+  during the disconnect window are NO longer 500 errors — the row is
+  durably stored in `outbox_events` (committed in same tx as `signals`),
+  and the relay worker retries with exponential backoff once NATS
+  reconnects. `signals.raw` publish failures still surface as a logged
+  best-effort skip (audit stream is still direct-publish per §9.1 step 8).
 - **Slow downstream consumer.** Irrelevant. JetStream decouples publish
   latency from consumer speed; publish returns when the stream has durably
   stored the message.
@@ -345,11 +347,14 @@ window and 60 s of rate-limit state never breaches the documented limit.
 - `test_webhook_full_round_trip`: signed POST → 200 + `signal_id`,
   `signals` row asserted (status `validated`, canonical/original symbol,
   payload migrated), `signals.validated` envelope received via a
-  pre-lifespan `NatsClient.subscribe`, `expires_at - received_at ==
-  timedelta(seconds=120)` exact.
+  pre-lifespan `NatsClient.subscribe` after relay polls + publishes
+  (T-537b: post-relay delivery; `_NATS_DELIVERY_TIMEOUT_SECONDS = 10.0`
+  defensive cushion vs ~1.5s typical = poll_interval_s + publish + mark),
+  `expires_at - received_at == timedelta(seconds=120)` exact.
 - `test_webhook_duplicate_round_trip`: same `idempotency_key` twice →
   first 200, second 202 `{status: duplicate}`, two `signals` rows, only
-  one `signals.validated` publish landed.
+  one `signals.validated` envelope received from relay (post-T-537b:
+  duplicate path doesn't write outbox row, so relay never publishes for it).
 - T-016 will set the env vars under CI-full via testcontainers.
 
 ## Open questions
