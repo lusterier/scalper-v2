@@ -403,6 +403,67 @@ async def test_handler_dlq_publish_failure_still_raises_FillPriceUnresolvedError
     assert "execution.fill_price_unresolved" in log_keys
 
 
+async def test_handler_retries_when_get_fill_price_raises_NetworkTimeout() -> None:
+    adapter = _ok_adapter()
+    adapter.get_fill_price = AsyncMock(
+        side_effect=[NetworkTimeout("conn timeout"), Decimal("100.0")]
+    )
+    handler, _, bus, logger = _build(adapter=adapter, attempts=3)
+    await handler(_envelope())
+    assert adapter.get_fill_price.await_count == 2
+    bus.publish.assert_not_called()
+    warn_keys = [call.args[0] for call in logger.warning.call_args_list]
+    assert warn_keys.count("execution.get_fill_price_transient_error") == 1
+
+
+async def test_handler_retries_when_get_fill_price_raises_RateLimitError() -> None:
+    adapter = _ok_adapter()
+    adapter.get_fill_price = AsyncMock(
+        side_effect=[RateLimitError("429"), RateLimitError("429"), Decimal("100.0")]
+    )
+    handler, _, bus, logger = _build(adapter=adapter, attempts=3)
+    await handler(_envelope())
+    assert adapter.get_fill_price.await_count == 3
+    bus.publish.assert_not_called()
+    warn_keys = [call.args[0] for call in logger.warning.call_args_list]
+    assert warn_keys.count("execution.get_fill_price_transient_error") == 2
+
+
+async def test_handler_retries_when_get_fill_price_raises_AuthError() -> None:
+    adapter = _ok_adapter()
+    adapter.get_fill_price = AsyncMock(side_effect=[AuthError("bad sig"), Decimal("100.0")])
+    handler, _, bus, logger = _build(adapter=adapter, attempts=3)
+    await handler(_envelope())
+    assert adapter.get_fill_price.await_count == 2
+    bus.publish.assert_not_called()
+    warn_keys = [call.args[0] for call in logger.warning.call_args_list]
+    assert warn_keys.count("execution.get_fill_price_transient_error") == 1
+
+
+async def test_fill_price_unresolved_after_all_exception_attempts_publishes_to_dlq_and_raises() -> (
+    None
+):
+    adapter = _ok_adapter()
+    adapter.get_fill_price = AsyncMock(
+        side_effect=[
+            NetworkTimeout("t1"),
+            NetworkTimeout("t2"),
+            NetworkTimeout("t3"),
+        ]
+    )
+    handler, _, bus, logger = _build(adapter=adapter, attempts=3)
+    with pytest.raises(FillPriceUnresolvedError):
+        await handler(_envelope())
+    assert adapter.get_fill_price.await_count == 3
+    bus.publish.assert_awaited_once()
+    call = bus.publish.await_args
+    assert call.args[0] == "orders.dlq.alpha"
+    warn_keys = [call.args[0] for call in logger.warning.call_args_list]
+    assert warn_keys.count("execution.get_fill_price_transient_error") == 3
+    error_keys = [call.args[0] for call in logger.error.call_args_list]
+    assert error_keys.count("execution.fill_price_unresolved") == 1
+
+
 # ---------------------------------------------------------------------------
 # set_leverage error path (1 test)
 # ---------------------------------------------------------------------------
