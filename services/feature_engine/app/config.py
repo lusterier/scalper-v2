@@ -54,6 +54,18 @@ class Settings(BaseSettings):
     # indicators.yaml` to produce the FeaturePipeline registry.
     feature_engine_symbols: str = ""
 
+    # T-518 — Feature auto-backfill (BRIEF §9.3:1525-1528, ADR-0012).
+    # Historical OHLC window for auto-backfill scheduler on lifespan
+    # startup. Default 30d per OQ-3=A 2026-05-12; §N9 configurable per
+    # L-001 active control.
+    backfill_window_days: int = 30
+
+    # T-518 — RESERVED for future chunking refactor (T-518 does NOT enforce
+    # this; existing fetch_ohlc_range fetches the entire window in one call).
+    # Setting exposed for future-proofing when window_days > 90 or symbol
+    # counts > 50 surface compute pressure. §N9 configurable per L-001.
+    backfill_max_batch_size: int = 5000
+
     @property
     def symbols(self) -> list[str]:
         """Parsed ``FEATURE_ENGINE_SYMBOLS`` env var as stripped non-empty list.

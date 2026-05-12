@@ -153,3 +153,122 @@ async def test_register_jsonb_codec_calls_set_type_codec() -> None:
         decoder=_json.loads,
         schema="pg_catalog",
     )
+
+
+# ---------------------------------------------------------------------------
+# T-518 — auto-backfill lifespan integration (WG#4 ordering pin)
+# ---------------------------------------------------------------------------
+
+
+def test_lifespan_invokes_schedule_auto_backfills_after_consume_start(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WG#4 — schedule_auto_backfills MUST be called AFTER pipeline.start_consuming.
+
+    Asserts ordering via tracker side-effect on both mocks. Without this
+    pin, code-author could accidentally swap the order (e.g., schedule
+    auto-backfills before warmup) and silently violate the load-bearing
+    sequence in main.py:155-180.
+    """
+    call_order: list[str] = []
+
+    schedule_mock = AsyncMock(side_effect=lambda **_: call_order.append("schedule"))
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.schedule_auto_backfills",
+        schedule_mock,
+    )
+
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.create_pool",
+        AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.NatsClient",
+        MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.build_features",
+        lambda symbols: {},
+    )
+
+    # Patch FeaturePipeline so start_consuming logs the call before schedule.
+    pipeline_mock = MagicMock()
+    pipeline_mock.acquire_handles = MagicMock()
+    pipeline_mock.start_consuming = AsyncMock(
+        side_effect=lambda: call_order.append("start_consuming"),
+    )
+    pipeline_mock.stop = AsyncMock()
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.FeaturePipeline",
+        MagicMock(return_value=pipeline_mock),
+    )
+
+    from services.feature_engine.app.main import create_app
+
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+
+    schedule_mock.assert_awaited_once()
+    # Ordering pin: start_consuming MUST precede schedule_auto_backfills.
+    assert call_order == ["start_consuming", "schedule"]
+
+
+def test_lifespan_shutdown_cancels_pending_auto_backfill_tasks(
+    settings: object,
+    mock_pool: MagicMock,
+    mock_bus: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-518 shutdown — pending auto-backfill tasks get cancelled before pipeline.stop.
+
+    Mocks schedule_auto_backfills to inject a slow task into background_tasks;
+    asserts task.cancel() is called during shutdown via the lifespan finally
+    block. Pool/bus close is implicit via existing test_lifespan_attaches…
+    fixture coverage.
+    """
+    import asyncio
+
+    cancelled = {"value": False}
+
+    async def slow_task() -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled["value"] = True
+            raise
+
+    async def fake_schedule(**kwargs: object) -> int:
+        bg = kwargs["background_tasks"]
+        assert isinstance(bg, set)
+        task = asyncio.create_task(slow_task())
+        bg.add(task)
+        return 1
+
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.schedule_auto_backfills",
+        AsyncMock(side_effect=fake_schedule),
+    )
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.create_pool",
+        AsyncMock(return_value=mock_pool),
+    )
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.NatsClient",
+        MagicMock(return_value=mock_bus),
+    )
+    monkeypatch.setattr(
+        "services.feature_engine.app.main.build_features",
+        lambda symbols: {},
+    )
+
+    from services.feature_engine.app.main import create_app
+
+    app = create_app(settings=settings)  # type: ignore[arg-type]
+    with TestClient(app):
+        pass
+
+    assert cancelled["value"] is True

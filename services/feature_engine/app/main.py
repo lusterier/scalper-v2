@@ -62,6 +62,7 @@ Shutdown order (reverse, also load-bearing):
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -78,6 +79,7 @@ from packages.observability import (
     make_registry,
 )
 
+from .auto_backfill import schedule_auto_backfills
 from .config import Settings
 from .constants import SOURCE_BINANCE
 from .features_registry import build_features
@@ -163,17 +165,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         await pipeline.start_consuming()
 
+        # 9.5. T-518 — auto-backfill NEW features detected via YAML-diff vs
+        # `feature_registry_seen` NATS KV bucket (ADR-0012). Fire-and-forget;
+        # tasks tracked in app.state.auto_backfill_tasks for shutdown cancel.
+        # Runs AFTER start_consuming so live-candle processing isn't blocked.
+        auto_backfill_tasks: set[asyncio.Task[None]] = set()
+        await schedule_auto_backfills(
+            pool=pool,
+            bus=bus,
+            features_by_key=features_by_key,
+            window_days=settings.backfill_window_days,
+            source=SOURCE_BINANCE,
+            logger=logger,
+            background_tasks=auto_backfill_tasks,
+        )
+
         # 10. State attach.
         app.state.pool = pool
         app.state.bus = bus
         app.state.buffer_registry = buffer_registry
         app.state.pipeline = pipeline
+        app.state.auto_backfill_tasks = auto_backfill_tasks
 
         logger.info("service_started", http_port=settings.http_port)
         try:
             yield
         finally:
             # 11→12→13. Reverse shutdown.
+            # T-518: cancel any in-flight auto-backfill tasks BEFORE
+            # pipeline.stop() — pool/bus still open for already-running task
+            # body cleanup (INSERT ON CONFLICT atomic per asyncpg).
+            for task in list(auto_backfill_tasks):
+                task.cancel()
+            if auto_backfill_tasks:
+                await asyncio.gather(*auto_backfill_tasks, return_exceptions=True)
             await pipeline.stop()
             await bus.close()
             await pool.close()

@@ -99,3 +99,32 @@ def test_feature_engine_symbols_split_strip_drops_empty_fragments(
     monkeypatch.setenv("FEATURE_ENGINE_SYMBOLS", env_value)
     s = Settings()  # type: ignore[call-arg]
     assert s.symbols == expected
+
+
+# ---------------------------------------------------------------------------
+# T-518 — backfill_window_days + backfill_max_batch_size Settings
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_window_days_default_30(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OQ-3=A 2026-05-12 — default 30d back per BRIEF §9.3 + §N9 L-001."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
+    monkeypatch.delenv("BACKFILL_WINDOW_DAYS", raising=False)
+    s = Settings()  # type: ignore[call-arg]
+    assert s.backfill_window_days == 30
+
+
+def test_backfill_max_batch_size_default_5000_reserved(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RESERVED setting per WG#2 — default 5000 exposed but not enforced in T-518."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
+    monkeypatch.delenv("BACKFILL_MAX_BATCH_SIZE", raising=False)
+    s = Settings()  # type: ignore[call-arg]
+    assert s.backfill_max_batch_size == 5000
+
+
+def test_backfill_window_days_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """L-001 active control — env-overridable window."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
+    monkeypatch.setenv("BACKFILL_WINDOW_DAYS", "7")
+    s = Settings()  # type: ignore[call-arg]
+    assert s.backfill_window_days == 7

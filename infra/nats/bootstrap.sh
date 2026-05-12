@@ -77,11 +77,13 @@ for f in "$STREAMS_DIR"/*.json; do
 done
 
 # KV buckets — inline because `nats kv add` has no --config flag.
-# §8.2 defines this closed three-bucket set; if a fourth ever lands,
-# that is an explicit scope change (TASKS task or ADR), which is the
-# right gate to revisit the inline-vs-filesystem decision.
+# §8.2 defines the canonical 3-bucket set; the 4th bucket below
+# (feature_registry_seen) lands per ADR-0012 (T-518 plan-stage
+# amendment of §8.2 per BRIEF §6.7). Inline-vs-filesystem decision
+# deferred to N>=6 per ADR-0012 trade-offs.
 apply_kv_bucket config_runtime  0    1 "hot config per bot (§2.1, §8.2)"
 apply_kv_bucket rate_limits     10s  1 "cross-bot rate limiter state, 10s TTL (§8.2)"
 apply_kv_bucket feature_latest  0    1 "latest feature value per symbol (§8.2)"
+apply_kv_bucket feature_registry_seen 0 1 "first-seen ts per auto-backfilled feature_name (ADR-0012, T-518)"
 
 echo "nats-init: topology applied"
