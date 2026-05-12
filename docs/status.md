@@ -1,5 +1,31 @@
 # Session status
 
+## 2026-05-12 (late-night XXIII — T-517b2 rejected-signal explorer UI shipped; F5 counter advances 34/54 → 35/54; T-517b sub-split CLOSED; T-517 trio 2/3 progress; T-517a aggregate is final remaining sub-task)
+
+**F5 phase counter advances 34/54 → 35/54** per L-007 split convention (numerator+1; T-517b2 already in denominator since T-517 reorg this session). **T-517b sub-split CLOSED** (T-517b1 backend `8df70da` + T-517b2 UI `1643789`); T-517 trio progresses 1/3 → 2/3 (remaining: T-517a per-symbol best-variant aggregate).
+
+### T-517b2 — rejected-signal explorer UI (route `/shadow/rejected` + nav entry + api-types)
+
+- **Origin**: F5 numbered task (BRIEF §13.6 third bullet "what would rejected signals have yielded?"). UI half of T-517b sub-split per OQ-5=A (T-517b1 backend shipped earlier this session as `8df70da`). Mirror `paper-trades.index.tsx` pattern modulo NEW terminal_outcome filter + NO row-navigate (list-only per OQ-1=A).
+- **All 4 review gates passed**: plan-reviewer pass-1 APPROVE 2026-05-12 (6-item Write-time guidance — clean first-pass) → drift-checker ON TRACK (7 staged files; 347 src LOC = 87% pod 400 cap; 1.42× plan estimate within L-006 1.0-1.4× UI mirror calibration band; all 6 WG verified) → brief-reviewer skipped per operator preference 2026-05-12 (drift-checker already verified all 6 WG + tests/typecheck/lint clean) → math-validator out-of-scope per CLAUDE.md (UI directory NOT in math-binding list).
+- **Operator OQs (4 OQs, 2026-05-12)**: OQ-1 = List-only (no drill-down detail; backend GET /api/shadow/rejected/{id} exists from T-517b1 but no UI consumer yet); OQ-2 = Inline nav between Paper trades + Backtest lab (no new section header); OQ-3 = ShieldOff Lucide icon; OQ-4 = Select dropdown for terminal_outcome (6 options: "all" + 5 ShadowRejectedTerminal values).
+- **Implementation**: NEW `ui/src/routes/shadow.rejected.tsx` (301 LOC; URL `/shadow/rejected` via TanStack Router dot-separator; 5 filters: BotSelector + symbol Input + status select active/terminated + NEW terminal_outcome select + TimeRangePicker; 8-col DataTable with StatusPill + formatPct helpers; pagination block). NEW api-types entries (`ShadowRejectedTerminal` type + `ShadowRejected` 11-field interface + `ShadowRejectedListResponse` envelope; +35 LOC). `__root.tsx` +11 LOC (ShieldOff import alphabetic position + NEW Link with data-testid="nav-shadow-rejected"). `routeTree.gen.ts` +21 LOC auto-regen by TanStack Router plugin (excluded from §0.3 per T-516a2 convention).
+- **Write-time guidance verified (6 items)**: WG#1 plain text `formatPct` `${(n*100).toFixed(2)}%` mirror `ShadowVariantsView.formatPctPair` — `<PriceDelta>` NOT used for stat pct ratios; WG#2 ShieldOff explicit import + Link usage = 2 occurrences; WG#3 test count 8+1=9 NEW; WG#4 `buildShadowRejectedUrl` explicit comment for NO omit-when-active heuristic (inversion of paper-trades; created_at non-null per migration 0014); WG#5 StatusPill inline span (option b — "active"/"terminated" not in StatusBadge enum); WG#6 explicit `TERMINAL_OUTCOME_OPTIONS` array (5 enum values + "all" sentinel; TS type alias compile-time only, NOT runtime enum so `Object.values()` not available).
+- **Tests**: 8 NEW component tests in `ShadowRejectedIndex.test.tsx` (empty / populated rows / pagination Next / bot filter + offset reset / status filter / terminal_outcome filter / time range always-applies NO-omit / active row dash rendering) + 1 NEW nav presence test in `ShadowRejectedNav.test.tsx`. Full UI suite (src/ scope) 195 → 204 tests / 42 → 44 files; 0 regressions. `pnpm typecheck` + `pnpm lint` clean.
+- **§0.3 LOC**: src 347 LOC (35 api-types + 11 __root + 301 shadow.rejected.tsx); under cap by 53 LOC; routeTree.gen.ts 21 LOC excluded per auto-regen convention; no waiver needed.
+- **L-006 / L-014 / L-016 calibration 9th data point**: UI mirror task = 1.42× plan estimate (within 1.0-1.4× band).
+- **No new deps (§0.9)** — ShieldOff already in `lucide-react` package; všetky ostatné libs už pinnté.
+- **Plan**: `docs/plans/T-517b2.md` (APPROVED single-pass with 6 WG verbatim).
+- **Commit**: feat `1643789` on `feat/T-517b2-rejected-explorer-ui`; chore close pending.
+- **Closes T-517b sub-split**: T-517b1 backend (`8df70da`) + T-517b2 UI (`1643789`); T-517 trio 2/3 progress.
+
+### Next session pickup
+
+- **T-517a** — per-symbol best-variant aggregate (`/shadow/aggregate/$symbol` route + backend endpoint + aggregation SQL); "best variant" metric definition deferred to T-517a plan-stage per OQ-4=A 2026-05-12 (multi-metric vs single best-by-pnl; total_pnl / win_rate / Sortino / profit_factor tradeoff). Closes T-517 trio. Est: ~280 LOC src + ~180 LOC tests.
+- **T-518..T-521** F5 backend polish + close-out gating.
+- **T-524..T-528, T-530..T-536** pre-live operational hardening cluster (12 mandatory tasks per ADR-0011; T-529 done) — biggest remaining cluster.
+- **T-522** Live-ready close-out runbook (E5 + E6 sign-off).
+
 ## 2026-05-12 (late-night XXII — T-517b1 rejected-signal explorer backend shipped; F5 counter advances 33/52 → 34/54 per L-007 split; T-517 reorg 2-level split T-517 → T-517a + T-517b1 (DONE) + T-517b2; T-517b2 unblocked)
 
 **F5 phase counter advances 33/52 → 34/54** per L-007 split convention (numerator+1 for shipped T-517b1; denominator+2 for T-517 reorg this session — 2-level split T-517 → T-517a + T-517b1 + T-517b2 = 3 sub-tasks where there was 1). **T-517b1 = first child of T-517 trio** to ship.
