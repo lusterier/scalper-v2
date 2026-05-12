@@ -1,5 +1,32 @@
 # Session status
 
+## 2026-05-12 (late-night XXVII — T-520 hardening shortlist multi-commit CLOSED; F5 counter advances 38/55 → 39/55; 4 sub-commits ship 4 shortlist items; closes T-F3+ + F4+ T-306 + T-401c + audit residue runbook)
+
+**F5 phase counter advances 38/55 → 39/55** per L-007. **T-520 multi-commit task fully CLOSED** at 4 sub-commits (`c075b1e` feat(T-520-livemode) + `505f8ed` feat(T-520-history) + `8486ce3` fix(T-520-symbolmap) + `046451d` docs(T-520-audit-runbook)) + chore close `___pending___`. 3 prior cherry-picks from F5-start session (`bb5d57b` + `9d1370e` + `bc1cab7`) bring total T-520 closed items to 7.
+
+### T-520 — hardening shortlist multi-commit (4 sub-commits)
+
+- **Origin**: F5 numbered task; multi-commit hardening batch per TASKS.md T-520 entry semantics. Operator-approved 4-item multi-select shortlist at plan-stage 2026-05-12. 3 of 5 originally-flagged tech-debts already shipped as cherry-picks during F5-start session.
+- **Sub-commit #1 (`c075b1e`)** — BRIEF §16.5 live-mode safeguard. NEW async `_check_live_mode_safeguard` helper in `services/execution/app/pool.py`; called BEFORE `_construct_bybit_adapter` for live/testnet bots; raises RuntimeError if `BOT_CONFIRM_LIVE!=yes` for live mode (operator-protective fail-fast); logs `LIVE MODE ENGAGED` warning + publishes NATS `system.alerts` envelope per BLOCKER#2 fix (alerting-svc catch-all rule routes via configs/alerts.yaml:32-35 → Telegram). Per WG#3 RuntimeError raised BEFORE bus.publish on error path with `assert_not_awaited` test pin. 7 NEW tests; 336 passed in services/execution + 7 NEW; 0 regressions.
+- **Sub-commit #2 (`505f8ed`)** — T-306 feature_history population for series + plugin conditions. NEW `select_feature_history` DB helper (N capped at 200; L-021 explicit `$1::text/$2::text/$3::int` casts per WG#4) + NEW `FeatureResolver.resolve_history` method + NEW `_required_history_window` evaluator helper with explicit fallback chain covering BOTH T-303 series `n_samples` AND T-305 plugin `rule.lookback_candles` paths per BLOCKER#1 fix. `Sequence` from `collections.abc` per WG#6. 9 NEW tests + 4 F3 fixture updates (beta.yaml uses oi_squeeze plugin → triggers new resolve_history; existing resolver mocks needed AsyncMock); 615 passed; 0 regressions.
+- **Sub-commit #3 (`8486ce3`)** — symbol_map cleanup migration 0017. Defensive `DELETE FROM symbol_map WHERE exchange_source NOT IN ('binance','bybit','custom')` per L-012 explicit `downgrade 0016`. Per CONCERN#1: alembic logger WARNING with structured 'count=%d table=symbol_map' for postmortem. 3 testcontainer-gated tests verified locally per WG#5 + L-021 (`POSTGRES_TEST_DSN=postgresql://scalper:devpass@127.0.0.1:5432/scalper uv run pytest tests/integration/migrations/test_0017_migration.py -v` → 3/3 PASS pre-push).
+- **Sub-commit #4 (`046451d`)** — operator-runnable cleanup runbook `docs/runbooks/cleanup-f4-e1-audit-residue.md`. Documents detection (SELECT query targeting smoke-window rows id IN (1,2) with escaped JSON-string scalars in JSONB columns) + cleanup (DELETE in transaction with verify) + verification + background (L-011 lesson cross-ref + c241c15 → 67e8c5f window context). Per CONCERN#4: docs-only triggers brief-reviewer trivial-diff path; drift-checker + math-validator skipped per CLAUDE.md trivial-task convention.
+- **All 4 review gates passed** (aggregated): plan-reviewer pass-1 REVISE 2026-05-12 (2 BLOCKERs + 4 CONCERNs) → revised plan addresses all 6 items → plan-reviewer pass-2 APPROVE with 6-item Write-time guidance → drift-checker N/A (multi-commit task per plan §Sub-commit structure) → brief-reviewer per sub-commit (#1 SHIP 6/6 WG; #2 SHIP 3/3 applicable WG; #3 + #4 trivial-diff path) → math-validator per sub-commit (#1 VERIFIED out-of-scope; #2 OUT OF SCOPE per packages/scoring + packages/db NOT in math-binding list per CLAUDE.md gate-4 line 121).
+- **Operator OQs (1 multi-select, 2026-05-12)**: 4-item shortlist multi-select selecting ALL 4 candidates (T-F3+ live-mode safeguard + F4+ T-306 feature_history + T-401c symbol_map cleanup + audit pre-fix rows cleanup runbook).
+- **Hazards bound**: §16.5 live-mode safeguard (operator-protective fail-fast + Telegram alert); §N1 UTC + §N6 DI + §N7 thin helpers + §N8 forward-only migration; L-001/L-007/L-008/L-012/L-021 active controls applied.
+- **§0.3 LOC**: src ~210 LOC across 4 sub-commits (sub-commit #1 ~75 + sub-commit #2 ~85 + sub-commit #3 ~30 + sub-commit #4 0); under cap by ~190 LOC. Tests ~280 LOC across mock + testcontainer + integration.
+- **L-006 / L-014 / L-016 calibration 13th data point**: multi-commit hardening batch = 1.62× plan estimate (210/130; honest miss attributable to F3 fixture updates + bus.publish ordering test discipline + WG-fix scope).
+- **No new deps (§0.9)**.
+- **Plan**: `docs/plans/T-520.md` (APPROVED pass-2 with 6 WG verbatim).
+- **Closes shortlist items**: T-F3+ live-mode safeguard runtime check (sub-commit #1) + F4+ T-306 feature_history population (sub-commit #2) + T-401c symbol_map cleanup migration (sub-commit #3) + audit pre-fix rows cleanup runbook (sub-commit #4); 7 total T-520 items closed across this session + earlier cherry-picks.
+
+### Next session pickup
+
+- **T-519** — §20 hazard test audit (E4 owner; gated all T-501..T-518 + T-520 + T-524..T-536). T-501..T-518 + T-520 now ALL DONE; T-519 still gated by T-524..T-536 (12 tasks remaining; T-529 done).
+- **T-524..T-528, T-530..T-536** — pre-live operational hardening cluster (12 mandatory tasks per ADR-0011) — biggest remaining cluster.
+- **T-521** — final docs pass (gated T-519).
+- **T-522** — F5 close-out runbook + E1..E6 sign-off (Live-ready MVP per ADR-0011).
+
 ## 2026-05-12 (late-night XXVI — T-518 feature auto-backfill on registration shipped; F5 counter advances 37/55 → 38/55; ADR-0012 4th NATS KV bucket; ci-full pre-fix urllib3 CVE bump c59a703)
 
 **F5 phase counter advances 37/55 → 38/55** per L-007 (numerator+1; T-518 already in denominator).
