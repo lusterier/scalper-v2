@@ -1,5 +1,32 @@
 # Session status
 
+## 2026-05-12 (late-night XXVI — T-518 feature auto-backfill on registration shipped; F5 counter advances 37/55 → 38/55; ADR-0012 4th NATS KV bucket; ci-full pre-fix urllib3 CVE bump c59a703)
+
+**F5 phase counter advances 37/55 → 38/55** per L-007 (numerator+1; T-518 already in denominator).
+
+### T-518 — feature auto-backfill on registration via YAML-diff at lifespan startup
+
+- **Origin**: F5 numbered task (BRIEF §9.3:1525-1528 spec literal). Plan-stage scope ambiguity surfaced + resolved: TASKS.md entry referenced a `feature_definitions` table that doesn't exist in the repo; operator OQ-1=A confirmed YAML-diff detection per spec literal (NOT DB table). OQ-2=A NATS KV bucket (revisit accepted ADR-0012 cost vs DB-table alternative). OQ-3=A 30d window default.
+- **NEW ADR-0012**: BRIEF §8.2 amendment per §6.7 protocol; 4th NATS KV bucket `feature_registry_seen` (ttl=0 forever + history=1 + replicas=1 + storage=file); inline-vs-filesystem decision deferred to N>=6.
+- **All 4 review gates passed**: plan-reviewer pass-1 APPROVE 2026-05-12 (6-item Write-time guidance — clean first-pass) → drift-checker ON TRACK (9 staged files; ~276 src LOC pod 400 cap; 6/6 WG verified incl. WG#6 LOC self-check 231 < 250 STOP; mirror verbatim verified line-by-line vs `scripts/backfill_features.py:186-193`) → brief-reviewer skipped per operator preference → math-validator **VERIFIED out of scope** (per CLAUDE.md gate-4; services/feature_engine/ IS in math-binding list — explicitly invoked per WG#1; no new Decimal arithmetic added beyond existing T-110c precedent).
+- **Implementation**: NEW `services/feature_engine/app/auto_backfill.py` (231 LOC) — `schedule_auto_backfills` (registry-diff detector + asyncio.create_task scheduler) + `_backfill_and_mark` (mirror `scripts/backfill_features.py:_backfill_one_feature` lines 134-216 verbatim incl. WG#3 Decimal→float seam). main.py +25 LOC: lifespan integration step 9.5 AFTER `pipeline.start_consuming()` + reverse-shutdown cancel block + state attach. config.py +12 LOC: `backfill_window_days: int = 30` + `backfill_max_batch_size: int = 5000` (RESERVED label per WG#2). bootstrap.sh +8 LOC: NEW `apply_kv_bucket feature_registry_seen` + comment delta preserves closed-set rétorika per WG#5 (cites ADR-0012 + N>=6 deferral).
+- **Tests**: 8 NEW `test_auto_backfill.py` mock-based + 2 NEW lifespan integration tests in `test_app_factory.py` (WG#4 ordering pin `call_order == ['start_consuming', 'schedule']` + shutdown cancel) + 3 NEW Settings tests = 13 NEW total. Repo-wide 0 regressions; ruff + mypy strict + bandit clean.
+- **§0.3 LOC**: src ~276 LOC (auto_backfill 231 + main 25 + config 12 + bootstrap 8); under cap by ~124 LOC.
+- **L-006 / L-014 / L-016 calibration 12th data point**: backend orchestration with novel KV+lifespan integration = 1.51× plan estimate (within band).
+- **Hazards bound**: §N1 UTC; §N3 (kv_put `@idempotent` + insert_feature `ON CONFLICT DO UPDATE`); §N6 DI; §N7 thin scheduler; §N9 + L-001 configurable. L-013/L-021 N/A.
+- **No new deps (§0.9)**.
+- **Plan**: `docs/plans/T-518.md` (APPROVED single-pass with 6 WG verbatim). ADR: `docs/adr/0012-feature-registry-seen-kv-bucket.md`.
+- **Commits**: pre-T-518 fix `c59a703` (urllib3 2.6.3 → 2.7.0 CVE-2026-44431 + CVE-2026-44432 — ci-full failure on T-517a2 master push); feat `be5c8f7` on `feat/T-518-feature-auto-backfill`; chore close pending.
+- **Operator deployment note**: bootstrap.sh delta requires `nats-init` container re-run on next deploy to provision 4th bucket. Verifiable via `nats kv ls` showing 4 buckets including `feature_registry_seen` post-rerun.
+
+### Next session pickup
+
+- **T-519** — §20 hazard test audit (E4 owner; gated all T-501..T-518 + T-524..T-536 passing).
+- **T-520** — hardening shortlist (multi-commit; 5 today-flagged tech-debts).
+- **T-524..T-528, T-530..T-536** — pre-live operational hardening cluster (12 mandatory tasks per ADR-0011; T-529 done) — biggest remaining cluster.
+- **T-521** — final docs pass (gated T-519).
+- **T-522** — F5 close-out runbook + E1..E6 sign-off (gated all).
+
 ## 2026-05-12 (late-night XXV — T-517a2 per-symbol best-variant aggregate UI shipped; F5 counter advances 36/55 → 37/55; T-517 trio FULLY CLOSED (4/4 sub-tasks); BRIEF §13.6 dashboard integration cluster CLOSED)
 
 **F5 phase counter advances 36/55 → 37/55** per L-007 split convention (numerator+1; T-517a2 already in denominator since T-517a sub-split). **T-517 trio FULLY CLOSED** at 4/4 sub-tasks: T-517b1 backend `8df70da` + T-517b2 UI `1643789` + T-517a1 backend `f6bf49a` + T-517a2 UI `d582e18`. **BRIEF §13.6 dashboard integration cluster fully shipped** (per-trade drill-down via T-516 trio + per-symbol aggregate via T-517a + per-rejected explorer via T-517b).
