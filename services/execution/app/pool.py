@@ -35,10 +35,12 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from packages.core import BotId
+from packages.bus import MessageEnvelope
+from packages.core import BotId, CorrelationId
 from packages.db.queries.execution import select_active_bots
 from packages.exchange.bybit_v5 import BybitV5Adapter, BybitV5Client, BybitV5PrivateWs
 from packages.exchange.paper import PaperExchange
@@ -76,6 +78,12 @@ _BYBIT_TESTNET_WS_URL = "wss://stream-testnet.bybit.com/v5/private"
 _VALID_SLIPPAGE_MODELS: frozenset[str] = frozenset(
     {"fixed_pct", "proportional_to_qty", "half_spread"}
 )
+
+
+# T-520 sub-commit #1 — BRIEF §16.5 live-mode safeguard.
+_LIVE_MODE_CONFIRM_ENV = "BOT_CONFIRM_LIVE"
+_LIVE_MODE_CONFIRM_VALUE = "yes"
+_LIVE_MODE_ALERT_SUBJECT = "system.alerts"
 
 
 class MissingBotCredentialsError(RuntimeError):
@@ -144,6 +152,64 @@ def _make_task_exception_logger(
             )
 
     return _log
+
+
+async def _check_live_mode_safeguard(
+    *,
+    bot_row: BotRow,
+    env: Mapping[str, str],
+    bus: NatsClient,
+    bound_logger: BoundLogger,
+    now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> None:
+    """BRIEF §16.5:2253-2257 safeguard — fail-fast + Telegram alert for live mode.
+
+    Per BRIEF §16.5:2256 verbatim *"logs a loud warning `LIVE MODE ENGAGED`
+    AND sends a Telegram alert"* — both clauses spec-mandated. Implementation:
+
+    1. If exchange_mode != "live" → no-op (testnet + paper bypass per §16.5:2257).
+    2. If env var unset / != "yes" → log ERROR + raise RuntimeError (lifespan
+       death; operator sees clear error in logs). NO publish (operator did NOT
+       confirm live deploy; emitting Telegram before raise would be misleading).
+    3. If env var == "yes" → log WARNING `LIVE MODE ENGAGED` + publish NATS
+       envelope to ``system.alerts``; alerting-svc catch-all rule
+       (configs/alerts.yaml:32-35) routes to Telegram via default template.
+
+    Per WG#3 plan-stage 2026-05-12: RuntimeError raised BEFORE bus.publish on
+    error path; tests pin assert_not_called on publish for the unset-env case.
+    """
+    if bot_row.exchange_mode != "live":
+        return
+    confirm = env.get(_LIVE_MODE_CONFIRM_ENV, "").strip().lower()
+    if confirm != _LIVE_MODE_CONFIRM_VALUE:
+        bound_logger.error(
+            "live_mode_safeguard_failed",
+            bot_id=bot_row.bot_id,
+            env_value=env.get(_LIVE_MODE_CONFIRM_ENV),
+        )
+        msg = (
+            f"bot {bot_row.bot_id!r} configured for LIVE mode but "
+            f"{_LIVE_MODE_CONFIRM_ENV}!={_LIVE_MODE_CONFIRM_VALUE} "
+            f"(BRIEF §16.5 safeguard); refusing to construct live adapter"
+        )
+        raise RuntimeError(msg)
+    bound_logger.warning(
+        "LIVE MODE ENGAGED",
+        bot_id=bot_row.bot_id,
+        exchange_mode="live",
+    )
+    envelope = MessageEnvelope(
+        schema_version="1.0",
+        published_at=now_fn(),
+        correlation_id=CorrelationId(f"live-mode-{bot_row.bot_id}"),
+        publisher="execution-service",
+        payload={
+            "event": "live_mode_engaged",
+            "bot_id": bot_row.bot_id,
+            "exchange_mode": "live",
+        },
+    )
+    await bus.publish(_LIVE_MODE_ALERT_SUBJECT, envelope)
 
 
 def _construct_bybit_adapter(
@@ -248,6 +314,13 @@ async def build_adapter_pool(
     paper_bot_ids: set[BotId] = set()  # T-218c H-031 — populated for exchange_mode="paper"
     for bot_row in bot_rows:
         if bot_row.exchange_mode in ("live", "testnet"):
+            # T-520 sub-commit #1 — BRIEF §16.5 live-mode safeguard.
+            await _check_live_mode_safeguard(
+                bot_row=bot_row,
+                env=resolved_env,
+                bus=bus,
+                bound_logger=bound_logger,
+            )
             adapter, ws_task = _construct_bybit_adapter(
                 bot_row=bot_row,
                 env=resolved_env,

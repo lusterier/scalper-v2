@@ -78,7 +78,25 @@ _LIVE_ENV = {
     "BOT_ALPHA_BYBIT_API_KEY": "alpha_key",
     "BOT_ALPHA_BYBIT_API_SECRET": "alpha_secret",
     "BOT_ALPHA_BYBIT_SUB_ACCOUNT": "sub-alpha",
+    # T-520 sub-commit #1 — BRIEF §16.5 live-mode safeguard requires this env
+    # var; tests construct live adapters in-process where the safeguard fires
+    # at the same call site as production lifespan.
+    "BOT_CONFIRM_LIVE": "yes",
 }
+
+
+def _make_bus_for_live_tests() -> MagicMock:
+    """T-520 sub-commit #1 — bus stub with AsyncMock publish for §16.5 safeguard.
+
+    The safeguard awaits ``bus.publish('system.alerts', envelope)`` on every
+    live-mode bot construction; plain ``MagicMock()`` raises ``TypeError:
+    object MagicMock can't be used in 'await' expression`` because publish
+    becomes a sync MagicMock subattribute. Live-bot tests must use this
+    helper instead of bare ``MagicMock()`` for the bus arg.
+    """
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    return bus
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +157,7 @@ async def test_build_adapter_pool_populates_paper_bot_ids(
     }
     result = await build_adapter_pool(
         pool=pool,
-        bus=MagicMock(),
+        bus=_make_bus_for_live_tests(),
         rate_limiter=MagicMock(),
         settings=_settings(),
         bound_logger=_logger(),
@@ -176,7 +194,7 @@ async def test_build_adapter_pool_filters_to_active_via_sql_where(
 
     await build_adapter_pool(
         pool=pool,
-        bus=MagicMock(),
+        bus=_make_bus_for_live_tests(),
         rate_limiter=MagicMock(),
         settings=_settings(),
         bound_logger=_logger(),
@@ -217,7 +235,7 @@ async def test_build_adapter_pool_orders_by_bot_id_for_deterministic_constructio
     }
     result = await build_adapter_pool(
         pool=pool,
-        bus=MagicMock(),
+        bus=_make_bus_for_live_tests(),
         rate_limiter=MagicMock(),
         settings=_settings(),
         bound_logger=_logger(),
@@ -253,7 +271,7 @@ async def test_bybit_live_bot_constructed_with_prod_urls_from_env_creds(
     client_factory, ws_factory, adapter_factory = _patch_bybit_ctors(monkeypatch)
     result = await build_adapter_pool(
         pool=pool,
-        bus=MagicMock(),
+        bus=_make_bus_for_live_tests(),
         rate_limiter=MagicMock(),
         settings=_settings(),
         bound_logger=_logger(),
@@ -282,7 +300,7 @@ async def test_bybit_testnet_bot_constructed_with_testnet_urls(
     client_factory, ws_factory, _ = _patch_bybit_ctors(monkeypatch)
     result = await build_adapter_pool(
         pool=pool,
-        bus=MagicMock(),
+        bus=_make_bus_for_live_tests(),
         rate_limiter=MagicMock(),
         settings=_settings(),
         bound_logger=_logger(),
@@ -312,10 +330,12 @@ async def test_adapter_pool_uses_distinct_credentials_per_bot(
         "BOT_BETA_BYBIT_API_KEY": "beta_key",
         "BOT_BETA_BYBIT_API_SECRET": "beta_secret",
         "BOT_BETA_BYBIT_SUB_ACCOUNT": "sub-beta",
+        # T-520 sub-commit #1 — BRIEF §16.5 live-mode safeguard.
+        "BOT_CONFIRM_LIVE": "yes",
     }
     result = await build_adapter_pool(
         pool=pool,
-        bus=MagicMock(),
+        bus=_make_bus_for_live_tests(),
         rate_limiter=MagicMock(),
         settings=_settings(),
         bound_logger=_logger(),
@@ -337,7 +357,7 @@ async def test_bybit_bot_ws_task_spawned_with_done_callback(
     _patch_bybit_ctors(monkeypatch)
     result = await build_adapter_pool(
         pool=pool,
-        bus=MagicMock(),
+        bus=_make_bus_for_live_tests(),
         rate_limiter=MagicMock(),
         settings=_settings(),
         bound_logger=_logger(),
@@ -366,9 +386,10 @@ async def test_adapter_pool_passes_same_rate_limiter_instance_to_all_bybit_adapt
         for name in ("ALPHA", "BETA")
         for k in ("API_KEY", "API_SECRET", "SUB_ACCOUNT")
     }
+    env["BOT_CONFIRM_LIVE"] = "yes"  # T-520 sub-commit #1 — BRIEF §16.5.
     result = await build_adapter_pool(
         pool=pool,
-        bus=MagicMock(),
+        bus=_make_bus_for_live_tests(),
         rate_limiter=rate_limiter,
         settings=_settings(),
         bound_logger=_logger(),
@@ -404,7 +425,7 @@ async def test_paper_bot_constructed_with_env_seed_balance_slippage_fee_params(
     monkeypatch.setattr("services.execution.app.pool.PaperExchange", _FakePaper)
     result = await build_adapter_pool(
         pool=pool,
-        bus=MagicMock(),
+        bus=_make_bus_for_live_tests(),
         rate_limiter=MagicMock(),
         settings=_settings(),
         bound_logger=_logger(),
@@ -435,7 +456,7 @@ async def test_paper_bot_consumer_task_spawned(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr("services.execution.app.pool.PaperExchange", _FakePaper)
     result = await build_adapter_pool(
         pool=pool,
-        bus=MagicMock(),
+        bus=_make_bus_for_live_tests(),
         rate_limiter=MagicMock(),
         settings=_settings(),
         bound_logger=_logger(),
@@ -456,7 +477,7 @@ async def test_paper_bot_with_invalid_slippage_model_env_raises_value_error() ->
     with pytest.raises(ValueError, match="unknown slippage_model"):
         await build_adapter_pool(
             pool=pool,
-            bus=MagicMock(),
+            bus=_make_bus_for_live_tests(),
             rate_limiter=MagicMock(),
             settings=_settings(),
             bound_logger=_logger(),
@@ -477,11 +498,12 @@ async def test_live_bot_missing_api_key_raises_MissingBotCredentialsError(
     env = {
         "BOT_ALPHA_BYBIT_API_SECRET": "alpha_secret",
         "BOT_ALPHA_BYBIT_SUB_ACCOUNT": "sub-alpha",
+        "BOT_CONFIRM_LIVE": "yes",  # T-520 sub-commit #1 — BRIEF §16.5.
     }
     with pytest.raises(MissingBotCredentialsError, match="BOT_ALPHA_BYBIT_API_KEY"):
         await build_adapter_pool(
             pool=pool,
-            bus=MagicMock(),
+            bus=_make_bus_for_live_tests(),
             rate_limiter=MagicMock(),
             settings=_settings(),
             bound_logger=_logger(),
@@ -497,11 +519,12 @@ async def test_live_bot_missing_sub_account_raises_MissingBotCredentialsError(
     env = {
         "BOT_ALPHA_BYBIT_API_KEY": "alpha_key",
         "BOT_ALPHA_BYBIT_API_SECRET": "alpha_secret",
+        "BOT_CONFIRM_LIVE": "yes",  # T-520 sub-commit #1 — BRIEF §16.5.
     }
     with pytest.raises(MissingBotCredentialsError, match="BOT_ALPHA_BYBIT_SUB_ACCOUNT"):
         await build_adapter_pool(
             pool=pool,
-            bus=MagicMock(),
+            bus=_make_bus_for_live_tests(),
             rate_limiter=MagicMock(),
             settings=_settings(),
             bound_logger=_logger(),
@@ -517,7 +540,7 @@ async def test_paper_bot_missing_seed_balance_raises_MissingBotCredentialsError(
     with pytest.raises(MissingBotCredentialsError, match="BOT_PAPER1_PAPER_SEED_BALANCE"):
         await build_adapter_pool(
             pool=pool,
-            bus=MagicMock(),
+            bus=_make_bus_for_live_tests(),
             rate_limiter=MagicMock(),
             settings=_settings(),
             bound_logger=_logger(),
