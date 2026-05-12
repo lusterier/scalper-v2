@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   Radio,
   Settings2,
+  ShieldOff,
   SlidersHorizontal,
   Calculator,
 } from "lucide-react";
@@ -100,6 +101,16 @@ function RootLayout() {
           >
             <FileText size={15} />
             Paper trades
+          </Link>
+
+          <Link
+            to="/shadow/rejected"
+            className={navLinkBase}
+            activeProps={{ className: navLinkActive }}
+            data-testid="nav-shadow-rejected"
+          >
+            <ShieldOff size={15} />
+            Rejected signals
           </Link>
 
           <Link

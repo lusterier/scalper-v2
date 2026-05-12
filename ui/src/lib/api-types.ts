@@ -215,6 +215,41 @@ export interface ShadowVariant {
   parent_kind: "live" | "paper";
 }
 
+// T-517b2 — ShadowRejected interface, exact 11-field mirror of services/
+// analytics_api/app/models/shadow_rejected.py:ShadowRejectedResponse
+// (T-517b1 shipped; migration 0014 schema). NUMERIC absent (rejected
+// signals don't trade per BRIEF §13.5); DOUBLE PRECISION → number per
+// §5.13; JSONB → Record<string, unknown>; datetime → ISO-8601 string.
+// terminal_outcome StrEnum: 5 values per packages/core/types.py:102
+// ShadowRejectedTerminal.
+export type ShadowRejectedTerminal =
+  | "would_tp"
+  | "would_sl"
+  | "would_be"
+  | "no_trigger"
+  | "shutdown_mid_replay";
+
+export interface ShadowRejected {
+  id: number;
+  signal_id: number;
+  bot_id: string;
+  symbol: string;
+  would_side: string;
+  created_at: string;
+  terminated_at: string | null;
+  terminal_outcome: ShadowRejectedTerminal | null;
+  mfe_pct: number | null;
+  mae_pct: number | null;
+  meta: Record<string, unknown>;
+}
+
+export interface ShadowRejectedListResponse {
+  rejected: ShadowRejected[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface ShadowVariantListResponse {
   variants: ShadowVariant[];
 }

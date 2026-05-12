@@ -19,6 +19,7 @@ import { Route as PaperTradesIndexRouteImport } from './routes/paper-trades.inde
 import { Route as BacktestsIndexRouteImport } from './routes/backtests.index'
 import { Route as TradesTradeIdRouteImport } from './routes/trades.$tradeId'
 import { Route as StrategyBotIdRouteImport } from './routes/strategy.$botId'
+import { Route as ShadowRejectedRouteImport } from './routes/shadow.rejected'
 import { Route as ScoringSignalIdRouteImport } from './routes/scoring.$signalId'
 import { Route as PaperTradesPaperTradeIdRouteImport } from './routes/paper-trades.$paperTradeId'
 import { Route as BotBotIdRouteImport } from './routes/bot.$botId'
@@ -74,6 +75,11 @@ const StrategyBotIdRoute = StrategyBotIdRouteImport.update({
   path: '/strategy/$botId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ShadowRejectedRoute = ShadowRejectedRouteImport.update({
+  id: '/shadow/rejected',
+  path: '/shadow/rejected',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ScoringSignalIdRoute = ScoringSignalIdRouteImport.update({
   id: '/scoring/$signalId',
   path: '/scoring/$signalId',
@@ -104,6 +110,7 @@ export interface FileRoutesByFullPath {
   '/bot/$botId': typeof BotBotIdRoute
   '/paper-trades/$paperTradeId': typeof PaperTradesPaperTradeIdRoute
   '/scoring/$signalId': typeof ScoringSignalIdRoute
+  '/shadow/rejected': typeof ShadowRejectedRoute
   '/strategy/$botId': typeof StrategyBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
   '/backtests/': typeof BacktestsIndexRoute
@@ -120,6 +127,7 @@ export interface FileRoutesByTo {
   '/bot/$botId': typeof BotBotIdRoute
   '/paper-trades/$paperTradeId': typeof PaperTradesPaperTradeIdRoute
   '/scoring/$signalId': typeof ScoringSignalIdRoute
+  '/shadow/rejected': typeof ShadowRejectedRoute
   '/strategy/$botId': typeof StrategyBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
   '/backtests': typeof BacktestsIndexRoute
@@ -137,6 +145,7 @@ export interface FileRoutesById {
   '/bot/$botId': typeof BotBotIdRoute
   '/paper-trades/$paperTradeId': typeof PaperTradesPaperTradeIdRoute
   '/scoring/$signalId': typeof ScoringSignalIdRoute
+  '/shadow/rejected': typeof ShadowRejectedRoute
   '/strategy/$botId': typeof StrategyBotIdRoute
   '/trades/$tradeId': typeof TradesTradeIdRoute
   '/backtests/': typeof BacktestsIndexRoute
@@ -155,6 +164,7 @@ export interface FileRouteTypes {
     | '/bot/$botId'
     | '/paper-trades/$paperTradeId'
     | '/scoring/$signalId'
+    | '/shadow/rejected'
     | '/strategy/$botId'
     | '/trades/$tradeId'
     | '/backtests/'
@@ -171,6 +181,7 @@ export interface FileRouteTypes {
     | '/bot/$botId'
     | '/paper-trades/$paperTradeId'
     | '/scoring/$signalId'
+    | '/shadow/rejected'
     | '/strategy/$botId'
     | '/trades/$tradeId'
     | '/backtests'
@@ -187,6 +198,7 @@ export interface FileRouteTypes {
     | '/bot/$botId'
     | '/paper-trades/$paperTradeId'
     | '/scoring/$signalId'
+    | '/shadow/rejected'
     | '/strategy/$botId'
     | '/trades/$tradeId'
     | '/backtests/'
@@ -204,6 +216,7 @@ export interface RootRouteChildren {
   BotBotIdRoute: typeof BotBotIdRoute
   PaperTradesPaperTradeIdRoute: typeof PaperTradesPaperTradeIdRoute
   ScoringSignalIdRoute: typeof ScoringSignalIdRoute
+  ShadowRejectedRoute: typeof ShadowRejectedRoute
   StrategyBotIdRoute: typeof StrategyBotIdRoute
   TradesTradeIdRoute: typeof TradesTradeIdRoute
   BacktestsIndexRoute: typeof BacktestsIndexRoute
@@ -284,6 +297,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StrategyBotIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/shadow/rejected': {
+      id: '/shadow/rejected'
+      path: '/shadow/rejected'
+      fullPath: '/shadow/rejected'
+      preLoaderRoute: typeof ShadowRejectedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/scoring/$signalId': {
       id: '/scoring/$signalId'
       path: '/scoring/$signalId'
@@ -324,6 +344,7 @@ const rootRouteChildren: RootRouteChildren = {
   BotBotIdRoute: BotBotIdRoute,
   PaperTradesPaperTradeIdRoute: PaperTradesPaperTradeIdRoute,
   ScoringSignalIdRoute: ScoringSignalIdRoute,
+  ShadowRejectedRoute: ShadowRejectedRoute,
   StrategyBotIdRoute: StrategyBotIdRoute,
   TradesTradeIdRoute: TradesTradeIdRoute,
   BacktestsIndexRoute: BacktestsIndexRoute,
