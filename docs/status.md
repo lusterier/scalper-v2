@@ -1,5 +1,32 @@
 # Session status
 
+## 2026-05-12 (late-night XXII — T-517b1 rejected-signal explorer backend shipped; F5 counter advances 33/52 → 34/54 per L-007 split; T-517 reorg 2-level split T-517 → T-517a + T-517b1 (DONE) + T-517b2; T-517b2 unblocked)
+
+**F5 phase counter advances 33/52 → 34/54** per L-007 split convention (numerator+1 for shipped T-517b1; denominator+2 for T-517 reorg this session — 2-level split T-517 → T-517a + T-517b1 + T-517b2 = 3 sub-tasks where there was 1). **T-517b1 = first child of T-517 trio** to ship.
+
+### T-517b1 — rejected-signal explorer backend (analytics-api endpoints + DB helpers + Pydantic)
+
+- **Origin**: F5 numbered task (BRIEF §13.6 third bullet "what would rejected signals have yielded?"). Pre-emptive 2-level split T-517 → T-517a + T-517b → T-517b1 (this; backend) + T-517b2 (UI; next) per L-007 + operator OQ-1=A 2026-05-12 (split T-517) + OQ-5=A 2026-05-12 (sub-split T-517b). Combined T-517b est ~467 LOC src would trip §0.3 cap; sub-split keeps each well under cap. Mirror T-516a1+T-516a2 split precedent.
+- **All 4 review gates passed**: plan-reviewer pass-1 APPROVE 2026-05-12 (5-item Write-time guidance — no REVISE; clean first-pass) → drift-checker ON TRACK (6 staged files; 308 src LOC = 77% pod 400 cap; 1.39× plan estimate within L-006 1.0-1.4× calibration band; all 5 WG verified) → brief-reviewer SHIP (5/5 WG verified) → math-validator out-of-scope per CLAUDE.md (analytics-api + packages/db NOT in math-binding list).
+- **Operator OQs (5 OQs, 2026-05-12)**: OQ-1 = Split T-517 → T-517a + T-517b; OQ-2 = T-517b first (simpler scope; mirror exists); OQ-3 = Full mirror trades.index filters (bot_id + symbol + status + terminal_outcome + date range + pagination); OQ-4 = Defer aggregate metric definition to T-517a plan-stage (multi-metric vs single-best tradeoff); OQ-5 = Pre-emptive sub-split T-517b → T-517b1 + T-517b2.
+- **Implementation**: NEW DB helpers in `packages/db/queries/shadow.py` (+123 LOC; `_build_shadow_rejected_where_clause` 6 filters with status='active'/'terminated' as constant `terminated_at IS NULL/NOT NULL` predicate (no $N site) + `select_shadow_rejected_paginated` ORDER BY `created_at DESC, id DESC` per `select_signals_paginated` precedent + `count_shadow_rejected` mirror `count_paper_trades`; reuses existing `_SHADOW_REJECTED_BASE_COLUMNS` + `_row_to_shadow_rejected` + `select_shadow_rejected_by_id`). NEW `services/analytics_api/app/models/shadow_rejected.py` (60 LOC; `ShadowRejectedResponse` 11-col mirror + `ShadowRejectedListResponse` envelope `rejected/total/limit/offset`; `use_enum_values=True` for `ShadowRejectedTerminal` StrEnum string serialization). NEW `services/analytics_api/app/routers/shadow_rejected.py` (123 LOC; prefix `/api/shadow/rejected`; tags `["shadow-rejected"]`; 2 endpoints — paginated list with 6 Query params + 422-validated `Literal["active","terminated"]` + ShadowRejectedTerminal StrEnum + datetime aliases + limit ≤ 200 + offset ≥ 0; detail-by-PK with 404 detail format `f"shadow_rejected {id} not found"`). main.py +2 LOC: import + include_router adjacent to paper_trades_router (alphabetical inside routers block; sibling positioning per WG#5).
+- **Tests**: 7 NEW DB helper tests in `test_queries_shadow.py` (no-WHERE/all-filters/active-constant/L008-injection-sentinel/ORDER-BY+L021-cast-pin/count-sync/WG#1-`.value`-form-pin) + 16 NEW router tests in `test_router_shadow_rejected.py` (envelope shape `rejected` key + 4× pagination negatives + 4× filter forwarding + 2× detail 200/404 + 4× serialization covering enum-string/double-precision/JSONB-passthrough/active-null-fields). Repo baseline 2278 → 2301 (+23 net new). 0 regressions. ruff + mypy strict + bandit clean.
+- **§0.3 LOC**: src 308 LOC (123 shadow.py + 60 models + 123 router + 2 main.py); under cap by 92 LOC; no waiver needed.
+- **L-006 / L-014 / L-016 calibration 8th data point**: backend mirror task = 1.39× plan estimate (within band 1.0-1.4× for backend mirror tasks; mirror-reuse pattern matures further).
+- **Hazards bound**: L-008 ($N placeholders only via SQL injection sentinel test — `"alpha-injection-attempt'); DROP TABLE bots; --"` confirmed in bind_args NOT in sql); L-021 preventive `"::" not in sql_string` guard for future cast-site introduction; L-011 codec-registered → meta dict passthrough at read side; §N1/N3/N6/N7 clean.
+- **No new deps (§0.9)**.
+- **Plan**: `docs/plans/T-517b1.md` (APPROVED single-pass with 5 WG verbatim).
+- **Commit**: feat `8df70da` on `feat/T-517b1-rejected-explorer-backend`; chore close pending.
+- **Unblocks T-517b2**: UI route `/shadow/rejected` + nav entry + api-types.ts; consumes `/api/shadow/rejected/*` endpoints shipped here.
+
+### Next session pickup
+
+- **T-517b2** — UI route `/shadow/rejected` + nav entry + api-types (consumes T-517b1 endpoints; ~235 LOC src est paginated list mirror `paper-trades.index.tsx` + 6-filter panel + nav entry).
+- **T-517a** — per-symbol best-variant aggregate (`/shadow/aggregate/$symbol`); "best variant" metric definition deferred to T-517a plan-stage per OQ-4=A; ~280 LOC src est.
+- **T-518..T-521** F5 backend polish + close-out gating.
+- **T-524..T-528, T-530..T-536** pre-live operational hardening cluster (12 mandatory tasks per ADR-0011; T-529 done) — biggest remaining cluster.
+- **T-522** Live-ready close-out runbook (E5 + E6 sign-off).
+
 ## 2026-05-09 (late-night XXI — T-516b shadow variants section shipped; F5 counter advances 32/52 → 33/52; T-516 trio CLOSED; placeholder #4 now real renderer in BOTH drill-down routes)
 
 **F5 phase counter advances 32/52 → 33/52** per L-007 split convention (numerator+1 only; T-516b already in denominator since T-516 reorg 2026-05-08). T-516 trio (T-516a1 backend + T-516a2 UI routes + T-516b shadow variants section) now FULLY CLOSED.
