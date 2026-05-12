@@ -32,12 +32,14 @@ from packages.core.types import ShadowRejectedTerminal, ShadowVariantTerminal
 from packages.db.queries.shadow import (
     ShadowRejectedRow,
     ShadowVariantRow,
+    count_shadow_rejected,
     insert_shadow_rejected,
     insert_shadow_variant,
     select_active_shadow_rejected,
     select_active_shadow_variants,
     select_all_active_shadow_rejected,
     select_shadow_rejected_by_id,
+    select_shadow_rejected_paginated,
     select_shadow_variant_by_id,
     select_shadow_variants_by_parent,
     update_shadow_rejected_terminal,
@@ -611,3 +613,204 @@ async def test_select_shadow_variants_by_parent_returns_terminated_and_active_mi
     assert active[0].realized_pnl is None
     assert terminated[0].terminal_outcome is ShadowVariantTerminal.TP_FULL
     assert terminated[0].realized_pnl == Decimal("10.00")
+
+
+# ---------------------------------------------------------------------------
+# T-517b1 — select_shadow_rejected_paginated + count_shadow_rejected
+# ---------------------------------------------------------------------------
+
+
+async def test_select_shadow_rejected_paginated_no_filters_emits_no_where_clause() -> None:
+    """All-None filter set: SQL has no WHERE; only $1=limit, $2=offset bound."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    rows = await select_shadow_rejected_paginated(
+        conn,
+        bot_id=None,
+        symbol=None,
+        status=None,
+        terminal_outcome=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    assert rows == []
+    sql, *bind_args = captured[0]
+    assert "WHERE" not in sql
+    assert "LIMIT $1 OFFSET $2" in sql
+    assert bind_args == [50, 0]
+
+
+async def test_select_shadow_rejected_paginated_all_filters_predicates_and_bind_order() -> None:
+    """Full filter set: 5 predicates AND-joined; status='terminated' constant; bind order pin."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    from_dt = datetime(2026, 5, 1, 0, 0, 0, tzinfo=UTC)
+    to_dt = datetime(2026, 5, 12, 0, 0, 0, tzinfo=UTC)
+    await select_shadow_rejected_paginated(
+        conn,
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        status="terminated",
+        terminal_outcome=ShadowRejectedTerminal.WOULD_TP,
+        from_at=from_dt,
+        to_at=to_dt,
+        limit=25,
+        offset=50,
+    )
+    sql, *bind_args = captured[0]
+    assert "WHERE bot_id = $1 AND symbol = $2 AND terminated_at IS NOT NULL" in sql
+    assert "AND terminal_outcome = $3 AND created_at >= $4 AND created_at < $5" in sql
+    assert "LIMIT $6 OFFSET $7" in sql
+    assert bind_args == ["alpha", "BTCUSDT", "would_tp", from_dt, to_dt, 25, 50]
+
+
+async def test_select_shadow_rejected_paginated_status_active_constant_predicate() -> None:
+    """status='active' encodes terminated_at IS NULL (constant; not a $N parameter)."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_shadow_rejected_paginated(
+        conn,
+        bot_id=None,
+        symbol=None,
+        status="active",
+        terminal_outcome=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    sql, *bind_args = captured[0]
+    assert "WHERE terminated_at IS NULL" in sql
+    assert "LIMIT $1 OFFSET $2" in sql
+    assert bind_args == [50, 0]
+
+
+async def test_select_shadow_rejected_paginated_l008_no_string_interpolation() -> None:
+    """L-008: filter values appear ONLY as $N placeholders, NEVER interpolated into SQL."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    sentinel_bot = "alpha-injection-attempt'); DROP TABLE bots; --"
+    await select_shadow_rejected_paginated(
+        conn,
+        bot_id=sentinel_bot,
+        symbol=None,
+        status=None,
+        terminal_outcome=None,
+        from_at=None,
+        to_at=None,
+        limit=10,
+        offset=0,
+    )
+    sql, *bind_args = captured[0]
+    assert sentinel_bot not in sql, "filter value must be a $N bind, never interpolated"
+    assert "$1" in sql
+    assert sentinel_bot in bind_args
+
+
+async def test_select_shadow_rejected_paginated_order_by_pin_and_no_cast_sites() -> None:
+    """ORDER BY created_at DESC, id DESC verbatim; no '::' cast sites (L-021 preventive guard)."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_shadow_rejected_paginated(
+        conn,
+        bot_id=None,
+        symbol=None,
+        status=None,
+        terminal_outcome=None,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    sql, *_ = captured[0]
+    assert "ORDER BY created_at DESC, id DESC" in sql
+    # WG#2 — preventive guard: no ::type cast sites today; future edits introducing
+    # arithmetic / CASE branches must add explicit casts per L-021.
+    assert "::" not in sql
+
+
+async def test_count_shadow_rejected_uses_same_builder_filter_semantics() -> None:
+    """count_shadow_rejected feeds same _build_shadow_rejected_where_clause; bind args identical."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> Any:
+        captured.append((sql, *args))
+        return {"n": 7}
+
+    conn.fetchrow = _capture
+    total = await count_shadow_rejected(
+        conn,
+        bot_id="alpha",
+        symbol="ETHUSDT",
+        status="terminated",
+        terminal_outcome=ShadowRejectedTerminal.WOULD_SL,
+        from_at=None,
+        to_at=None,
+    )
+    assert total == 7
+    sql, *bind_args = captured[0]
+    assert sql.startswith("SELECT COUNT(*) AS n FROM shadow_rejected ")
+    assert "WHERE bot_id = $1 AND symbol = $2 AND terminated_at IS NOT NULL" in sql
+    assert "AND terminal_outcome = $3" in sql
+    assert bind_args == ["alpha", "ETHUSDT", "would_sl"]
+
+
+async def test_select_shadow_rejected_paginated_terminal_outcome_bind_uses_dot_value() -> None:
+    """WG#1 — terminal_outcome bind is the literal string 'would_sl', not str(enum)/repr."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    await select_shadow_rejected_paginated(
+        conn,
+        bot_id=None,
+        symbol=None,
+        status=None,
+        terminal_outcome=ShadowRejectedTerminal.WOULD_SL,
+        from_at=None,
+        to_at=None,
+        limit=50,
+        offset=0,
+    )
+    sql, *bind_args = captured[0]
+    assert "WHERE terminal_outcome = $1" in sql
+    # WG#1 — must be plain string from `.value`, not StrEnum repr or any subclass instance.
+    assert bind_args == ["would_sl", 50, 0]
+    assert type(bind_args[0]) is str

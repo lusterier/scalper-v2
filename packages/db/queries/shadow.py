@@ -65,6 +65,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ShadowRejectedRow",
     "ShadowVariantRow",
+    "count_shadow_rejected",
     "insert_shadow_rejected",
     "insert_shadow_variant",
     "select_active_shadow_rejected",
@@ -72,6 +73,7 @@ __all__ = [
     "select_all_active_shadow_rejected",
     "select_all_active_shadow_variants",
     "select_shadow_rejected_by_id",
+    "select_shadow_rejected_paginated",
     "select_shadow_variant_by_id",
     "select_shadow_variants_by_parent",
     "update_shadow_rejected_terminal",
@@ -396,6 +398,127 @@ async def select_shadow_rejected_by_id(
     """Return ShadowRejectedRow on hit; None on miss."""
     row = await conn.fetchrow(_SELECT_REJECTED_BY_ID_SQL, rejected_id)
     return _row_to_shadow_rejected(row) if row is not None else None
+
+
+def _build_shadow_rejected_where_clause(
+    *,
+    bot_id: str | None,
+    symbol: str | None,
+    status: Literal["active", "terminated"] | None,
+    terminal_outcome: ShadowRejectedTerminal | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> tuple[str, list[Any]]:
+    """Compose dynamic WHERE clause + bind args for shadow_rejected paginated/count.
+
+    Mirror :func:`packages.db.queries.analytics._build_paper_trades_where_clause`.
+    Returns ``("", [])`` when all filters are None. Otherwise returns
+    ``("WHERE <predicates>", [<bind args in $N order>])`` using ``$N``
+    placeholders ONLY (NEVER string interpolation per L-008 + §5.10).
+
+    ``status`` filter encodes "active" → ``terminated_at IS NULL`` /
+    "terminated" → ``terminated_at IS NOT NULL`` (constant predicate, no
+    parameter site — does not consume a $N placeholder).
+
+    ``from_at`` / ``to_at`` filter on ``created_at`` (rejected-observation
+    start time; mirror :func:`select_signals_paginated` ``received_at``
+    convention since rejected schema has no ``closed_at`` column).
+    """
+    predicates: list[str] = []
+    bind_args: list[Any] = []
+    if bot_id is not None:
+        bind_args.append(bot_id)
+        predicates.append(f"bot_id = ${len(bind_args)}")
+    if symbol is not None:
+        bind_args.append(symbol)
+        predicates.append(f"symbol = ${len(bind_args)}")
+    if status == "active":
+        predicates.append("terminated_at IS NULL")
+    elif status == "terminated":
+        predicates.append("terminated_at IS NOT NULL")
+    if terminal_outcome is not None:
+        bind_args.append(terminal_outcome.value)
+        predicates.append(f"terminal_outcome = ${len(bind_args)}")
+    if from_at is not None:
+        bind_args.append(from_at)
+        predicates.append(f"created_at >= ${len(bind_args)}")
+    if to_at is not None:
+        bind_args.append(to_at)
+        predicates.append(f"created_at < ${len(bind_args)}")
+    if not predicates:
+        return ("", [])
+    return ("WHERE " + " AND ".join(predicates), bind_args)
+
+
+async def select_shadow_rejected_paginated(
+    conn: _DbExecutor,
+    *,
+    bot_id: str | None,
+    symbol: str | None,
+    status: Literal["active", "terminated"] | None,
+    terminal_outcome: ShadowRejectedTerminal | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+    limit: int,
+    offset: int,
+) -> list[ShadowRejectedRow]:
+    """Return one page of ``shadow_rejected`` rows with optional filters (T-517b1).
+
+    ORDER BY ``created_at DESC, id DESC`` for "most recent first" per
+    :func:`packages.db.queries.analytics.select_signals_paginated` precedent
+    (rejected schema has no ``closed_at`` column; ``created_at`` is the
+    natural time column and is non-nullable per migration 0014). limit/offset
+    clamped by caller (router enforces 1 ≤ limit ≤ 200; 0 ≤ offset).
+    """
+    where_clause, where_args = _build_shadow_rejected_where_clause(
+        bot_id=bot_id,
+        symbol=symbol,
+        status=status,
+        terminal_outcome=terminal_outcome,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    limit_placeholder = f"${len(where_args) + 1}"
+    offset_placeholder = f"${len(where_args) + 2}"
+    sql = (
+        f"SELECT {_SHADOW_REJECTED_BASE_COLUMNS} FROM shadow_rejected "  # noqa: S608  # nosec B608
+        f"{where_clause} "
+        "ORDER BY created_at DESC, id DESC "
+        f"LIMIT {limit_placeholder} OFFSET {offset_placeholder}"
+    )
+    rows = await conn.fetch(sql, *where_args, limit, offset)
+    return [_row_to_shadow_rejected(row) for row in rows]
+
+
+async def count_shadow_rejected(
+    conn: _DbExecutor,
+    *,
+    bot_id: str | None,
+    symbol: str | None,
+    status: Literal["active", "terminated"] | None,
+    terminal_outcome: ShadowRejectedTerminal | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> int:
+    """Return total ``shadow_rejected`` count matching the paginated filter set.
+
+    Mirror :func:`packages.db.queries.analytics.count_paper_trades` — same
+    :func:`_build_shadow_rejected_where_clause` helper so filter semantics
+    stay in sync with :func:`select_shadow_rejected_paginated`.
+    """
+    where_clause, where_args = _build_shadow_rejected_where_clause(
+        bot_id=bot_id,
+        symbol=symbol,
+        status=status,
+        terminal_outcome=terminal_outcome,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    sql = f"SELECT COUNT(*) AS n FROM shadow_rejected {where_clause}"  # noqa: S608  # nosec B608
+    row = await conn.fetchrow(sql, *where_args)
+    if row is None:
+        return 0
+    return int(row["n"])
 
 
 # ---------------------------------------------------------------------------
