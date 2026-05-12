@@ -68,6 +68,8 @@ async def test_oi_squeeze_runs_in_evaluator_pipeline() -> None:
             status="ok",
         ),
     )
+    # T-520 sub-commit #2 — oi_squeeze plugin triggers resolve_history.
+    resolver.resolve_history = AsyncMock(return_value=[])
 
     result = await evaluate(
         bot_config=beta,

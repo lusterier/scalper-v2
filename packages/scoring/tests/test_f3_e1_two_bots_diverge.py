@@ -50,6 +50,10 @@ def _ok_resolver() -> MagicMock:
             status="ok",
         ),
     )
+    # T-520 sub-commit #2 — beta.yaml uses oi_squeeze plugin which triggers
+    # resolver.resolve_history via _required_history_window. Mock as no-op
+    # so the evaluator doesn't crash on AsyncMock-missing.
+    resolver.resolve_history = AsyncMock(return_value=[])
     return resolver
 
 

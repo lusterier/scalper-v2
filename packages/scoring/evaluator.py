@@ -25,6 +25,8 @@ from .conditions.base import RuleContext
 from .types import Decision, RuleResult, ScoringResult
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from structlog.stdlib import BoundLogger
 
     from packages.bus.schemas.signals import SignalValidated
@@ -35,6 +37,31 @@ if TYPE_CHECKING:
 
 
 __all__ = ["evaluate"]
+
+
+def _required_history_window(condition: object) -> int | None:
+    """Detect history window size from condition shape (T-303 series + T-305 plugin).
+
+    Per BLOCKER#1 plan-reviewer Gate 1 REVISE 2026-05-12: explicit fallback
+    chain rather than getattr-by-attr-name sniff that silently misses plugin
+    Rules. Two known consumer shapes:
+
+    * T-303 RisingCondition / FallingCondition: ``condition.n_samples`` (int).
+    * T-305 PluginCondition wrapping a Rule with history-window need
+      (oi_squeeze plugin): ``condition.rule.lookback_candles`` (int).
+
+    Returns int when condition needs history, None for simple conditions
+    (T-302 ThresholdCondition / EmaStackCondition / etc.).
+    """
+    n_samples = getattr(condition, "n_samples", None)
+    if isinstance(n_samples, int):
+        return n_samples
+    rule = getattr(condition, "rule", None)
+    if rule is not None:
+        lookback = getattr(rule, "lookback_candles", None)
+        if isinstance(lookback, int):
+            return lookback
+    return None
 
 
 def _log_failed_open(
@@ -231,10 +258,24 @@ async def _evaluate_rule(
     resolved_ref = _resolve_feature_ref(rule.feature, signal)
     feature_snapshot[resolved_ref] = _serialize_feature_value(resolver_result.value)
 
+    # T-520 sub-commit #2 — populate feature_history for series + plugin
+    # conditions per BLOCKER#1 fix. Simple conditions (T-302) skip this.
+    n_history = _required_history_window(rule.condition)
+    feature_history: dict[str, Sequence[FeatureValue]] = {}
+    if n_history is not None:
+        history = await resolver.resolve_history(
+            rule_feature=rule.feature,
+            signal=signal,
+            n_samples=n_history,
+        )
+        if history:
+            feature_history[resolved_ref] = history
+
     ctx = RuleContext(
         signal=signal,
         feature_snapshot={resolved_ref: resolver_result.value},
         feature_ref=resolved_ref,
+        feature_history=feature_history,
     )
     try:
         outcome, error_info = rule.condition.evaluate(ctx)

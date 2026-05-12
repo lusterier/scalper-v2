@@ -361,3 +361,51 @@ async def test_resolve_db_lookup_uses_resolved_ref_and_lowercase_symbol(
     assert await_args is not None
     assert await_args.kwargs["feature_name"] == "ind.btcusdt.15m.ema_20"
     assert await_args.kwargs["symbol"] == "btcusdt"
+
+
+# ---------------------------------------------------------------------------
+# T-520 sub-commit #2 — resolve_history (T-306 series + plugin upgrade)
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_history_returns_chronological_feature_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """resolve_history reads from DB select_feature_history; oldest → newest order preserved."""
+    older = _FIXED_NOW - timedelta(minutes=30)
+    middle = _FIXED_NOW - timedelta(minutes=15)
+    rows = [
+        LatestFeatureRow(value_num=100.0, value_bool=None, value_json=None, computed_at=older),
+        LatestFeatureRow(value_num=101.0, value_bool=None, value_json=None, computed_at=middle),
+        LatestFeatureRow(value_num=102.0, value_bool=None, value_json=None, computed_at=_FIXED_NOW),
+    ]
+    history_mock = AsyncMock(return_value=rows)
+    monkeypatch.setattr(resolver_mod, "select_feature_history", history_mock)
+    r = _build_resolver()
+    history = await r.resolve_history(
+        rule_feature="ind.${signal.symbol}.15m.ema_20",
+        signal=_signal("BTCUSDT"),
+        n_samples=3,
+    )
+    assert len(history) == 3
+    expected_values = [Decimal("100.0"), Decimal("101.0"), Decimal("102.0")]
+    assert [fv.value_num for fv in history] == expected_values
+    history_mock.assert_awaited_once()
+    assert history_mock.await_args is not None
+    kwargs = history_mock.await_args.kwargs
+    assert kwargs["feature_name"] == "ind.btcusdt.15m.ema_20"
+    assert kwargs["symbol"] == "btcusdt"
+    assert kwargs["n_samples"] == 3
+
+
+async def test_resolve_history_empty_on_db_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DB miss → empty list (caller treats as data_missing per series condition contract)."""
+    history_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(resolver_mod, "select_feature_history", history_mock)
+    r = _build_resolver()
+    result = await r.resolve_history(
+        rule_feature="ind.${signal.symbol}.15m.ema_20",
+        signal=_signal("BTCUSDT"),
+        n_samples=10,
+    )
+    assert result == []

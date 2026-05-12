@@ -20,7 +20,11 @@ from pydantic import ValidationError
 from packages.bus.errors import NotConnectedError, PublishError
 from packages.bus.schemas import FeatureUpdate
 from packages.core import now_utc
-from packages.db.queries.feature_engine import LatestFeatureRow, select_latest_feature
+from packages.db.queries.feature_engine import (
+    LatestFeatureRow,
+    select_feature_history,
+    select_latest_feature,
+)
 from packages.features.intervals import INTERVAL_DELTA
 from packages.features.types import FeatureValue
 
@@ -205,6 +209,37 @@ class FeatureResolver:
         if row is None:
             return None, None
         return _db_row_to_feature_value(row), row.computed_at
+
+    async def resolve_history(
+        self,
+        *,
+        rule_feature: str,
+        signal: SignalValidated,
+        n_samples: int,
+    ) -> list[FeatureValue]:
+        """Fetch last N feature values for series conditions (T-520 sub-commit #2).
+
+        DB-only path (NATS KV ``feature_latest`` stores latest single value
+        only; history requires the ``features`` table). Returns chronological
+        list (oldest → newest) per series condition contract at
+        :func:`packages.scoring.conditions.series._check_history_window`.
+        Empty list if missing or insufficient samples.
+
+        N capped at 200 by :func:`packages.db.queries.feature_engine.select_feature_history`
+        (silent guard against operator-misconfigured ``n_samples=10000`` in
+        a series rule). Caller (T-307 evaluator) attaches the list to
+        :attr:`RuleContext.feature_history` keyed by resolved feature ref.
+        """
+        resolved_ref = substitute_template(rule_feature, signal)
+        symbol, _interval = parse_feature_ref(resolved_ref)
+        async with self._pool.acquire() as conn:
+            rows = await select_feature_history(
+                conn,
+                feature_name=resolved_ref,
+                symbol=symbol,
+                n_samples=n_samples,
+            )
+        return [_db_row_to_feature_value(row) for row in rows]
 
     def _check_staleness(
         self,

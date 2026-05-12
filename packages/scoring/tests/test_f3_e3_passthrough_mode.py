@@ -58,6 +58,8 @@ async def test_passthrough_mode_records_decision_passthrough_in_audit_row(
             status="ok",
         ),
     )
+    # T-520 sub-commit #2 — beta.yaml plugin path triggers resolve_history.
+    resolver.resolve_history = AsyncMock(return_value=[])
 
     pool = MagicMock()
     fake_conn = MagicMock()

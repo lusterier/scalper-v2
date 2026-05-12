@@ -95,6 +95,9 @@ def _ok_resolver(value: int | float | str = 60000) -> MagicMock:
             status="ok",
         )
     )
+    # T-520 sub-commit #2 — default resolve_history no-op (empty list);
+    # T-520 tests below override per-test as needed.
+    resolver.resolve_history = AsyncMock(return_value=[])
     return resolver
 
 
@@ -107,6 +110,7 @@ def _missing_resolver() -> MagicMock:
             error_info={"path": "kv+db missing", "feature_ref": "ind.btcusdt.15m.ema_20"},
         )
     )
+    resolver.resolve_history = AsyncMock(return_value=[])
     return resolver
 
 
@@ -119,6 +123,7 @@ def _stale_resolver() -> MagicMock:
             error_info={"age_sec": 3000, "max_staleness_sec": 1800},
         )
     )
+    resolver.resolve_history = AsyncMock(return_value=[])
     return resolver
 
 
@@ -720,3 +725,65 @@ async def test_early_reject_scoring_result_populates_all_seven_fields() -> None:
     assert len(result.rule_results) == 1
     assert isinstance(result.feature_snapshot, dict)
     assert result.config_version == 7
+
+
+# ---------------------------------------------------------------------------
+# T-520 sub-commit #2 — _required_history_window dispatch + history population
+# ---------------------------------------------------------------------------
+
+
+async def test_evaluator_populates_history_for_series_condition() -> None:
+    """T-303 series RisingCondition path — n_samples-based dispatch via _required_history_window."""
+    from packages.scoring.conditions import RisingCondition
+
+    rule = _with_condition(_gt_rule(weight=1.0), RisingCondition(n_samples=3))
+    cfg = _bot(rules=[rule], threshold=0.5)
+    resolver = _ok_resolver(60000)
+    history = [
+        FeatureValue(value_num=Decimal("100")),
+        FeatureValue(value_num=Decimal("101")),
+        FeatureValue(value_num=Decimal("102")),
+    ]
+    resolver.resolve_history = AsyncMock(return_value=history)
+    result = await evaluate(
+        bot_config=cfg, signal=_signal(), resolver=resolver, bound_logger=MagicMock()
+    )
+    resolver.resolve_history.assert_awaited_once()
+    kwargs = resolver.resolve_history.await_args.kwargs
+    assert kwargs["n_samples"] == 3
+    # Series rising on [100,101,102] is strictly increasing → True → applied_weight=1.0.
+    assert result.decision == "execute"
+
+
+async def test_evaluator_populates_history_for_oi_squeeze_plugin() -> None:
+    """T-305 plugin path — lookback_candles via condition.rule.lookback_candles per BLOCKER#1 fix.
+
+    Mock a PluginCondition wrapping a Rule with lookback_candles attr.
+    Verifies _required_history_window resolves through condition.rule.
+    """
+    plugin_rule = MagicMock()
+    plugin_rule.lookback_candles = 5
+    plugin_condition = MagicMock(spec=["evaluate", "rule"])
+    plugin_condition.rule = plugin_rule
+    plugin_condition.evaluate = MagicMock(return_value=(True, None))
+
+    rule = _with_condition(_gt_rule(weight=1.5), plugin_condition)
+    cfg = _bot(rules=[rule], threshold=1.0)
+    resolver = _ok_resolver(60000)
+    resolver.resolve_history = AsyncMock(
+        return_value=[FeatureValue(value_num=Decimal(str(i))) for i in range(5)],
+    )
+    await evaluate(bot_config=cfg, signal=_signal(), resolver=resolver, bound_logger=MagicMock())
+    resolver.resolve_history.assert_awaited_once()
+    kwargs = resolver.resolve_history.await_args.kwargs
+    assert kwargs["n_samples"] == 5
+
+
+async def test_evaluator_skips_history_for_simple_condition() -> None:
+    """T-302 GtCondition has neither n_samples nor lookback_candles — resolve_history NOT called."""
+    rule = _with_condition(_gt_rule(weight=1.0), GtCondition(value=Decimal("50000")))
+    cfg = _bot(rules=[rule], threshold=0.5)
+    resolver = _ok_resolver(60000)
+    await evaluate(bot_config=cfg, signal=_signal(), resolver=resolver, bound_logger=MagicMock())
+    # Simple condition path → no history fetch.
+    resolver.resolve_history.assert_not_awaited()

@@ -46,6 +46,7 @@ __all__ = [
     "fetch_ohlc_range",
     "fetch_warmup_window",
     "insert_feature",
+    "select_feature_history",
     "select_latest_feature",
 ]
 
@@ -306,3 +307,66 @@ async def select_latest_feature(
         value_json=row["value_json"],
         computed_at=row["computed_at"],
     )
+
+
+# T-520 sub-commit #2 — feature_history population per BRIEF §10.2 series
+# conditions + §10.6 plugin Rules (T-306 resolver upgrade closes the
+# data_missing path that today returns False unconditionally on history-
+# requiring rules).
+_MAX_HISTORY_WINDOW = 200  # CONCERN#3 plan-reviewer Gate 1 REVISE 2026-05-12 cap.
+
+# Per WG#4 plan-stage L-021: explicit ::text on $1/$2 + ::int on $3 (LIMIT
+# placeholder). All three are in non-arithmetic contexts where PG type-
+# inference USUALLY resolves correctly via column-direct comparison +
+# integer-direct LIMIT, but explicit casts pre-empt the L-021 trigger
+# class (T-537a1 ci-full precedent shipped broken twice without them).
+# Mock-level test pin asserts the casts persist in SQL string.
+_SELECT_FEATURE_HISTORY_SQL = """
+    SELECT value_num, value_bool, value_json, computed_at
+    FROM (
+        SELECT value_num, value_bool, value_json, computed_at
+        FROM features
+        WHERE feature_name = $1::text AND symbol = $2::text
+        ORDER BY computed_at DESC
+        LIMIT $3::int
+    ) recent
+    ORDER BY computed_at ASC
+"""
+
+
+async def select_feature_history(
+    conn: _DbExecutor,
+    *,
+    feature_name: str,
+    symbol: str,
+    n_samples: int,
+) -> list[LatestFeatureRow]:
+    """Return last N feature rows in chronological order (oldest → newest).
+
+    N capped at :data:`_MAX_HISTORY_WINDOW` (200) to bound memory; series
+    conditions in BRIEF §10.2:1700-1702 use n_samples ≤ 50 typical. Cap is
+    silent (no error) — series condition ``_check_history_window`` already
+    handles ``feature_history_too_short`` gracefully if the operator
+    configures n_samples > 200.
+
+    Empty result returns ``[]`` (caller — T-306 resolver — treats empty
+    as ``data_missing`` per existing :class:`ResolverResult` semantics).
+
+    Two-step ORDER BY: inner SELECT gets newest N via ``ORDER BY
+    computed_at DESC LIMIT N`` (uses ``features_latest`` index per
+    migration 0004:104); outer SELECT reverses to ASC for series
+    condition consumption (oldest → newest).
+
+    Read-only — no idempotency marker (mirror :func:`select_latest_feature`).
+    """
+    capped_n = min(n_samples, _MAX_HISTORY_WINDOW)
+    rows = await conn.fetch(_SELECT_FEATURE_HISTORY_SQL, feature_name, symbol, capped_n)
+    return [
+        LatestFeatureRow(
+            value_num=row["value_num"],
+            value_bool=row["value_bool"],
+            value_json=row["value_json"],
+            computed_at=row["computed_at"],
+        )
+        for row in rows
+    ]
