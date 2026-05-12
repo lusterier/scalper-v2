@@ -1,5 +1,33 @@
 # Session status
 
+## 2026-05-12 (late-night XXV — T-517a2 per-symbol best-variant aggregate UI shipped; F5 counter advances 36/55 → 37/55; T-517 trio FULLY CLOSED (4/4 sub-tasks); BRIEF §13.6 dashboard integration cluster CLOSED)
+
+**F5 phase counter advances 36/55 → 37/55** per L-007 split convention (numerator+1; T-517a2 already in denominator since T-517a sub-split). **T-517 trio FULLY CLOSED** at 4/4 sub-tasks: T-517b1 backend `8df70da` + T-517b2 UI `1643789` + T-517a1 backend `f6bf49a` + T-517a2 UI `d582e18`. **BRIEF §13.6 dashboard integration cluster fully shipped** (per-trade drill-down via T-516 trio + per-symbol aggregate via T-517a + per-rejected explorer via T-517b).
+
+### T-517a2 — per-symbol best-variant aggregate UI (index landing + `/shadow/aggregate/$symbol` detail + nav entry + api-types)
+
+- **Origin**: F5 numbered task (BRIEF §13.6 second bullet "which variant would have been best over last N trades?"). UI half of T-517a sub-split per OQ-3=A (T-517a1 backend shipped earlier this session as `f6bf49a`). Mirror `shadow.rejected.tsx` filter card + DataTable shape pattern modulo path-param symbol + 9-col aggregate-metric layout + 'Best' pill on first row + no pagination + no row navigate.
+- **All 4 review gates passed**: plan-reviewer pass-1 APPROVE 2026-05-12 (6-item Write-time guidance — clean first-pass) → drift-checker ON TRACK (8 staged files + 1 plan doc; 326 src LOC = 81% pod 400 cap; +0.3% off plan estimate uncharacteristically precise; all 6 WG verified) → brief-reviewer skipped per operator preference (drift-checker verified all 6 WG + tests/typecheck/lint clean) → math-validator out-of-scope per CLAUDE.md (UI directory NOT in math-binding list; aggregator math lives in T-517a1 backend).
+- **Operator OQs (4 OQs, 2026-05-12)**: OQ-1=A index landing + $symbol detail (2 routes; symbol picker UX-friendly); OQ-2=A 'Best' pill on first row (sorted DESC by total_pnl per backend; row.index === 0); OQ-3=A inline nav between Rejected signals + Backtest lab (no new section); OQ-4=A BarChart3 Lucide icon.
+- **Implementation**: NEW `ui/src/routes/shadow.aggregate.index.tsx` (79 LOC; symbol picker landing with text input + Go button + Enter-key parity; per WG#1 `trimmed.toUpperCase()` normalization before navigate — backend predicate is case-sensitive; lowercase yields silent empty result). NEW `ui/src/routes/shadow.aggregate.$symbol.tsx` (201 LOC; aggregate view: filter card BotSelector + TimeRangePicker default 30d + 10-col DataTable variant_name with conditional 'Best' pill on row.index===0 + 4× Decimal-PriceDelta money fields total_pnl/avg_pnl/best_pnl/worst_pnl + avg_mfe_pct/avg_mae_pct via formatPct plain text). NEW api-types entries (+35 LOC; `VariantAggregate` 10-field interface + `VariantAggregateListResponse` envelope with from_at/to_at as `string | null` per WG#3 mirror ShadowRejectedListResponse echo). `__root.tsx` +11 LOC (BarChart3 import + NEW Link with data-testid="nav-shadow-aggregate" between Rejected signals + Backtest lab). `routeTree.gen.ts` +42 LOC auto-regen (2 NEW routes; excluded per T-517b2 convention).
+- **Write-time guidance verified (6 items)**: WG#1 uppercase symbol normalization with test pin `"  ethusdt  "` → `/shadow/aggregate/ETHUSDT`; WG#2 Best-pill cell comment cites backend sort key `analytics_compute.py:389` + tie-break compute test; WG#3 envelope from_at/to_at as `string | null` mirror ShadowRejectedListResponse precedent; WG#4 formatPct + formatPctNumber duplication comments cite extract-at-4th-consumer rule of three (currently 3 consumers); WG#5 ShadowAggregateIndex test landed 76 LOC within pre-cleared 80-100 LOC band; WG#6 test fixture sampleVariants exercises win_rate edge values [1.0, 0.5, 0.0] verified via test #2 "100.0%" + "50.0%" + "0.0%" all-visible assertion.
+- **Tests**: 3 NEW index tests + 7 NEW symbol tests + 1 NEW nav test = 11 NEW total. Full UI suite (src/ scope) 204 → 215 tests / 44 → 47 files; 0 regressions. `pnpm typecheck` + `pnpm lint` clean.
+- **§0.3 LOC**: src 326 LOC (79 index + 201 $symbol + 35 api-types + 11 __root); under cap by 74 LOC; +0.3% off plan estimate (most precise calibration to date — index landing being small standalone + $symbol detail tight mirror reduced variance).
+- **L-006 / L-014 / L-016 calibration 11th data point**: UI mirror task with 2 routes = 1.0× plan estimate.
+- **No new deps (§0.9)** — BarChart3 already in lucide-react 0.468.0.
+- **Plan**: `docs/plans/T-517a2.md` (APPROVED single-pass with 6 WG verbatim).
+- **Commit**: feat `d582e18` on `feat/T-517a2-aggregate-ui`; chore close pending.
+- **CLOSES T-517 trio**: T-517b1 backend (`8df70da`) + T-517b2 UI (`1643789`) + T-517a1 backend (`f6bf49a`) + T-517a2 UI (`d582e18`); 4/4 sub-tasks DONE; BRIEF §13.6 dashboard integration cluster (per-trade drill-down + per-symbol aggregate + per-rejected explorer) FULLY CLOSED.
+
+### Next session pickup
+
+- **T-518** — feature auto-backfill on registration (BRIEF §9.3); top-of-DAG independent. Est: ~200 LOC src + ~150 LOC tests.
+- **T-519** — §20 hazard test audit (E4 owner; gated all T-501..T-518 + T-524..T-536).
+- **T-520** — hardening shortlist (multi-commit; 5 today-flagged tech-debts from F4 E1 smoke).
+- **T-521** — final docs pass (gated T-519).
+- **T-522** — F5 close-out runbook + E1..E6 sign-off (Live-ready MVP per ADR-0011).
+- **T-524..T-528, T-530..T-536** — pre-live operational hardening cluster (12 mandatory tasks per ADR-0011; T-529 done) — biggest remaining cluster; lands BEFORE T-522.
+
 ## 2026-05-12 (late-night XXIV — T-517a1 per-symbol best-variant aggregate backend shipped; F5 counter advances 35/54 → 36/55 per L-007 split; T-517a sub-split per OQ-3=A; T-517 trio 3/4 progress; T-517a2 aggregate UI is final remaining sub-task)
 
 **F5 phase counter advances 35/54 → 36/55** per L-007 split convention (numerator+1 for shipped T-517a1; denominator+1 for T-517a sub-split this session — T-517a → T-517a1 + T-517a2 = 2 sub-tasks). **T-517 trio progresses 2/3 → 3/4** (sub-split adds 1 effective sub-task; remaining: T-517a2 UI).
