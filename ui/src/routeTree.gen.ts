@@ -24,6 +24,8 @@ import { Route as ScoringSignalIdRouteImport } from './routes/scoring.$signalId'
 import { Route as PaperTradesPaperTradeIdRouteImport } from './routes/paper-trades.$paperTradeId'
 import { Route as BotBotIdRouteImport } from './routes/bot.$botId'
 import { Route as BacktestsRunIdRouteImport } from './routes/backtests.$runId'
+import { Route as ShadowAggregateIndexRouteImport } from './routes/shadow.aggregate.index'
+import { Route as ShadowAggregateSymbolRouteImport } from './routes/shadow.aggregate.$symbol'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
@@ -100,6 +102,16 @@ const BacktestsRunIdRoute = BacktestsRunIdRouteImport.update({
   path: '/backtests/$runId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ShadowAggregateIndexRoute = ShadowAggregateIndexRouteImport.update({
+  id: '/shadow/aggregate/',
+  path: '/shadow/aggregate/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ShadowAggregateSymbolRoute = ShadowAggregateSymbolRouteImport.update({
+  id: '/shadow/aggregate/$symbol',
+  path: '/shadow/aggregate/$symbol',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -117,6 +129,8 @@ export interface FileRoutesByFullPath {
   '/paper-trades/': typeof PaperTradesIndexRoute
   '/scoring/': typeof ScoringIndexRoute
   '/trades/': typeof TradesIndexRoute
+  '/shadow/aggregate/$symbol': typeof ShadowAggregateSymbolRoute
+  '/shadow/aggregate/': typeof ShadowAggregateIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -134,6 +148,8 @@ export interface FileRoutesByTo {
   '/paper-trades': typeof PaperTradesIndexRoute
   '/scoring': typeof ScoringIndexRoute
   '/trades': typeof TradesIndexRoute
+  '/shadow/aggregate/$symbol': typeof ShadowAggregateSymbolRoute
+  '/shadow/aggregate': typeof ShadowAggregateIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -152,6 +168,8 @@ export interface FileRoutesById {
   '/paper-trades/': typeof PaperTradesIndexRoute
   '/scoring/': typeof ScoringIndexRoute
   '/trades/': typeof TradesIndexRoute
+  '/shadow/aggregate/$symbol': typeof ShadowAggregateSymbolRoute
+  '/shadow/aggregate/': typeof ShadowAggregateIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -171,6 +189,8 @@ export interface FileRouteTypes {
     | '/paper-trades/'
     | '/scoring/'
     | '/trades/'
+    | '/shadow/aggregate/$symbol'
+    | '/shadow/aggregate/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -188,6 +208,8 @@ export interface FileRouteTypes {
     | '/paper-trades'
     | '/scoring'
     | '/trades'
+    | '/shadow/aggregate/$symbol'
+    | '/shadow/aggregate'
   id:
     | '__root__'
     | '/'
@@ -205,6 +227,8 @@ export interface FileRouteTypes {
     | '/paper-trades/'
     | '/scoring/'
     | '/trades/'
+    | '/shadow/aggregate/$symbol'
+    | '/shadow/aggregate/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -223,6 +247,8 @@ export interface RootRouteChildren {
   PaperTradesIndexRoute: typeof PaperTradesIndexRoute
   ScoringIndexRoute: typeof ScoringIndexRoute
   TradesIndexRoute: typeof TradesIndexRoute
+  ShadowAggregateSymbolRoute: typeof ShadowAggregateSymbolRoute
+  ShadowAggregateIndexRoute: typeof ShadowAggregateIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -332,6 +358,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BacktestsRunIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/shadow/aggregate/': {
+      id: '/shadow/aggregate/'
+      path: '/shadow/aggregate'
+      fullPath: '/shadow/aggregate/'
+      preLoaderRoute: typeof ShadowAggregateIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/shadow/aggregate/$symbol': {
+      id: '/shadow/aggregate/$symbol'
+      path: '/shadow/aggregate/$symbol'
+      fullPath: '/shadow/aggregate/$symbol'
+      preLoaderRoute: typeof ShadowAggregateSymbolRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -351,6 +391,8 @@ const rootRouteChildren: RootRouteChildren = {
   PaperTradesIndexRoute: PaperTradesIndexRoute,
   ScoringIndexRoute: ScoringIndexRoute,
   TradesIndexRoute: TradesIndexRoute,
+  ShadowAggregateSymbolRoute: ShadowAggregateSymbolRoute,
+  ShadowAggregateIndexRoute: ShadowAggregateIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

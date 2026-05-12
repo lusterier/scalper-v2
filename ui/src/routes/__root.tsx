@@ -1,5 +1,6 @@
 import { Link, Outlet, createRootRoute } from "@tanstack/react-router";
 import {
+  BarChart3,
   CandlestickChart,
   ClipboardList,
   Code2,
@@ -111,6 +112,16 @@ function RootLayout() {
           >
             <ShieldOff size={15} />
             Rejected signals
+          </Link>
+
+          <Link
+            to="/shadow/aggregate"
+            className={navLinkBase}
+            activeProps={{ className: navLinkActive }}
+            data-testid="nav-shadow-aggregate"
+          >
+            <BarChart3 size={15} />
+            Variant aggregate
           </Link>
 
           <Link

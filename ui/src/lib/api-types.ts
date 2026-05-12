@@ -250,6 +250,41 @@ export interface ShadowRejectedListResponse {
   offset: number;
 }
 
+// T-517a2 — VariantAggregate interface, exact 10-field mirror of services/
+// analytics_api/app/models/shadow_aggregate.py:VariantAggregateResponse
+// (T-517a1 shipped; commit f6bf49a). Decimal NUMERIC fields → string per
+// §5.3 (total_pnl/avg_pnl/best_pnl/worst_pnl — money sums); DOUBLE PRECISION
+// → number per §5.13 (win_rate / avg_mfe_pct / avg_mae_pct — statistical
+// ratios; mfe/mae may be null when all rows had None at that field).
+export interface VariantAggregate {
+  variant_name: string;
+  n_trades: number;
+  win_count: number;
+  win_rate: number;
+  total_pnl: string;
+  avg_pnl: string;
+  best_pnl: string;
+  worst_pnl: string;
+  avg_mfe_pct: number | null;
+  avg_mae_pct: number | null;
+}
+
+// Envelope: variants sorted by `(-total_pnl, variant_name)` per backend
+// `compute_variant_aggregate` at services/analytics_api/app/analytics_compute.py:389
+// (DESC by total_pnl + ASC by variant_name tiebreak). First-row-is-best
+// invariant pinned by T-517a1 test
+// test_compute_variant_aggregate_sorted_by_total_pnl_desc_tiebreak_variant_name_asc.
+// `from_at` + `to_at` echo as ISO-8601 strings (Pydantic `datetime | None`
+// serialised; never `Date` object) — mirrors ShadowRejectedListResponse echo
+// shape.
+export interface VariantAggregateListResponse {
+  symbol: string;
+  variants: VariantAggregate[];
+  bot_id: string | null;
+  from_at: string | null;
+  to_at: string | null;
+}
+
 export interface ShadowVariantListResponse {
   variants: ShadowVariant[];
 }
