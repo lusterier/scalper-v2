@@ -14,12 +14,15 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from packages.db.queries.analytics import TradeRealizedPnlRow
+from packages.db.queries.shadow import ShadowVariantAggregateRow
 from services.analytics_api.app.analytics_compute import (
     HeatmapCell,
+    VariantAggregateMetrics,
     compute_expectancy,
     compute_hourly_heatmap,
     compute_monte_carlo,
     compute_pnl_series,
+    compute_variant_aggregate,
 )
 
 _T_BASE = datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)
@@ -227,3 +230,174 @@ def test_compute_monte_carlo_single_row_input() -> None:
     assert result.p5 == Decimal("5.00")
     assert result.p50 == Decimal("5.00")
     assert result.p95 == Decimal("5.00")
+
+
+# ---------------------------------------------------------------------------
+# T-517a1 — compute_variant_aggregate (8 tests)
+# ---------------------------------------------------------------------------
+
+
+def _agg_row(
+    *,
+    variant_name: str,
+    realized_pnl: str,
+    mfe_pct: float | None = 0.01,
+    mae_pct: float | None = -0.005,
+    bot_id: str = "alpha",
+    parent_kind: str = "live",
+    created_at: datetime = _T_BASE,
+) -> ShadowVariantAggregateRow:
+    """Helper: construct a ShadowVariantAggregateRow fixture."""
+    return ShadowVariantAggregateRow(
+        parent_symbol="BTCUSDT",
+        bot_id=bot_id,
+        variant_name=variant_name,
+        realized_pnl=Decimal(realized_pnl),
+        mfe_pct=mfe_pct,
+        mae_pct=mae_pct,
+        parent_kind=parent_kind,  # type: ignore[arg-type]
+        created_at=created_at,
+    )
+
+
+def test_compute_variant_aggregate_empty_input_returns_empty_list() -> None:
+    """Empty rows → empty list; no division-by-zero."""
+    assert compute_variant_aggregate([]) == []
+
+
+def test_compute_variant_aggregate_single_variant_single_row() -> None:
+    """1 variant + 1 row: total/avg/best/worst all equal; win_rate ∈ {0.0, 1.0}."""
+    rows = [_agg_row(variant_name="conservative", realized_pnl="7.50")]
+    metrics = compute_variant_aggregate(rows)
+    assert len(metrics) == 1
+    m = metrics[0]
+    assert m.variant_name == "conservative"
+    assert m.n_trades == 1
+    assert m.win_count == 1
+    assert m.win_rate == 1.0
+    assert m.total_pnl == Decimal("7.50")
+    assert m.avg_pnl == Decimal("7.50")
+    assert m.best_pnl == Decimal("7.50")
+    assert m.worst_pnl == Decimal("7.50")
+
+
+def test_compute_variant_aggregate_two_variants_separate_buckets() -> None:
+    """2 variants x 2 rows each; sorted by total_pnl DESC; per-bucket math correct."""
+    rows = [
+        _agg_row(variant_name="conservative", realized_pnl="10"),
+        _agg_row(variant_name="conservative", realized_pnl="-3"),
+        _agg_row(variant_name="aggressive", realized_pnl="20"),
+        _agg_row(variant_name="aggressive", realized_pnl="-5"),
+    ]
+    metrics = compute_variant_aggregate(rows)
+    assert len(metrics) == 2
+    # aggressive total=15, conservative total=7 → DESC: aggressive first
+    assert metrics[0].variant_name == "aggressive"
+    assert metrics[0].total_pnl == Decimal("15")
+    assert metrics[1].variant_name == "conservative"
+    assert metrics[1].total_pnl == Decimal("7")
+
+
+def test_compute_variant_aggregate_win_rate_with_mixed_outcomes() -> None:
+    """4 rows: 3 wins (+10, +5, +8) + 1 loss (-3) → win_rate = 0.75; total_pnl = 20."""
+    rows = [
+        _agg_row(variant_name="x", realized_pnl="10"),
+        _agg_row(variant_name="x", realized_pnl="5"),
+        _agg_row(variant_name="x", realized_pnl="-3"),
+        _agg_row(variant_name="x", realized_pnl="8"),
+    ]
+    metrics = compute_variant_aggregate(rows)
+    assert len(metrics) == 1
+    m = metrics[0]
+    assert m.n_trades == 4
+    assert m.win_count == 3
+    assert m.win_rate == 0.75
+    assert m.total_pnl == Decimal("20")
+    assert m.avg_pnl == Decimal("5")  # 20/4 = 5 exact
+
+
+def test_compute_variant_aggregate_avg_pnl_decimal_precision_preserved() -> None:
+    """avg_pnl uses Decimal arithmetic — NO silent float cast (per §5.3)."""
+    rows = [
+        _agg_row(variant_name="x", realized_pnl="1"),
+        _agg_row(variant_name="x", realized_pnl="2"),
+        _agg_row(variant_name="x", realized_pnl="3"),
+    ]
+    metrics = compute_variant_aggregate(rows)
+    m = metrics[0]
+    # 6 / 3 = 2 exact Decimal; type MUST be Decimal not float.
+    assert isinstance(m.total_pnl, Decimal)
+    assert isinstance(m.avg_pnl, Decimal)
+    assert isinstance(m.best_pnl, Decimal)
+    assert isinstance(m.worst_pnl, Decimal)
+    assert m.avg_pnl == Decimal("2")
+
+
+def test_compute_variant_aggregate_best_worst_pin() -> None:
+    """[-5, +3, +10, -2] → best=10, worst=-5."""
+    rows = [
+        _agg_row(variant_name="x", realized_pnl="-5"),
+        _agg_row(variant_name="x", realized_pnl="3"),
+        _agg_row(variant_name="x", realized_pnl="10"),
+        _agg_row(variant_name="x", realized_pnl="-2"),
+    ]
+    metrics = compute_variant_aggregate(rows)
+    m = metrics[0]
+    assert m.best_pnl == Decimal("10")
+    assert m.worst_pnl == Decimal("-5")
+
+
+def test_compute_variant_aggregate_avg_mfe_mae_skips_nulls() -> None:
+    """mfe_pct=[0.01, None, 0.03] → avg_mfe = 0.02 (mean of non-Nones); all-None → None."""
+    rows = [
+        _agg_row(variant_name="x", realized_pnl="1", mfe_pct=0.01, mae_pct=None),
+        _agg_row(variant_name="x", realized_pnl="2", mfe_pct=None, mae_pct=None),
+        _agg_row(variant_name="x", realized_pnl="3", mfe_pct=0.03, mae_pct=None),
+    ]
+    metrics = compute_variant_aggregate(rows)
+    m = metrics[0]
+    # avg_mfe_pct = (0.01 + 0.03) / 2 = 0.02 (skips middle None).
+    assert m.avg_mfe_pct == 0.02
+    # All mae_pct are None → avg_mae_pct = None (no division).
+    assert m.avg_mae_pct is None
+
+
+def test_compute_variant_aggregate_sorted_by_total_pnl_desc_tiebreak_variant_name_asc() -> None:
+    """WG#2 — composite sort key (-total_pnl, variant_name) for deterministic tie-break.
+
+    3 variants: 2 with same total_pnl=20 (different variant_names "aggressive" + "no_be"),
+    1 with lower total_pnl=10 ("conservative"). Output pin order:
+    aggressive (a < n alphabetically) → no_be → conservative. Tie-break is
+    variant_name ASC, NOT dict-insertion order.
+    """
+    rows = [
+        # Insert in REVERSE alphabetical order to prove sort, not insertion order.
+        _agg_row(variant_name="no_be", realized_pnl="20"),
+        _agg_row(variant_name="aggressive", realized_pnl="20"),
+        _agg_row(variant_name="conservative", realized_pnl="10"),
+    ]
+    metrics = compute_variant_aggregate(rows)
+    assert [m.variant_name for m in metrics] == ["aggressive", "no_be", "conservative"]
+    assert metrics[0].total_pnl == Decimal("20")
+    assert metrics[1].total_pnl == Decimal("20")
+    assert metrics[2].total_pnl == Decimal("10")
+
+
+def test_compute_variant_aggregate_metrics_dataclass_shape() -> None:
+    """VariantAggregateMetrics: 10-field dataclass (frozen + slots)."""
+    from dataclasses import fields
+
+    field_names = tuple(f.name for f in fields(VariantAggregateMetrics))
+    assert field_names == (
+        "variant_name",
+        "n_trades",
+        "win_count",
+        "win_rate",
+        "total_pnl",
+        "avg_pnl",
+        "best_pnl",
+        "worst_pnl",
+        "avg_mfe_pct",
+        "avg_mae_pct",
+    )
+    assert VariantAggregateMetrics.__dataclass_params__.frozen is True  # type: ignore[attr-defined]

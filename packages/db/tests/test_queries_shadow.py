@@ -31,6 +31,7 @@ from packages.core import is_non_idempotent
 from packages.core.types import ShadowRejectedTerminal, ShadowVariantTerminal
 from packages.db.queries.shadow import (
     ShadowRejectedRow,
+    ShadowVariantAggregateRow,
     ShadowVariantRow,
     count_shadow_rejected,
     insert_shadow_rejected,
@@ -42,6 +43,7 @@ from packages.db.queries.shadow import (
     select_shadow_rejected_paginated,
     select_shadow_variant_by_id,
     select_shadow_variants_by_parent,
+    select_shadow_variants_for_aggregate,
     update_shadow_rejected_terminal,
     update_shadow_variant_terminal,
 )
@@ -814,3 +816,150 @@ async def test_select_shadow_rejected_paginated_terminal_outcome_bind_uses_dot_v
     # WG#1 — must be plain string from `.value`, not StrEnum repr or any subclass instance.
     assert bind_args == ["would_sl", 50, 0]
     assert type(bind_args[0]) is str
+
+
+# ---------------------------------------------------------------------------
+# T-517a1 — select_shadow_variants_for_aggregate (per-symbol aggregate JOIN)
+# ---------------------------------------------------------------------------
+
+
+def test_shadow_variant_aggregate_row_dataclass_shape() -> None:
+    """ShadowVariantAggregateRow: 8-field subset projection (frozen+slots)."""
+    field_names = tuple(f.name for f in fields(ShadowVariantAggregateRow))
+    assert field_names == (
+        "parent_symbol",
+        "bot_id",
+        "variant_name",
+        "realized_pnl",
+        "mfe_pct",
+        "mae_pct",
+        "parent_kind",
+        "created_at",
+    )
+    assert ShadowVariantAggregateRow.__dataclass_params__.frozen is True  # type: ignore[attr-defined]
+
+
+async def test_select_shadow_variants_for_aggregate_symbol_only_no_optional_filters() -> None:
+    """Symbol-only call: bind_args = [symbol]; SQL has 3 charter predicates only."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    rows = await select_shadow_variants_for_aggregate(
+        conn,
+        symbol="BTCUSDT",
+        bot_id=None,
+        from_at=None,
+        to_at=None,
+    )
+    assert rows == []
+    sql, *bind_args = captured[0]
+    # Charter predicates always-included.
+    assert "COALESCE(t.symbol, pt.symbol) = $1::text" in sql
+    assert "v.terminated_at IS NOT NULL" in sql
+    assert "v.realized_pnl IS NOT NULL" in sql
+    # NO optional-filter predicates.
+    assert "v.bot_id =" not in sql
+    assert "v.created_at >=" not in sql
+    assert "v.created_at <" not in sql
+    # JOIN structure pin.
+    assert "LEFT JOIN trades t ON v.parent_kind = 'live'" in sql
+    assert "LEFT JOIN paper_trades pt ON v.parent_kind = 'paper'" in sql
+    # ORDER BY pin.
+    assert "ORDER BY v.created_at DESC" in sql
+    assert bind_args == ["BTCUSDT"]
+
+
+async def test_select_shadow_variants_for_aggregate_all_filters_predicates_and_bind_order() -> None:
+    """Full filter set: 6 predicates AND-joined; bind args order matches builder."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    from_dt = datetime(2026, 5, 1, 0, 0, 0, tzinfo=UTC)
+    to_dt = datetime(2026, 5, 12, 0, 0, 0, tzinfo=UTC)
+    await select_shadow_variants_for_aggregate(
+        conn,
+        symbol="BTCUSDT",
+        bot_id="alpha",
+        from_at=from_dt,
+        to_at=to_dt,
+    )
+    sql, *bind_args = captured[0]
+    # Charter + optional predicates AND-joined; placeholders $2..$4 in append order.
+    assert "WHERE COALESCE(t.symbol, pt.symbol) = $1::text" in sql
+    assert "AND v.terminated_at IS NOT NULL" in sql
+    assert "AND v.realized_pnl IS NOT NULL" in sql
+    assert "AND v.bot_id = $2" in sql
+    assert "AND v.created_at >= $3" in sql
+    assert "AND v.created_at < $4" in sql
+    assert bind_args == ["BTCUSDT", "alpha", from_dt, to_dt]
+
+
+async def test_select_shadow_variants_for_aggregate_l008_no_string_interpolation() -> None:
+    """L-008: filter values appear ONLY as $N placeholders, NEVER in SQL string."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    sentinel_symbol = "BTCUSDT-injection'); DROP TABLE shadow_variants; --"
+    await select_shadow_variants_for_aggregate(
+        conn,
+        symbol=sentinel_symbol,
+        bot_id=None,
+        from_at=None,
+        to_at=None,
+    )
+    sql, *bind_args = captured[0]
+    assert sentinel_symbol not in sql, "filter value must be a $N bind, never interpolated"
+    assert "$1::text" in sql
+    assert sentinel_symbol in bind_args
+
+
+async def test_select_shadow_variants_for_aggregate_l021_cast_only_on_symbol_predicate() -> None:
+    """WG#1 fix — only $1::text cast (defensive on always-included symbol).
+
+    Dynamic builder (mirror sibling T-517b1) eliminates `$N::type IS NULL OR ...`
+    pattern entirely. Optional filters use direct column comparisons:
+    `v.bot_id = $N`, `v.created_at >= $N`, `v.created_at < $N` — PG type-inference
+    resolves correctly.
+    """
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> list[Any]:
+        captured.append((sql, *args))
+        return []
+
+    conn.fetch = _capture
+    from_dt = datetime(2026, 5, 1, 0, 0, 0, tzinfo=UTC)
+    to_dt = datetime(2026, 5, 12, 0, 0, 0, tzinfo=UTC)
+    await select_shadow_variants_for_aggregate(
+        conn,
+        symbol="BTCUSDT",
+        bot_id="alpha",
+        from_at=from_dt,
+        to_at=to_dt,
+    )
+    sql, *_ = captured[0]
+    # Only $1::text cast site present.
+    assert sql.count("::") == 1
+    assert "$1::text" in sql
+    # No NULL-comparison cast patterns from the original static-WHERE design.
+    assert "::timestamptz" not in sql
+    assert "IS NULL OR" not in sql
+    assert "$2::" not in sql
+    assert "$3::" not in sql
+    assert "$4::" not in sql

@@ -64,6 +64,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ShadowRejectedRow",
+    "ShadowVariantAggregateRow",
     "ShadowVariantRow",
     "count_shadow_rejected",
     "insert_shadow_rejected",
@@ -76,6 +77,7 @@ __all__ = [
     "select_shadow_rejected_paginated",
     "select_shadow_variant_by_id",
     "select_shadow_variants_by_parent",
+    "select_shadow_variants_for_aggregate",
     "update_shadow_rejected_terminal",
     "update_shadow_variant_terminal",
 ]
@@ -122,6 +124,31 @@ class ShadowRejectedRow:
     mfe_pct: float | None
     mae_pct: float | None
     meta: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowVariantAggregateRow:
+    """Subset projection used by per-symbol aggregate (T-517a1).
+
+    8-field subset of :class:`ShadowVariantRow` plus parent_symbol via JOIN
+    on ``trades`` (parent_kind='live') OR ``paper_trades`` (parent_kind='paper').
+    Excludes meta/id/qty/side/entry_price/variant_name details that aggregate
+    doesn't consume.
+
+    Charter invariant (per analytics_compute pattern): row only present when
+    ``terminated_at IS NOT NULL AND realized_pnl IS NOT NULL`` — only finalized
+    P&L counts for stats. Excludes ``shutdown_mid_replay`` rows where realized_pnl
+    is NULL.
+    """
+
+    parent_symbol: str
+    bot_id: str
+    variant_name: str
+    realized_pnl: Decimal
+    mfe_pct: float | None
+    mae_pct: float | None
+    parent_kind: Literal["live", "paper"]
+    created_at: datetime
 
 
 _SHADOW_VARIANT_BASE_COLUMNS = (
@@ -519,6 +546,129 @@ async def count_shadow_rejected(
     if row is None:
         return 0
     return int(row["n"])
+
+
+# ---------------------------------------------------------------------------
+# T-517a1 — per-symbol best-variant aggregate (BRIEF §13.6 second bullet)
+# ---------------------------------------------------------------------------
+
+
+_SELECT_AGGREGATE_SQL_PREFIX = (
+    "SELECT COALESCE(t.symbol, pt.symbol) AS parent_symbol, v.bot_id, "
+    "v.variant_name, v.realized_pnl, v.mfe_pct, v.mae_pct, v.parent_kind, "
+    "v.created_at "
+    "FROM shadow_variants v "
+    "LEFT JOIN trades t ON v.parent_kind = 'live' AND v.parent_trade_id = t.id "
+    "LEFT JOIN paper_trades pt ON v.parent_kind = 'paper' AND v.parent_trade_id = pt.id "
+)
+_SELECT_AGGREGATE_SQL_SUFFIX = " ORDER BY v.created_at DESC"
+
+
+def _row_to_shadow_variant_aggregate(row: asyncpg.Record) -> ShadowVariantAggregateRow:
+    """Narrow asyncpg row to typed :class:`ShadowVariantAggregateRow` (T-517a1).
+
+    Mirror :func:`_row_to_shadow_variant` (15-col → 8-col subset). Decimal
+    pass-through for ``realized_pnl`` (NUMERIC asyncpg native — no silent
+    float cast per §5.3). DOUBLE PRECISION ``mfe_pct``/``mae_pct`` via
+    ``float()`` with None-guard (rows where MFE/MAE were never recorded
+    before observation closed). ``parent_kind`` literal-set guard mirrors
+    :func:`_row_to_shadow_variant:249-252`.
+    """
+    parent_kind_raw = str(row["parent_kind"])
+    if parent_kind_raw not in ("live", "paper"):
+        msg = f"shadow_variants.parent_kind unexpected value {parent_kind_raw!r}"
+        raise ValueError(msg)
+    return ShadowVariantAggregateRow(
+        parent_symbol=str(row["parent_symbol"]),
+        bot_id=str(row["bot_id"]),
+        variant_name=str(row["variant_name"]),
+        realized_pnl=row["realized_pnl"],
+        mfe_pct=float(row["mfe_pct"]) if row["mfe_pct"] is not None else None,
+        mae_pct=float(row["mae_pct"]) if row["mae_pct"] is not None else None,
+        parent_kind=parent_kind_raw,  # type: ignore[arg-type]
+        created_at=row["created_at"],
+    )
+
+
+def _build_shadow_variant_aggregate_where_clause(
+    *,
+    symbol: str,
+    bot_id: str | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> tuple[str, list[Any]]:
+    """Compose dynamic WHERE clause for shadow-variant per-symbol aggregate (T-517a1).
+
+    Mirror :func:`_build_shadow_rejected_where_clause` sibling pattern
+    modulo always-included charter predicates. ``$N`` placeholders ONLY
+    (NEVER string interpolation per L-008 + §5.10).
+
+    Charter predicates ALWAYS included (per analytics charter "only finalized
+    P&L counts for stats" at analytics.py:1735):
+
+    * ``COALESCE(t.symbol, pt.symbol) = $1::text`` — ``$1::text`` defensive
+      cast (COALESCE result is TEXT; explicit cast is safer per L-021).
+    * ``v.terminated_at IS NOT NULL``
+    * ``v.realized_pnl IS NOT NULL``
+
+    Optional filters appended as direct column comparisons (no L-021 cast
+    needed — PG infers from column type; eliminates ``$N::type IS NULL OR ...``
+    pattern entirely):
+
+    * ``bot_id`` → ``v.bot_id = $N``
+    * ``from_at`` → ``v.created_at >= $N``
+    * ``to_at`` → ``v.created_at < $N``
+
+    Returns ``("WHERE <predicates>", [bind args in $N order])``. ``symbol``
+    is always ``$1``; optional filters take ``$2..$4`` as appended.
+    """
+    bind_args: list[Any] = [symbol]
+    predicates: list[str] = [
+        "COALESCE(t.symbol, pt.symbol) = $1::text",
+        "v.terminated_at IS NOT NULL",
+        "v.realized_pnl IS NOT NULL",
+    ]
+    if bot_id is not None:
+        bind_args.append(bot_id)
+        predicates.append(f"v.bot_id = ${len(bind_args)}")
+    if from_at is not None:
+        bind_args.append(from_at)
+        predicates.append(f"v.created_at >= ${len(bind_args)}")
+    if to_at is not None:
+        bind_args.append(to_at)
+        predicates.append(f"v.created_at < ${len(bind_args)}")
+    return ("WHERE " + " AND ".join(predicates), bind_args)
+
+
+async def select_shadow_variants_for_aggregate(
+    conn: _DbExecutor,
+    *,
+    symbol: str,
+    bot_id: str | None,
+    from_at: datetime | None,
+    to_at: datetime | None,
+) -> list[ShadowVariantAggregateRow]:
+    """Return terminated variants for ``symbol`` with optional bot + window filters (T-517a1).
+
+    JOINs ``shadow_variants`` with parent ``trades`` (parent_kind='live') OR
+    ``paper_trades`` (parent_kind='paper') by ``parent_trade_id`` to pull
+    parent symbol via COALESCE. Charter invariant: only ``terminated_at IS
+    NOT NULL AND realized_pnl IS NOT NULL`` rows (mirror
+    :func:`packages.db.queries.analytics.select_trades_for_analytics` charter
+    at analytics.py:1735 — "only finalized P&L counts for stats").
+
+    ORDER BY ``v.created_at DESC`` for deterministic iteration; in-memory
+    aggregator is order-invariant for total/avg/min/max metrics.
+    """
+    where_clause, where_args = _build_shadow_variant_aggregate_where_clause(
+        symbol=symbol,
+        bot_id=bot_id,
+        from_at=from_at,
+        to_at=to_at,
+    )
+    sql = f"{_SELECT_AGGREGATE_SQL_PREFIX}{where_clause}{_SELECT_AGGREGATE_SQL_SUFFIX}"
+    rows = await conn.fetch(sql, *where_args)
+    return [_row_to_shadow_variant_aggregate(row) for row in rows]
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from packages.db.queries.analytics import TradeRealizedPnlRow
+    from packages.db.queries.shadow import ShadowVariantAggregateRow
 
 __all__ = [
     "ExpectancyMetrics",
@@ -39,10 +40,12 @@ __all__ = [
     "MonteCarloResult",
     "PnlBucket",
     "PnlSeriesPoint",
+    "VariantAggregateMetrics",
     "compute_expectancy",
     "compute_hourly_heatmap",
     "compute_monte_carlo",
     "compute_pnl_series",
+    "compute_variant_aggregate",
 ]
 
 
@@ -298,3 +301,89 @@ def _percentile_linear(sorted_values: list[Decimal], pct: int) -> Decimal:
     lower_val = sorted_values[lower_idx]
     upper_val = sorted_values[upper_idx]
     return lower_val + frac * (upper_val - lower_val)
+
+
+# ---------------------------------------------------------------------------
+# T-517a1 — per-symbol best-variant aggregate (BRIEF §13.6 second bullet)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class VariantAggregateMetrics:
+    """Per-variant computed metrics for ``/api/shadow/aggregate/{symbol}`` (T-517a1).
+
+    8 metrics per variant_name. Decimal preserves NUMERIC(20,4) precision per
+    §5.3 (total_pnl/avg_pnl/best/worst — money sums); float for win_rate +
+    avg_mfe/mae_pct (statistical ratios per §5.13).
+    """
+
+    variant_name: str
+    n_trades: int
+    win_count: int
+    win_rate: float
+    total_pnl: Decimal
+    avg_pnl: Decimal
+    best_pnl: Decimal
+    worst_pnl: Decimal
+    avg_mfe_pct: float | None  # None when ALL rows have mfe_pct=None
+    avg_mae_pct: float | None
+
+
+def compute_variant_aggregate(
+    rows: list[ShadowVariantAggregateRow],
+) -> list[VariantAggregateMetrics]:
+    """Group rows by variant_name + compute 8 metrics per variant (T-517a1).
+
+    Returns variants sorted by ``(-total_pnl, variant_name)`` for deterministic
+    order: primary descending by total_pnl (operator-visible "best variant"
+    highlight); secondary tie-break ascending by variant_name (alphabetical) —
+    guarantees stable output independent of SQL row iteration order or
+    dict-insertion order. Empty input → empty list.
+
+    Metrics:
+        n_trades = count of rows for variant
+        win_count = count where realized_pnl > 0
+        win_rate = win_count / n_trades (float in [0, 1])
+        total_pnl = sum(realized_pnl) (Decimal, precision-preserved)
+        avg_pnl = total_pnl / n_trades (Decimal)
+        best_pnl = max(realized_pnl) (Decimal)
+        worst_pnl = min(realized_pnl) (Decimal)
+        avg_mfe_pct = mean of non-None mfe_pct (float; None if all None)
+        avg_mae_pct = mean of non-None mae_pct (float; None if all None)
+
+    Empty-bucket guard: division-by-zero precluded by ``n_trades > 0``
+    (variant in dict only if at least one row).
+    """
+    if not rows:
+        return []
+    buckets: dict[str, list[ShadowVariantAggregateRow]] = {}
+    for r in rows:
+        buckets.setdefault(r.variant_name, []).append(r)
+    metrics: list[VariantAggregateMetrics] = []
+    for variant_name, bucket_rows in buckets.items():
+        n_trades = len(bucket_rows)
+        pnls = [r.realized_pnl for r in bucket_rows]
+        win_count = sum(1 for p in pnls if p > 0)
+        total_pnl = sum(pnls, Decimal("0"))
+        avg_pnl = total_pnl / Decimal(n_trades)
+        best_pnl = max(pnls)
+        worst_pnl = min(pnls)
+        mfe_non_none = [r.mfe_pct for r in bucket_rows if r.mfe_pct is not None]
+        mae_non_none = [r.mae_pct for r in bucket_rows if r.mae_pct is not None]
+        avg_mfe_pct = sum(mfe_non_none) / len(mfe_non_none) if mfe_non_none else None
+        avg_mae_pct = sum(mae_non_none) / len(mae_non_none) if mae_non_none else None
+        metrics.append(
+            VariantAggregateMetrics(
+                variant_name=variant_name,
+                n_trades=n_trades,
+                win_count=win_count,
+                win_rate=win_count / n_trades,
+                total_pnl=total_pnl,
+                avg_pnl=avg_pnl,
+                best_pnl=best_pnl,
+                worst_pnl=worst_pnl,
+                avg_mfe_pct=avg_mfe_pct,
+                avg_mae_pct=avg_mae_pct,
+            )
+        )
+    return sorted(metrics, key=lambda m: (-m.total_pnl, m.variant_name))
