@@ -1,5 +1,33 @@
 # Session status
 
+## 2026-05-12 (late-night XXIV — T-517a1 per-symbol best-variant aggregate backend shipped; F5 counter advances 35/54 → 36/55 per L-007 split; T-517a sub-split per OQ-3=A; T-517 trio 3/4 progress; T-517a2 aggregate UI is final remaining sub-task)
+
+**F5 phase counter advances 35/54 → 36/55** per L-007 split convention (numerator+1 for shipped T-517a1; denominator+1 for T-517a sub-split this session — T-517a → T-517a1 + T-517a2 = 2 sub-tasks). **T-517 trio progresses 2/3 → 3/4** (sub-split adds 1 effective sub-task; remaining: T-517a2 UI).
+
+### T-517a1 — per-symbol best-variant aggregate backend (analytics-api endpoint + DB JOIN helper + Python aggregator + Pydantic)
+
+- **Origin**: F5 numbered task (BRIEF §13.6 second bullet "which variant would have been best over last N trades?"). Pre-emptive sub-split T-517a → T-517a1 (this; backend) + T-517a2 (UI; next) per L-007 + operator OQ-3=A 2026-05-12. Combined T-517a est ~470 LOC trip §0.3 cap; sub-split keeps each well under cap. Mirror T-517b1+T-517b2 split precedent.
+- **All 4 review gates passed**: plan-reviewer pass-1 REVISE 2026-05-12 (2 CONCERNs: dict-iteration tie-break fragility + sibling builder divergence) → revised plan applies CONCERN-1 composite key sort `(-total_pnl, variant_name)` + CONCERN-2 Možnosť A switch to dynamic `_build_shadow_variant_aggregate_where_clause` builder mirror sibling T-517b1 → plan-reviewer pass-2 APPROVE with 7-item Write-time guidance → drift-checker ON TRACK (9 staged files; 373 src LOC = 93% pod 400 cap; 1.37× plan estimate within L-006 mirror band; all 7 WG verified) → brief-reviewer skipped per operator preference (drift-checker verified all 7 WG + tests/typecheck/lint/L-021 testcontainer all clean) → math-validator out-of-scope per CLAUDE.md (analytics_api + packages/db NOT in math-binding list); plan §Hand verification section is the math safety net.
+- **Operator OQs (4 OQs, 2026-05-12)**: OQ-1=A multi-metric table (8 metrics per variant: variant_name + n_trades + win_rate + total_pnl + avg_pnl + best_pnl + worst_pnl + avg_mfe_pct + avg_mae_pct); OQ-2=A time-based window via TimeRangePicker; OQ-3=A sub-split T-517a → T-517a1+T-517a2; OQ-4=A optional bot_id filter (default all-bots aggregated for symbol).
+- **Implementation**: NEW DB layer in `packages/db/queries/shadow.py` (+150 LOC; `ShadowVariantAggregateRow` 8-field subset projection with parent_symbol via JOIN + `_row_to_shadow_variant_aggregate` narrower mirror existing pattern + `_build_shadow_variant_aggregate_where_clause` dynamic builder mirror sibling T-517b1 with 3 always-included charter predicates + 3 optional appended as direct column comparisons + `select_shadow_variants_for_aggregate` helper with LEFT JOIN trades + paper_trades on parent_kind discriminator + COALESCE on symbol). NEW Python aggregator in `services/analytics_api/app/analytics_compute.py` (+89 LOC; `VariantAggregateMetrics` + `compute_variant_aggregate` with composite key sort per WG#2). NEW `services/analytics_api/app/models/shadow_aggregate.py` (49 LOC; `VariantAggregateResponse` + `VariantAggregateListResponse` envelope). NEW `services/analytics_api/app/routers/shadow_aggregate.py` (76 LOC; prefix `/api/shadow/aggregate`; `GET /{symbol}` with optional bot_id + from + to). main.py +2 LOC adjacency PRED `shadow_rejected_router` per WG#7.
+- **Hand verification (per CLAUDE.md §5)**: 3 variants × 4 trades fixture; aggressive total=20 + no_be total=20 + conservative total=10; tie-break by variant_name ASC ('aggressive' < 'no_be') → output order aggressive PRED no_be PRED conservative; 21 expected values independently verified.
+- **Tests**: 5 NEW DB mock-based + 9 NEW compute (8 plan + 1 dataclass shape addition; covers WG#2 tie-break case) + 10 NEW router + 3 NEW testcontainer L-021 (live-parent JOIN + paper-parent JOIN + mixed-parents-with-filters). Repo baseline 2301 → 2325 (+24 visible; +3 testcontainer skipped without `POSTGRES_TEST_DSN`). 0 regressions. ruff + mypy strict + bandit clean.
+- **L-021 testcontainer-gated tests verified locally** per WG#4 mandate: `POSTGRES_TEST_DSN=postgresql://scalper:devpass@127.0.0.1:5432/scalper uv run pytest tests/integration/queries/test_shadow.py -v` → 3/3 PASS pre commit/push (against scalper-v2-postgres-1 timescale/timescaledb container; verified 2026-05-12).
+- **§0.3 LOC**: src 373 LOC; under cap by 27 LOC; 1.37× plan estimate within L-006 1.0-1.4× backend-mirror calibration band. Test code 916 LOC excluded from cap per BRIEF §0.3.
+- **L-006 / L-014 / L-016 calibration 10th data point**: backend mirror task with novel SQL JOIN + Python aggregator = 1.37× plan estimate.
+- **Hazards bound**: L-008 ($N placeholders only via SQL injection sentinel); L-021 (testcontainer 3/3 PASS pre-push; dynamic builder eliminates `$N::type IS NULL OR ...` trigger; only `$1::text` defensive cast); §N1/N3/N6/N7 clean; §N9 N/A.
+- **No new deps (§0.9)**.
+- **Plan**: `docs/plans/T-517a1.md` (APPROVED pass-2 with 7 WG verbatim).
+- **Commit**: feat `f6bf49a` on `feat/T-517a1-aggregate-backend`; chore close pending.
+- **Unblocks T-517a2**: UI route `/shadow/aggregate/$symbol` + nav entry + api-types; consumes endpoint shipped here. T-517a2 closes T-517 trio (T-517b1 + T-517b2 + T-517a1 + T-517a2 = 4 sub-tasks; all DONE).
+
+### Next session pickup
+
+- **T-517a2** — UI route `/shadow/aggregate/$symbol` + nav entry + api-types (consumes T-517a1 endpoint). Mirror T-517b2 UI structure pattern; ~240 LOC src est. Closes T-517 trio.
+- **T-518..T-521** F5 backend polish + close-out gating.
+- **T-524..T-528, T-530..T-536** pre-live operational hardening cluster (12 mandatory tasks per ADR-0011) — biggest remaining cluster.
+- **T-522** Live-ready close-out runbook (E5 + E6 sign-off).
+
 ## 2026-05-12 (late-night XXIII — T-517b2 rejected-signal explorer UI shipped; F5 counter advances 34/54 → 35/54; T-517b sub-split CLOSED; T-517 trio 2/3 progress; T-517a aggregate is final remaining sub-task)
 
 **F5 phase counter advances 34/54 → 35/54** per L-007 split convention (numerator+1; T-517b2 already in denominator since T-517 reorg this session). **T-517b sub-split CLOSED** (T-517b1 backend `8df70da` + T-517b2 UI `1643789`); T-517 trio progresses 1/3 → 2/3 (remaining: T-517a per-symbol best-variant aggregate).
