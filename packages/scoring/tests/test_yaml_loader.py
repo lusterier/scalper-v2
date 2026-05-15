@@ -990,3 +990,51 @@ def test_yaml_loader_alpha_without_shadow_yields_none() -> None:
     # Existing fields still parse correctly — no regression.
     assert cfg.bot_id == "alpha"
     assert cfg.execution.sl_pct == Decimal("0.01")
+
+
+# ---------------------------------------------------------------------------
+# T-526 ``risk:`` block extraction
+# ---------------------------------------------------------------------------
+
+
+def test_yaml_loader_missing_risk_block_yields_default_risk_section() -> None:
+    """Backward-compat: YAML without risk: block → bot.risk = RiskSection() defaults."""
+    cfg = load_bot_config_from_string(_T514_BASE_YAML)
+    assert cfg.risk.cooldown_after_loss_minutes == 0
+    assert cfg.risk.cooldown_after_streak_n_losses == 0
+    assert cfg.risk.cooldown_after_streak_n_losses_minutes == 0
+
+
+def test_yaml_loader_risk_block_extracted_with_non_zero_values() -> None:
+    """``risk:`` block with non-zero thresholds parses through."""
+    yaml_with_risk = _T514_BASE_YAML + (
+        "\nrisk:\n"
+        "  cooldown_after_loss_minutes: 10\n"
+        "  cooldown_after_streak_n_losses: 3\n"
+        "  cooldown_after_streak_n_losses_minutes: 60\n"
+    )
+    cfg = load_bot_config_from_string(yaml_with_risk)
+    assert cfg.risk.cooldown_after_loss_minutes == 10
+    assert cfg.risk.cooldown_after_streak_n_losses == 3
+    assert cfg.risk.cooldown_after_streak_n_losses_minutes == 60
+
+
+def test_yaml_loader_risk_block_rejects_typo_keys() -> None:
+    """``extra='forbid'`` on RiskSection catches operator typos at YAML load."""
+    yaml_with_typo = _T514_BASE_YAML + "\nrisk:\n  cooldwn_after_loss_minutes: 10\n"
+    with pytest.raises(ValidationError):
+        load_bot_config_from_string(yaml_with_typo)
+
+
+def test_yaml_loader_alpha_fixture_loads_with_risk_block(tmp_path: Path) -> None:
+    """configs/bots/alpha.yaml has a risk: block (all zeros) — must parse + yield defaults."""
+    from pathlib import Path as _P
+
+    alpha_path = _P(__file__).parent.parent.parent.parent / "configs" / "bots" / "alpha.yaml"
+    if not alpha_path.exists():
+        pytest.skip("repo fixture alpha.yaml not present")
+    cfg = load_bot_config_from_string(alpha_path.read_text())
+    assert cfg.bot_id == "alpha"
+    # All-zero risk block matches RiskSection() defaults.
+    assert cfg.risk.cooldown_after_loss_minutes == 0
+    assert cfg.risk.cooldown_after_streak_n_losses == 0

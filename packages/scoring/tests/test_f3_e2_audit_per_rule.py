@@ -120,6 +120,7 @@ async def test_scoring_evaluations_records_one_rule_result_entry_per_scoring_rul
             audit_logger=MagicMock(),
             now_fn=lambda: _FIXED_NOW,
             max_signal_age_seconds=600,
+            metrics=MagicMock(),
         )
         await handler(_envelope(_signal()))
 
@@ -162,6 +163,7 @@ async def test_scoring_evaluations_feature_snapshot_non_empty_after_resolver_cal
         audit_logger=MagicMock(),
         now_fn=lambda: _FIXED_NOW,
         max_signal_age_seconds=600,
+        metrics=MagicMock(),
     )
     await handler(_envelope(_signal()))
 

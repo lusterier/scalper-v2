@@ -15,6 +15,7 @@ from packages.scoring import (
     BotConfig,
     ExchangeSection,
     ExecutionSection,
+    RiskSection,
     RuleResult,
     ScoringConfig,
     ScoringResult,
@@ -408,3 +409,46 @@ def test_models_are_frozen() -> None:
     ]:
         with pytest.raises(ValidationError):
             setattr(instance, attr, "mutated")
+
+
+# ---------------------------------------------------------------------------
+# RiskSection (T-526)
+# ---------------------------------------------------------------------------
+
+
+def test_risk_section_defaults_all_zero() -> None:
+    """Default RiskSection has all 3 cooldown knobs at 0 (disabled)."""
+    rs = RiskSection()
+    assert rs.cooldown_after_loss_minutes == 0
+    assert rs.cooldown_after_streak_n_losses == 0
+    assert rs.cooldown_after_streak_n_losses_minutes == 0
+
+
+def test_risk_section_rejects_negative_minutes() -> None:
+    """All 3 fields are Field(ge=0); negative ints fail validation."""
+    with pytest.raises(ValidationError):
+        RiskSection(cooldown_after_loss_minutes=-1)
+    with pytest.raises(ValidationError):
+        RiskSection(cooldown_after_streak_n_losses=-1)
+    with pytest.raises(ValidationError):
+        RiskSection(cooldown_after_streak_n_losses_minutes=-1)
+
+
+def test_risk_section_rejects_extra_keys() -> None:
+    """``extra='forbid'`` catches operator typos at YAML load."""
+    with pytest.raises(ValidationError):
+        RiskSection(cooldwn_after_loss_minutes=5)  # type: ignore[call-arg]
+
+
+def test_risk_section_is_frozen() -> None:
+    """Mirror §5.3 immutability convention."""
+    rs = RiskSection(cooldown_after_loss_minutes=10)
+    with pytest.raises(ValidationError):
+        rs.cooldown_after_loss_minutes = 20
+
+
+def test_bot_config_default_risk_section_when_absent() -> None:
+    """BotConfig.risk defaults to RiskSection() when not provided."""
+    bot = _basic_bot()
+    assert isinstance(bot.risk, RiskSection)
+    assert bot.risk.cooldown_after_loss_minutes == 0

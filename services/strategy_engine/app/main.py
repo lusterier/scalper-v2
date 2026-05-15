@@ -60,7 +60,6 @@ from packages.observability import (
     configure,
     get_logger,
     make_metrics_asgi_app,
-    make_registry,
 )
 from packages.scoring import FeatureResolver, load_bot_config
 from packages.scoring.registry import load_plugin_registry
@@ -68,6 +67,7 @@ from packages.scoring.registry import load_plugin_registry
 from .config import Settings
 from .consumer import make_signal_handler
 from .health import router as health_router
+from .metrics import build_registry, build_strategy_engine_metrics
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -86,7 +86,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     logger = get_logger(settings.service_name, "system")
     trading_logger = get_logger(settings.service_name, "trading")
     audit_logger = get_logger(settings.service_name, "audit")
-    registry_metrics = make_registry()
+    registry_metrics = build_registry()
+    metrics = build_strategy_engine_metrics(registry_metrics)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -135,6 +136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             audit_logger=audit_logger,
             now_fn=lambda: datetime.now(UTC),
             max_signal_age_seconds=settings.signal_max_age_seconds,
+            metrics=metrics,
         )
         await bus.subscribe("signals.validated", signal_handler)
 

@@ -76,6 +76,12 @@ from services.execution.app.config import Settings as ExecutionSettings
 from services.execution.app.dispatcher import ExecutionDispatcher, run_dispatcher_for_bot
 from services.execution.app.placement import make_per_bot_handler
 from services.strategy_engine.app.consumer import make_signal_handler
+from services.strategy_engine.app.metrics import (
+    build_registry as build_strategy_registry,
+)
+from services.strategy_engine.app.metrics import (
+    build_strategy_engine_metrics,
+)
 
 if TYPE_CHECKING:
     from packages.bus import BusProtocol
@@ -457,7 +463,12 @@ async def main(args: argparse.Namespace) -> int:
         # 6. FeatureResolver (DB-fallback per OQ-5=A; ReplayBus.kv_get returns None).
         resolver = FeatureResolver(bus=bus, pool=pool, bound_logger=system_logger)
 
-        # 7. Wire signal handler (signals.validated).
+        # 7. Wire signal handler (signals.validated). T-526 cooldown gate is
+        # short-circuited because backtest bot_config carries default-zero
+        # risk: section (loader injects RiskSection() when block absent);
+        # registry + metrics still constructed for type-safe kwarg pass.
+        strategy_registry = build_strategy_registry()
+        strategy_metrics = build_strategy_engine_metrics(strategy_registry)
         signal_handler = make_signal_handler(
             bot_id=bot_id,
             bot_config=bot_config,
@@ -469,6 +480,7 @@ async def main(args: argparse.Namespace) -> int:
             audit_logger=audit_logger,
             now_fn=replay_clock.now,
             max_signal_age_seconds=bot_config.signals.ttl_seconds,
+            metrics=strategy_metrics,
         )
         await bus.subscribe("signals.validated", signal_handler)
 

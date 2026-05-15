@@ -57,6 +57,8 @@ from packages.db.queries.scoring import insert_scoring_evaluation
 from packages.db.queries.signal_gateway import select_signal_id_by_idempotency_key
 from packages.scoring import evaluate
 
+from .cooldown_gate import check_cooldown
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from datetime import datetime
@@ -68,6 +70,8 @@ if TYPE_CHECKING:
     from packages.bus import BusProtocol
     from packages.core import BotId
     from packages.scoring import BotConfig, FeatureResolver
+
+    from .metrics import Metrics
 
 __all__ = ["make_signal_handler"]
 
@@ -90,11 +94,13 @@ def make_signal_handler(
     audit_logger: BoundLogger,
     now_fn: Callable[[], datetime],
     max_signal_age_seconds: int,
+    metrics: Metrics,
 ) -> Callable[[MessageEnvelope], Awaitable[None]]:
     """Closure factory returning the ``signals.validated`` handler.
 
-    Bot identity + config + resolver + pool/bus/logger trio bound in the
-    closure; inner ``_handle`` performs §9.4 steps 3a-3h per signal.
+    Bot identity + config + resolver + pool/bus/logger trio + metrics bound in
+    the closure; inner ``_handle`` performs §9.4 steps 3a-3h per signal plus
+    the T-526 pre-scoring cooldown gate inserted between 3b and 3c.
     """
 
     async def _handle(envelope: MessageEnvelope) -> None:
@@ -144,6 +150,41 @@ def make_signal_handler(
                 idempotency_key=signal.idempotency_key,
                 symbol=signal.symbol,
             )
+            return
+
+        # T-526 pre-scoring cooldown gate (between 3b symbol filter + 3c signal_id
+        # resolve). Reuses ``now`` snapshot per WG#1. Skip pattern mirrors
+        # ``signal_expired`` / ``signal_outside_universe`` above: trading.log info +
+        # Prom counter inc + return BEFORE scoring_evaluations / orders.requests /
+        # signals.rejected. Short-circuits before DB hit when both knobs disabled.
+        cooldown = await check_cooldown(
+            pool=pool,
+            bot_id=bot_id,
+            exchange_mode=bot_config.exchange.mode,
+            now=now,
+            risk_config=bot_config.risk,
+        )
+        if cooldown.active:
+            trading_logger.info(
+                "signal_blocked_cooldown",
+                bot_id=bot_id,
+                idempotency_key=signal.idempotency_key,
+                symbol=signal.symbol,
+                reason=cooldown.reason,
+                cooldown_until=(
+                    cooldown.cooldown_until.isoformat()
+                    if cooldown.cooldown_until is not None
+                    else None
+                ),
+                streak_count=cooldown.streak_count,
+                last_loss_at=(
+                    cooldown.last_loss_at.isoformat() if cooldown.last_loss_at is not None else None
+                ),
+            )
+            metrics.signals_blocked_cooldown.labels(
+                bot_id=str(bot_id),
+                reason=cooldown.reason or "unknown",
+            ).inc()
             return
 
         # 3c resolve signal_id (T-310a; received_at_lower_bound from now snapshot).

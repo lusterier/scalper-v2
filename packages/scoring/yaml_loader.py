@@ -52,6 +52,7 @@ from .types import (
     BotConfig,
     ExchangeSection,
     ExecutionSection,
+    RiskSection,
     ScoringConfig,
     ScoringRule,
     ShadowConfig,
@@ -406,6 +407,19 @@ def _parse_shadow(spec: dict[str, Any] | None) -> ShadowConfig | None:
     )
 
 
+def _parse_risk(spec: dict[str, Any] | None) -> RiskSection:
+    """Parse ``risk:`` YAML block per T-526; return default-zero RiskSection if absent.
+
+    Missing block or empty dict → ``RiskSection()`` (all-zero defaults = cooldown
+    gate disabled; short-circuits before SELECT per cooldown_gate.py docstring).
+    Pydantic ``extra="forbid"`` on :class:`RiskSection` catches operator typos at
+    YAML load (net-new feature; mirror :func:`_parse_shadow` convention).
+    """
+    if not spec:
+        return RiskSection()
+    return RiskSection(**spec)
+
+
 def load_bot_config_from_string(
     yaml_text: str,
     *,
@@ -449,6 +463,7 @@ def load_bot_config_from_string(
         execution=_parse_execution(data.get("execution", {})),
         scoring=scoring,
         shadow=_parse_shadow(data.get("shadow")),
+        risk=_parse_risk(data.get("risk")),
     )
 
 

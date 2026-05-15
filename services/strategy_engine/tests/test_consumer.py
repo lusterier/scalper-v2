@@ -190,6 +190,7 @@ def _build_handler(
         audit_logger=captures["audit"],
         now_fn=lambda: now,
         max_signal_age_seconds=600,
+        metrics=captures.get("metrics") or MagicMock(),
     )
     return handler, captures
 
@@ -585,3 +586,117 @@ async def test_decision_reject_db_error_resolves_zero_virtual_entry(
     assert len(sr_calls) == 1
     payload = ShadowRejectedStartPayload.model_validate(sr_calls[0].args[1].payload)
     assert payload.virtual_entry_price == Decimal("0")
+
+
+# region: T-526 pre-scoring cooldown gate -----------------------------------
+
+
+async def test_signal_blocked_by_cooldown_skips_db_and_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-526 WG#5: cooldown_active → signal_blocked_cooldown log + Prom counter inc +
+    NO scoring_evaluations write + NO orders.requests publish + NO signals.rejected
+    publish + NO shadow rejected start. Pin both "what fires" + "what does NOT" sides.
+    """
+    from services.strategy_engine.app.cooldown_gate import CooldownDecision
+
+    cooldown_until = _FIXED_NOW + timedelta(minutes=55)
+    last_loss_at = _FIXED_NOW - timedelta(minutes=5)
+    active = CooldownDecision(
+        active=True,
+        reason="cooldown_after_streak",
+        cooldown_until=cooldown_until,
+        streak_count=3,
+        last_loss_at=last_loss_at,
+    )
+
+    async def _stub_check_cooldown(**_kwargs: Any) -> CooldownDecision:
+        return active
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.check_cooldown",
+        _stub_check_cooldown,
+    )
+
+    # signal_id resolve must NOT be called when cooldown active — stub fails loudly
+    # if consumer reaches step 3c.
+    async def _select_signal_id_must_not_run(*_args: Any, **_kwargs: Any) -> int:
+        raise AssertionError("step 3c reached despite cooldown active")
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.select_signal_id_by_idempotency_key",
+        _select_signal_id_must_not_run,
+    )
+
+    metrics = MagicMock()
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=AssertionError("pool.acquire must not run"))
+    bus = _mock_bus()
+    captured_trading = MagicMock()
+
+    handler = make_signal_handler(
+        bot_id="alpha",  # type: ignore[arg-type]
+        bot_config=_bot_config(),
+        resolver=MagicMock(),
+        pool=pool,
+        bus=bus,
+        trading_logger=captured_trading,
+        system_logger=MagicMock(),
+        audit_logger=MagicMock(),
+        now_fn=lambda: _FIXED_NOW,
+        max_signal_age_seconds=600,
+        metrics=metrics,
+    )
+    await handler(_envelope(_signal()))
+
+    # Pin: signal_blocked_cooldown logged on trading.log with EXACT field set per WG#5.
+    captured_trading.info.assert_called_once()
+    call = captured_trading.info.call_args
+    assert call.args[0] == "signal_blocked_cooldown"
+    kwargs = call.kwargs
+    assert kwargs["bot_id"] == "alpha"
+    assert kwargs["idempotency_key"] == "key-1"
+    assert kwargs["symbol"] == "BTCUSDT"
+    assert kwargs["reason"] == "cooldown_after_streak"
+    assert kwargs["cooldown_until"] == cooldown_until.isoformat()
+    assert kwargs["streak_count"] == 3
+    assert kwargs["last_loss_at"] == last_loss_at.isoformat()
+
+    # Pin: Prom counter incremented with bot_id + reason labels.
+    metrics.signals_blocked_cooldown.labels.assert_called_once_with(
+        bot_id="alpha", reason="cooldown_after_streak"
+    )
+    metrics.signals_blocked_cooldown.labels.return_value.inc.assert_called_once_with()
+
+    # Pin: NO DB writes + NO bus publishes + NO step-3c signal_id lookup.
+    bus.publish.assert_not_awaited()
+    pool.acquire.assert_not_called()
+
+
+async def test_cooldown_inactive_passes_through_to_step_3c(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When cooldown gate returns inactive, consumer proceeds to step 3c normally."""
+    from services.strategy_engine.app.cooldown_gate import CooldownDecision
+
+    async def _stub_check_cooldown(**_kwargs: Any) -> CooldownDecision:
+        return CooldownDecision(
+            active=False,
+            reason=None,
+            cooldown_until=None,
+            streak_count=0,
+            last_loss_at=None,
+        )
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.check_cooldown",
+        _stub_check_cooldown,
+    )
+
+    handler, caps = _build_handler(
+        evaluate_result=_scoring_result(decision="execute"),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal()))
+    # Step 3c..3h ran → bus.publish on orders.requests fired.
+    caps["bus"].publish.assert_awaited()

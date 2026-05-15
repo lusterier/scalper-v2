@@ -100,6 +100,7 @@ async def test_passthrough_mode_records_decision_passthrough_in_audit_row(
         audit_logger=MagicMock(),
         now_fn=lambda: _FIXED_NOW,
         max_signal_age_seconds=600,
+        metrics=MagicMock(),
     )
     await handler(envelope)
 

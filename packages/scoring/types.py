@@ -31,6 +31,7 @@ __all__ = [
     "Decision",
     "ExchangeSection",
     "ExecutionSection",
+    "RiskSection",
     "RuleResult",
     "ScoringConfig",
     "ScoringResult",
@@ -296,6 +297,29 @@ class ShadowConfig(BaseModel):
         return self
 
 
+class RiskSection(BaseModel):
+    """§B.1 ``risk:`` block (T-526) — per-bot risk-management knobs.
+
+    Forward-compatible container: T-526 ships cooldown knobs (single-loss +
+    losing-streak); T-524 will add concurrent-trades caps; T-525 will add
+    daily-loss-limit + max-drawdown thresholds to this same model.
+
+    Per-knob ``0`` value = disabled. Knob semantics intentionally orthogonal:
+    any one of ``cooldown_after_loss_minutes`` / ``cooldown_after_streak_n_losses``
+    / ``cooldown_after_streak_n_losses_minutes`` = ``0`` disables that knob.
+    Both single-loss + streak knobs = ``0`` short-circuits cooldown gate before
+    SELECT (no DB hit on every signal arrival when feature unused). Mirror
+    :class:`ShadowConfig` ``extra="forbid"`` rationale: net-new feature catches
+    operator typos at YAML load.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cooldown_after_loss_minutes: int = Field(default=0, ge=0)
+    cooldown_after_streak_n_losses: int = Field(default=0, ge=0)
+    cooldown_after_streak_n_losses_minutes: int = Field(default=0, ge=0)
+
+
 class BotConfig(BaseModel):
     """Top-level bot YAML config (§9.4 + §10).
 
@@ -323,6 +347,7 @@ class BotConfig(BaseModel):
     execution: ExecutionSection
     scoring: ScoringConfig
     shadow: ShadowConfig | None = None
+    risk: RiskSection = Field(default_factory=RiskSection)
 
     @field_validator("bot_id")
     @classmethod
