@@ -30,8 +30,15 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from packages.core import idempotent, non_idempotent, now_utc
-from packages.exchange.errors import NetworkTimeout, OrderRejected, RateLimitError, UnknownState
+from packages.exchange.errors import (
+    ExchangeError,
+    NetworkTimeout,
+    OrderRejected,
+    RateLimitError,
+    UnknownState,
+)
 from packages.exchange.types import (
+    AccountBalance,
     ExecutionEvent,
     InstrumentInfo,
     OrderPlaceResult,
@@ -480,6 +487,53 @@ class BybitV5Adapter:
             },
         )
         return total
+
+    @idempotent
+    async def get_account_balance(self, sub_account: str) -> AccountBalance:
+        """T-530 — UNIFIED account-level wallet-balance snapshot.
+
+        OQ-1=A: ``GET /v5/account/wallet-balance?accountType=UNIFIED`` →
+        ``result.list[0]`` account-level totals mapped 1:1 to the 5
+        :class:`AccountBalance` fields. Sub_account validation BEFORE
+        limiter.acquire per OQ-10 default A (verbatim mirror
+        :meth:`get_closed_pnl_cumulative` — caller mistake costs no token).
+
+        Limiter key ``"positions"`` (same bucket as the account-level
+        ``get_closed_pnl_cumulative`` read; ``/v5/account/*`` shares the
+        ``positions`` group — no new ``EndpointGroup``). Decimal decode via
+        ``Decimal(str(...))`` (§5.13 — no float; ``str()`` is a float-artefact
+        guard, account totals carry higher float-risk than lotSize). Empty
+        ``result.list`` → :class:`ExchangeError` (a valid authed UNIFIED key
+        always returns ``list[0]``; empty = auth/account anomaly — NOT
+        :class:`OrderRejected` which is order-semantic).
+        """
+        if sub_account != self._sub_account:
+            raise ValueError(
+                f"sub_account mismatch: got {sub_account!r}, expected {self._sub_account!r}",
+            )
+        await self._limiter.acquire(self._sub_account, "positions")
+        try:
+            result = await self._client.request(
+                "GET",
+                "/v5/account/wallet-balance",
+                params={"accountType": "UNIFIED"},
+                retries=3,
+            )
+        except RateLimitError:
+            await self._on_rate_limit_hit("positions")
+            raise
+        items = result.get("list", [])
+        if not items:
+            msg = "wallet-balance: empty account list (auth/account anomaly)"
+            raise ExchangeError(msg)
+        acct = items[0]
+        return AccountBalance(
+            wallet_balance=Decimal(str(acct["totalWalletBalance"])),
+            available_balance=Decimal(str(acct["totalAvailableBalance"])),
+            total_equity=Decimal(str(acct["totalEquity"])),
+            margin_balance=Decimal(str(acct["totalMarginBalance"])),
+            unrealized_pnl=Decimal(str(acct["totalPerpUPL"])),
+        )
 
     # T-209 stream + close (delegates to BybitV5PrivateWs) ------------------
 

@@ -1037,6 +1037,11 @@ async def test_get_closed_pnl_cumulative_acquires_limiter_with_positions_group()
             lambda a: a.get_closed_pnl_cumulative("sub-a"),
             "positions",
         ),
+        (
+            "get_account_balance",
+            lambda a: a.get_account_balance("sub-a"),
+            "positions",
+        ),
     ],
 )
 async def test_read_methods_on_rate_limit_error_signal_upstream_and_re_raise(
@@ -1067,3 +1072,116 @@ async def test_get_positions_calls_upstream_with_bybit_v5_query_shape_no_filter(
     assert call.args == ("GET", "/v5/position/list")
     assert call.kwargs["params"] == {"category": "linear"}
     assert call.kwargs["retries"] == 3
+
+
+# --- T-530: get_account_balance (UNIFIED account snapshot) ----------------
+
+
+async def test_get_account_balance_validates_sub_account_before_limiter() -> None:
+    """OQ-10/W: ValueError BEFORE limiter.acquire — caller mistake costs no token.
+
+    L-017 bilateral pin: the mismatch path BOTH raises AND touches neither
+    the limiter nor the HTTP client (no token consumed, no request issued).
+    """
+    client = _make_client_mock()
+    limiter = _make_limiter_mock()
+    adapter = _make_adapter(client=client, limiter=limiter)
+    with pytest.raises(ValueError, match="sub_account mismatch"):
+        await adapter.get_account_balance("other-sub")
+    assert limiter.acquire.await_count == 0
+    assert client.request.await_count == 0
+
+
+async def test_get_account_balance_decodes_unified_totals_exact_decimal() -> None:
+    """Golden Bybit V5 /v5/account/wallet-balance UNIFIED response → 5 exact Decimal.
+
+    Hand-verified: ``list[0]`` account-level totals map 1:1 to the 5
+    AccountBalance fields; the negative ``totalPerpUPL`` is preserved as a
+    signed Decimal (no float cast, no abs) — a loss-side equity must stay
+    negative for T-531 equity snapshots.
+    """
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {
+                    "accountType": "UNIFIED",
+                    "totalEquity": "9875.25",
+                    "totalWalletBalance": "10000.50",
+                    "totalMarginBalance": "10000.50",
+                    "totalAvailableBalance": "9875.25",
+                    "totalPerpUPL": "-125.2500",
+                    "coin": [{"coin": "USDT", "walletBalance": "10000.50"}],
+                },
+            ],
+        },
+    )
+    adapter = _make_adapter(client=client)
+    bal = await adapter.get_account_balance("sub-a")
+    assert bal.wallet_balance == Decimal("10000.50")
+    assert bal.available_balance == Decimal("9875.25")
+    assert bal.total_equity == Decimal("9875.25")
+    assert bal.margin_balance == Decimal("10000.50")
+    assert bal.unrealized_pnl == Decimal("-125.2500")
+
+
+async def test_get_account_balance_raises_exchange_error_on_empty_list() -> None:
+    """Empty ``result.list`` → ExchangeError.
+
+    A valid authed UNIFIED key always returns ``list[0]``; an empty list is
+    an auth/account anomaly, NOT OrderRejected (which is order-semantic).
+    """
+    from packages.exchange.errors import ExchangeError
+
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": []})
+    adapter = _make_adapter(client=client)
+    with pytest.raises(ExchangeError, match="empty account list"):
+        await adapter.get_account_balance("sub-a")
+
+
+async def test_get_account_balance_calls_upstream_with_unified_account_type() -> None:
+    """Bybit V5 query shape: GET /v5/account/wallet-balance ?accountType=UNIFIED, 3x retry."""
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {
+                    "totalWalletBalance": "1",
+                    "totalAvailableBalance": "1",
+                    "totalEquity": "1",
+                    "totalMarginBalance": "1",
+                    "totalPerpUPL": "0",
+                },
+            ],
+        },
+    )
+    adapter = _make_adapter(client=client)
+    await adapter.get_account_balance("sub-a")
+    call = client.request.await_args
+    assert call.args == ("GET", "/v5/account/wallet-balance")
+    assert call.kwargs["params"] == {"accountType": "UNIFIED"}
+    assert call.kwargs["retries"] == 3
+
+
+async def test_get_account_balance_acquires_limiter_with_positions_group() -> None:
+    """Shares the account-level 'positions' bucket with get_closed_pnl_cumulative
+    (no new EndpointGroup — /v5/account/* maps to the positions group)."""
+    limiter = _make_limiter_mock()
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {
+                    "totalWalletBalance": "1",
+                    "totalAvailableBalance": "1",
+                    "totalEquity": "1",
+                    "totalMarginBalance": "1",
+                    "totalPerpUPL": "0",
+                },
+            ],
+        },
+    )
+    adapter = _make_adapter(client=client, limiter=limiter)
+    await adapter.get_account_balance("sub-a")
+    limiter.acquire.assert_awaited_once_with("sub-a", "positions")

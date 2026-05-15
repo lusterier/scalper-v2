@@ -472,6 +472,58 @@ async def test_get_closed_pnl_cumulative_returns_decimal_zero_when_no_closed_tra
     assert isinstance(total, Decimal)
 
 
+async def test_get_account_balance_raises_on_sub_account_mismatch() -> None:
+    """Decision #8 contract: exact str equality; mismatch -> ValueError
+    (verbatim mirror get_closed_pnl_cumulative)."""
+    pe = _make_paper_exchange()
+    with pytest.raises(ValueError, match="sub_account mismatch"):
+        await pe.get_account_balance("other-bot")
+
+
+async def test_get_account_balance_derives_wallet_from_seed_plus_realized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-530 paper parity: wallet = seed + Sigma realized; 3 totals alias wallet;
+    unrealized_pnl == Decimal('0') (OQ-2=A no mark-to-market limitation).
+
+    Hand-verified: seed Decimal('10000') + realized Decimal('250.5000')
+    = Decimal('10250.5000') (exact Decimal addition, scale preserved).
+    """
+    pe = _make_paper_exchange()
+    _patch_persistence(
+        monkeypatch,
+        sum_paper_trades_realized_pnl=AsyncMock(return_value=Decimal("250.5000")),
+    )
+    bal = await pe.get_account_balance("test-bot")
+    assert bal.wallet_balance == Decimal("10250.5000")
+    assert bal.unrealized_pnl == Decimal("0")
+    # The simplification's defining identity (no margin-lockup, UPL=0).
+    assert (
+        bal.total_equity
+        == bal.margin_balance
+        == bal.available_balance
+        == bal.wallet_balance
+        == Decimal("10250.5000")
+    )
+
+
+async def test_get_account_balance_negative_realized_reduces_wallet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loss path: a net-negative realized P&L reduces wallet below seed
+    (signed Decimal addition, no abs). Hand-verified: Decimal('10000')
+    + Decimal('-500') = Decimal('9500')."""
+    pe = _make_paper_exchange()
+    _patch_persistence(
+        monkeypatch,
+        sum_paper_trades_realized_pnl=AsyncMock(return_value=Decimal("-500")),
+    )
+    bal = await pe.get_account_balance("test-bot")
+    assert bal.wallet_balance == Decimal("9500")
+    assert bal.total_equity == bal.margin_balance == bal.available_balance == Decimal("9500")
+    assert bal.unrealized_pnl == Decimal("0")
+
+
 # ---------------------------------------------------------------------------
 # T-511b2 / ADR-0010 — emit_parent_lifecycle ctor flag (paper close emit)
 # ---------------------------------------------------------------------------

@@ -332,6 +332,7 @@ F1 bullet 1 (full signal-gateway) absorbed into F0 (T-015a..T-015b2b); per-bot H
 - [ ] T-F5+: Shadow variants statistical significance test — when N variants over M trades, Bonferroni-corrected best-variant claim.
 - [ ] T-F5+: Feature backfill progress dashboard tile — currently log-only.
 - [ ] T-F5+: Multi-bot backtest run (F5 ships single-bot per CLI invocation).
+- [ ] T-F5+: `docs(exchange-protocol-groupdoc)` — `packages/exchange/protocols.py:69-71` ExchangeClient class group-doc prose is shipped-stale: "Reads ... get_positions, get_fill_price, get_closed_pnl_cumulative" omits `get_instrument_info` (T-529) + `get_closed_pnl_window` (T-220a) [+ `get_account_balance` once T-530 lands]. Surfaced by plan-reviewer at T-530 Gate 1 (3rd pass); per §0 no-silent-refactor NOT absorbed into T-530 (which only adds the new method entry). Docstring-only fix; refreshes the Reads group-list to the actual protocol surface so future protocol tasks don't inherit further stale-prose layers (L-002/L-015 docstring-drift pattern). ~3 LOC docs.
 
 ### F4+ opportunistic (carry-over from F3 + F4 deferrals)
 

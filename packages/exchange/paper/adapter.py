@@ -83,6 +83,7 @@ from packages.bus.schemas import OhlcCandlePayload
 from packages.core import CorrelationId, idempotent, non_idempotent, now_utc
 from packages.exchange.errors import OrderRejected
 from packages.exchange.types import (
+    AccountBalance,
     ExecutionEvent,
     InstrumentInfo,
     OrderPlaceResult,
@@ -1383,6 +1384,37 @@ class PaperExchange:
                 bot_id=str(self._bot_id),
                 since=since,
             )
+
+    @idempotent
+    async def get_account_balance(self, sub_account: str) -> AccountBalance:
+        """T-530 — paper account snapshot derived from ``paper_trades``.
+
+        ``wallet_balance = seed_balance + Σ realized_pnl`` (reuses the shipped
+        :func:`persistence.sum_paper_trades_realized_pnl`; NULL → ``Decimal('0')``
+        per its Decision #8). ``unrealized_pnl = Decimal('0')`` — paper has no
+        live mark price in-memory (NO mark-to-market in T-530 scope; documented
+        :class:`AccountBalance` limitation). With ``unrealized_pnl == 0`` and no
+        paper margin-lockup model, the other three totals alias
+        ``wallet_balance``. Decision #8 ``sub_account == str(bot_id)`` contract
+        (verbatim mirror :meth:`get_closed_pnl_cumulative`).
+        """
+        if sub_account != str(self._bot_id):
+            raise ValueError(
+                f"sub_account mismatch: got {sub_account!r}, expected {str(self._bot_id)!r}"
+            )
+        async with self._pool.acquire() as conn:
+            realized = await persistence.sum_paper_trades_realized_pnl(
+                conn,
+                bot_id=str(self._bot_id),
+            )
+        wallet_balance = self._seed_balance + realized
+        return AccountBalance(
+            wallet_balance=wallet_balance,
+            available_balance=wallet_balance,
+            total_equity=wallet_balance,
+            margin_balance=wallet_balance,
+            unrealized_pnl=Decimal("0"),
+        )
 
     def stream_executions(self) -> AsyncIterator[ExecutionEvent]:
         """Decision #12: ``def`` (NOT ``async def``) per T-201 OQ-1.

@@ -39,7 +39,14 @@ if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
 
-    from .types import ExecutionEvent, InstrumentInfo, OrderPlaceResult, Position, PositionEvent
+    from .types import (
+        AccountBalance,
+        ExecutionEvent,
+        InstrumentInfo,
+        OrderPlaceResult,
+        Position,
+        PositionEvent,
+    )
 
 __all__ = ["ExchangeClient"]
 
@@ -126,6 +133,25 @@ class ExchangeClient(Protocol):
 
     @idempotent
     async def get_closed_pnl_window(self, sub_account: str, since: datetime) -> Decimal: ...
+
+    @idempotent
+    async def get_account_balance(self, sub_account: str) -> AccountBalance:
+        """Read-only account financial snapshot (§11.1 extension; T-530).
+
+        ``@idempotent`` — a pure read; retry-safe (mirror
+        :meth:`get_closed_pnl_cumulative` / :meth:`get_instrument_info`). The
+        CI conformance test enforces the marker. ``sub_account`` is the bot's
+        sub-account string; the adapter validates it == its own bound
+        sub_account BEFORE any rate-limit acquire (caller-mistake guard,
+        verbatim mirror :meth:`get_closed_pnl_cumulative`).
+
+        Live: Bybit ``GET /v5/account/wallet-balance?accountType=UNIFIED`` →
+        ``result.list[0]`` account-level totals. Paper: derived from
+        ``paper_trades`` (seed + Σ realized; ``unrealized_pnl=Decimal('0')`` —
+        no paper mark-to-market in T-530 scope, documented limitation).
+        Unblocks T-531 (equity snapshots).
+        """
+        ...
 
     def stream_executions(self) -> AsyncIterator[ExecutionEvent]: ...
 

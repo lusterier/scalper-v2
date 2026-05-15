@@ -24,6 +24,7 @@ from decimal import Decimal  # noqa: TC003 — runtime annotation on frozen data
 from typing import Literal
 
 __all__ = [
+    "AccountBalance",
     "ExecutionEvent",
     "InstrumentInfo",
     "OrderPlaceResult",
@@ -51,6 +52,38 @@ class InstrumentInfo:
     qty_step: Decimal
     min_order_qty: Decimal
     min_notional_usd: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class AccountBalance:
+    """Account financial snapshot — returned by :meth:`ExchangeClient.get_account_balance` (T-530).
+
+    Live: Bybit ``GET /v5/account/wallet-balance?accountType=UNIFIED`` →
+    ``result.list[0]`` account-level totals (totalWalletBalance /
+    totalAvailableBalance / totalEquity / totalMarginBalance / totalPerpUPL)
+    mapped 1:1 to the 5 fields below.
+
+    Paper: derived from ``paper_trades`` — ``wallet_balance = seed_balance +
+    Σ realized_pnl`` (reuses the shipped ``sum_paper_trades_realized_pnl``).
+    ``unrealized_pnl`` is ``Decimal('0')`` in paper (NO mark-to-market in
+    T-530 scope — paper has no live mark price in-memory; a future
+    market-data-coupled task may refine this; documented limitation). The
+    other three fields alias ``wallet_balance`` in paper (no margin-lockup
+    model): ``total_equity == margin_balance == available_balance ==
+    wallet_balance`` when ``unrealized_pnl == 0``.
+
+    All 5 fields are :class:`~decimal.Decimal` money (§5.13 — no float on the
+    decode or the paper arithmetic). Per TASKS.md T-530 verbatim: no
+    currency/coin field (the bot is USDT-only by config; account-level totals
+    are the canonical risk-relevant numbers; T-531 equity snapshots + future
+    balance-driven sizing consume this).
+    """
+
+    wallet_balance: Decimal
+    available_balance: Decimal
+    total_equity: Decimal
+    margin_balance: Decimal
+    unrealized_pnl: Decimal
 
 
 @dataclass(frozen=True, slots=True)
