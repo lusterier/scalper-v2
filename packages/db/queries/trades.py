@@ -39,6 +39,7 @@ __all__ = [
     "ClosedTradeRow",
     "TradeTableName",
     "count_open_trades",
+    "select_pnl_peak_and_current",
     "select_recent_closed_trades",
     "sum_realized_pnl_since",
 ]
@@ -199,3 +200,71 @@ async def sum_realized_pnl_since(
         return Decimal("0")
     total = row[0]
     return total if isinstance(total, Decimal) else Decimal(str(total))
+
+
+async def select_pnl_peak_and_current(
+    conn: _DbExecutor,
+    *,
+    table_name: TradeTableName,
+    bot_id: str,
+) -> tuple[Decimal, Decimal]:
+    """``(peak, current)`` of the bot's LIFETIME cumulative realized P&L.
+
+    Powers the T-525b max-drawdown hard-stop gate:
+
+    * ``current`` = Σ ``realized_pnl`` over ALL the bot's closed trades (the
+      final running cumulative — equivalently a plain ``SUM``).
+    * ``peak``    = ``MAX`` of the running prefix-sum ordered by
+      ``(closed_at, id)`` — the all-time profit high-water mark.
+
+    The gate computes ``drawdown_pct = (peak - current) / peak`` ONLY when
+    ``peak > 0`` (you cannot give back profit never earned; the pure-loss
+    case is the T-525a2 daily-loss gate's domain). Charter invariant inlined
+    (mirror :func:`sum_realized_pnl_since`): only ``status = 'closed' AND
+    realized_pnl IS NOT NULL`` rows count. Both values
+    ``COALESCE(..., 0)`` so a bot with zero qualifying closed trades returns
+    ``(Decimal('0'), Decimal('0'))`` (NEVER ``None``).
+
+    §5.13 / §N1: ``realized_pnl`` is ``NUMERIC(20,4)`` → asyncpg ``Decimal``;
+    the window ``SUM(...) OVER (...)`` + the outer ``MAX``/``SUM`` stay
+    NUMERIC → ``Decimal``. NO ``float()`` anywhere (math-validator Gate 4).
+
+    The window frame is **explicit** ``ROWS UNBOUNDED PRECEDING`` (NOT the
+    default ``RANGE``): with a unique ``(closed_at, id)`` order key there are
+    no peer rows so the result is identical, but ``ROWS`` is the
+    deterministic running-prefix-sum frame and is defensive against a future
+    ORDER BY narrowing.
+
+    L-021 SQL-parameter type-cast audit: the ONLY parameter is ``$1``
+    (``bot_id``), used in ``WHERE bot_id = $1`` (appears TWICE — the inner
+    window subquery and the outer correlated ``current`` subquery, both
+    column-direct TEXT equality) → L-021-safe, no ``::text`` cast. There is
+    **no timestamp predicate** (lifetime — no ``closed_at >= $N``) → no
+    ``::timestamptz`` cast site (mirror :func:`count_open_trades`; distinct
+    from :func:`sum_realized_pnl_since` which DID need the cast for its
+    ``closed_at >= $2`` comparison). The doubled ``WHERE`` is byte-identical
+    so ``peak`` and ``current`` operate over the same row population.
+
+    ``table_name`` is a :data:`TradeTableName` Literal; f-string inlining is
+    injection-safe.
+    """
+    # Byte-identical charter predicate reused by BOTH the window subquery and
+    # the correlated `current` subquery — peak + current MUST operate over the
+    # same row population (a divergence would be a correctness bug).
+    _where = "WHERE bot_id = $1 AND status = 'closed' AND realized_pnl IS NOT NULL"
+    sql = (
+        f"SELECT COALESCE(MAX(running), 0) AS peak, "  # noqa: S608  # nosec B608
+        f"COALESCE((SELECT SUM(realized_pnl) FROM {table_name} {_where}), 0) AS current "
+        f"FROM (SELECT SUM(realized_pnl) OVER ("
+        f"ORDER BY closed_at, id ROWS UNBOUNDED PRECEDING) AS running "
+        f"FROM {table_name} {_where}) s"
+    )
+    row = await conn.fetchrow(sql, bot_id)
+    if row is None:
+        return (Decimal("0"), Decimal("0"))
+    peak = row["peak"]
+    current = row["current"]
+    return (
+        peak if isinstance(peak, Decimal) else Decimal(str(peak)),
+        current if isinstance(current, Decimal) else Decimal(str(current)),
+    )

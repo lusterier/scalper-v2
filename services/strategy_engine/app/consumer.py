@@ -59,6 +59,7 @@ from packages.scoring import evaluate
 
 from .concurrent_caps_gate import check_concurrent_caps
 from .cooldown_gate import check_cooldown
+from .drawdown_gate import check_max_drawdown
 from .loss_limit_gate import check_daily_loss_limit
 
 if TYPE_CHECKING:
@@ -243,6 +244,36 @@ def make_signal_handler(
             metrics.signals_blocked_loss_limit.labels(
                 bot_id=str(bot_id),
                 reason=loss_limit.reason or "unknown",
+            ).inc()
+            return
+
+        # T-525b pre-scoring max-drawdown hard-stop gate. Runs AFTER the T-525a2
+        # loss-limit gate (chain cooldown → caps → loss-limit → drawdown) — same
+        # 3b→3c boundary, same silent-skip pattern. Lifetime cumulative-P&L
+        # peak-vs-current give-back; hard-stop latch (never UTC-day-cleared).
+        # Short-circuits before any DB when max_drawdown_pct<=0.
+        drawdown = await check_max_drawdown(
+            pool=pool,
+            bot_id=bot_id,
+            exchange_mode=bot_config.exchange.mode,
+            now=now,
+            risk_config=bot_config.risk,
+        )
+        if drawdown.blocked:
+            trading_logger.info(
+                "signal_blocked_drawdown",
+                bot_id=bot_id,
+                idempotency_key=signal.idempotency_key,
+                symbol=signal.symbol,
+                reason=drawdown.reason,
+                drawdown_pct=(
+                    str(drawdown.drawdown_pct) if drawdown.drawdown_pct is not None else None
+                ),
+                limit_pct=(str(drawdown.limit_pct) if drawdown.limit_pct is not None else None),
+            )
+            metrics.signals_blocked_drawdown.labels(
+                bot_id=str(bot_id),
+                reason=drawdown.reason or "unknown",
             ).inc()
             return
 

@@ -1081,12 +1081,13 @@ def test_yaml_loader_daily_loss_limit_missing_defaults_zero_decimal() -> None:
 
 
 def test_yaml_loader_int_knobs_stay_int_no_decimal_bleed() -> None:
-    """_RISK_DECIMAL_FIELDS contains only daily_loss_limit_usd — int knobs stay int."""
+    """_RISK_DECIMAL_FIELDS = {daily_loss_limit_usd, max_drawdown_pct} — int knobs stay int."""
     yaml_txt = _T514_BASE_YAML + (
         "\nrisk:\n"
         "  cooldown_after_loss_minutes: 10\n"
         "  max_open_trades_per_bot: 3\n"
         '  daily_loss_limit_usd: "50"\n'
+        '  max_drawdown_pct: "0.20"\n'
     )
     cfg = load_bot_config_from_string(yaml_txt)
     assert isinstance(cfg.risk.cooldown_after_loss_minutes, int)
@@ -1094,3 +1095,37 @@ def test_yaml_loader_int_knobs_stay_int_no_decimal_bleed() -> None:
     assert isinstance(cfg.risk.max_open_trades_per_bot, int)
     assert cfg.risk.cooldown_after_loss_minutes == 10
     assert cfg.risk.max_open_trades_per_bot == 3
+
+
+# ---------------------------------------------------------------------------
+# T-525b max_drawdown_pct Decimal coercion
+# ---------------------------------------------------------------------------
+
+
+def test_yaml_loader_max_drawdown_string_quoted_exact_decimal() -> None:
+    from decimal import Decimal as _Decimal
+
+    yaml_txt = _T514_BASE_YAML + '\nrisk:\n  max_drawdown_pct: "0.20"\n'
+    cfg = load_bot_config_from_string(yaml_txt)
+    assert cfg.risk.max_drawdown_pct == _Decimal("0.20")
+
+
+def test_yaml_loader_max_drawdown_float_given_no_binary_artefact() -> None:
+    """Unquoted float 0.10 (NOT exactly binary-representable) → Decimal('0.1')
+    via _to_decimal's Decimal(str(value)); MUST NOT be the Decimal(0.10) expansion."""
+    from decimal import Decimal as _Decimal
+
+    yaml_txt = _T514_BASE_YAML + "\nrisk:\n  max_drawdown_pct: 0.10\n"
+    cfg = load_bot_config_from_string(yaml_txt)
+    val = cfg.risk.max_drawdown_pct
+    assert val == _Decimal("0.1")
+    assert str(val) == "0.1"
+    assert "999999" not in str(val)
+
+
+def test_yaml_loader_max_drawdown_missing_defaults_zero_decimal() -> None:
+    from decimal import Decimal as _Decimal
+
+    yaml_txt = _T514_BASE_YAML + "\nrisk:\n  cooldown_after_loss_minutes: 5\n"
+    cfg = load_bot_config_from_string(yaml_txt)
+    assert cfg.risk.max_drawdown_pct == _Decimal("0")

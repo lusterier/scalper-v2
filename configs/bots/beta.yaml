@@ -60,3 +60,4 @@ risk:
   max_open_trades_per_bot: 0
   max_open_trades_global: 0
   daily_loss_limit_usd: "0"
+  max_drawdown_pct: "0"

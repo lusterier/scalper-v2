@@ -526,3 +526,46 @@ def test_risk_section_all_three_task_knobs_coexist() -> None:
     assert rs.daily_loss_limit_usd == Decimal("250.00")
     with pytest.raises(ValidationError):
         RiskSection(daily_loss_limit_used=Decimal("5"))  # type: ignore[call-arg]  # typo
+
+
+# ---------------------------------------------------------------------------
+# RiskSection T-525b max_drawdown_pct Decimal extension
+# ---------------------------------------------------------------------------
+
+
+def test_risk_section_max_drawdown_default_zero_decimal() -> None:
+    rs = RiskSection()
+    assert rs.max_drawdown_pct == Decimal("0")
+    assert isinstance(rs.max_drawdown_pct, Decimal)
+
+
+def test_risk_section_max_drawdown_accepts_fraction_decimal() -> None:
+    rs = RiskSection(max_drawdown_pct=Decimal("0.20"))
+    assert rs.max_drawdown_pct == Decimal("0.20")
+
+
+def test_risk_section_max_drawdown_rejects_negative() -> None:
+    with pytest.raises(ValidationError):
+        RiskSection(max_drawdown_pct=Decimal("-0.1"))
+
+
+def test_risk_section_max_drawdown_allows_above_one_no_le_bound() -> None:
+    """No le bound (mirror sl_pct): give-back can exceed 1.0 when current<0<peak."""
+    rs = RiskSection(max_drawdown_pct=Decimal("1.50"))
+    assert rs.max_drawdown_pct == Decimal("1.50")
+
+
+def test_risk_section_all_four_task_knobs_coexist() -> None:
+    """T-526 + T-524 + T-525a1 + T-525b coexist; extra=forbid holds."""
+    rs = RiskSection(
+        cooldown_after_loss_minutes=10,
+        max_open_trades_per_bot=3,
+        daily_loss_limit_usd=Decimal("250.00"),
+        max_drawdown_pct=Decimal("0.30"),
+    )
+    assert rs.cooldown_after_loss_minutes == 10
+    assert rs.max_open_trades_per_bot == 3
+    assert rs.daily_loss_limit_usd == Decimal("250.00")
+    assert rs.max_drawdown_pct == Decimal("0.30")
+    with pytest.raises(ValidationError):
+        RiskSection(max_drawdown_ptc=Decimal("0.2"))  # type: ignore[call-arg]  # typo: ptc≠pct

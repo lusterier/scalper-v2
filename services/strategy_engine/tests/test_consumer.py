@@ -902,12 +902,14 @@ async def test_loss_limit_not_blocked_passes_through_to_step_3c(
     caps["bus"].publish.assert_awaited()
 
 
-async def test_gate_chain_order_cooldown_caps_loss_limit(
+async def test_gate_chain_order_cooldown_caps_loss_limit_drawdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """WG#8: gates run in order cooldown → caps → loss-limit (3rd sibling last)."""
+    """T-525b WG#8: gates run cooldown → caps → loss-limit → drawdown (4th last;
+    extends the shipped T-525a2 3-gate ordering pin)."""
     from services.strategy_engine.app.concurrent_caps_gate import CapsDecision
     from services.strategy_engine.app.cooldown_gate import CooldownDecision
+    from services.strategy_engine.app.drawdown_gate import DrawdownDecision
     from services.strategy_engine.app.loss_limit_gate import LossLimitDecision
 
     order: list[str] = []
@@ -928,12 +930,107 @@ async def test_gate_chain_order_cooldown_caps_loss_limit(
             blocked=False, reason=None, cumulative_loss_usd=None, limit_usd=None
         )
 
+    async def _dd(**_k: Any) -> DrawdownDecision:
+        order.append("drawdown")
+        return DrawdownDecision(blocked=False, reason=None, drawdown_pct=None, limit_pct=None)
+
     monkeypatch.setattr("services.strategy_engine.app.consumer.check_cooldown", _cd)
     monkeypatch.setattr("services.strategy_engine.app.consumer.check_concurrent_caps", _caps)
     monkeypatch.setattr("services.strategy_engine.app.consumer.check_daily_loss_limit", _ll)
+    monkeypatch.setattr("services.strategy_engine.app.consumer.check_max_drawdown", _dd)
     handler, _ = _build_handler(
         evaluate_result=_scoring_result(decision="execute"),
         monkeypatch=monkeypatch,
     )
     await handler(_envelope(_signal()))
-    assert order == ["cooldown", "caps", "loss_limit"]
+    assert order == ["cooldown", "caps", "loss_limit", "drawdown"]
+
+
+async def test_signal_blocked_by_drawdown_skips_db_and_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-525b WG#7: drawdown blocked → signal_blocked_drawdown log
+    (Decimal-as-str) + Prom inc + NO scoring_evaluations / orders.requests /
+    signals.rejected. Dual-side pin. cooldown+caps+loss-limit short-circuit
+    inactive via all-zero _bot_config RiskSection (no stubs for those)."""
+    from decimal import Decimal
+
+    from services.strategy_engine.app.drawdown_gate import DrawdownDecision
+
+    blocked = DrawdownDecision(
+        blocked=True,
+        reason="max_drawdown",
+        drawdown_pct=Decimal("0.375"),
+        limit_pct=Decimal("0.20"),
+    )
+
+    async def _stub(**_kwargs: Any) -> DrawdownDecision:
+        return blocked
+
+    monkeypatch.setattr("services.strategy_engine.app.consumer.check_max_drawdown", _stub)
+
+    async def _signal_id_must_not_run(*_a: Any, **_k: Any) -> int:
+        raise AssertionError("step 3c reached despite drawdown blocked")
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.select_signal_id_by_idempotency_key",
+        _signal_id_must_not_run,
+    )
+
+    metrics = MagicMock()
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=AssertionError("pool.acquire must not run"))
+    bus = _mock_bus()
+    captured_trading = MagicMock()
+
+    handler = make_signal_handler(
+        bot_id="alpha",  # type: ignore[arg-type]
+        bot_config=_bot_config(),
+        resolver=MagicMock(),
+        pool=pool,
+        bus=bus,
+        trading_logger=captured_trading,
+        system_logger=MagicMock(),
+        audit_logger=MagicMock(),
+        now_fn=lambda: _FIXED_NOW,
+        max_signal_age_seconds=600,
+        metrics=metrics,
+    )
+    await handler(_envelope(_signal()))
+
+    captured_trading.info.assert_called_once()
+    call = captured_trading.info.call_args
+    assert call.args[0] == "signal_blocked_drawdown"
+    kw = call.kwargs
+    assert kw["bot_id"] == "alpha"
+    assert kw["idempotency_key"] == "key-1"
+    assert kw["symbol"] == "BTCUSDT"
+    assert kw["reason"] == "max_drawdown"
+    assert kw["drawdown_pct"] == "0.375"  # Decimal via str()
+    assert kw["limit_pct"] == "0.20"
+
+    metrics.signals_blocked_drawdown.labels.assert_called_once_with(
+        bot_id="alpha", reason="max_drawdown"
+    )
+    metrics.signals_blocked_drawdown.labels.return_value.inc.assert_called_once_with()
+
+    bus.publish.assert_not_awaited()
+    pool.acquire.assert_not_called()
+
+
+async def test_drawdown_not_blocked_passes_through_to_step_3c(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drawdown gate not blocked → consumer proceeds to 3c..3h normally."""
+    from services.strategy_engine.app.drawdown_gate import DrawdownDecision
+
+    async def _stub(**_kwargs: Any) -> DrawdownDecision:
+        return DrawdownDecision(blocked=False, reason=None, drawdown_pct=None, limit_pct=None)
+
+    monkeypatch.setattr("services.strategy_engine.app.consumer.check_max_drawdown", _stub)
+    handler, caps = _build_handler(
+        evaluate_result=_scoring_result(decision="execute"),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal()))
+    caps["bus"].publish.assert_awaited()

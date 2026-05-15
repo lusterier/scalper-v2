@@ -352,9 +352,10 @@ _EXECUTION_DECIMAL_FIELDS: frozenset[str] = frozenset(
     },
 )
 
-# T-525a1: `risk:` block fields needing Decimal coercion (USD money per §5.13).
-# Only daily_loss_limit_usd — the 5 cooldown/cap knobs stay int (no bleed).
-_RISK_DECIMAL_FIELDS: frozenset[str] = frozenset({"daily_loss_limit_usd"})
+# `risk:` block fields needing Decimal coercion (§5.13): T-525a1
+# daily_loss_limit_usd (USD money) + T-525b max_drawdown_pct (fraction).
+# The 5 T-526/T-524 cooldown/cap knobs stay int (not in the set — no bleed).
+_RISK_DECIMAL_FIELDS: frozenset[str] = frozenset({"daily_loss_limit_usd", "max_drawdown_pct"})
 
 
 def _parse_exchange(spec: dict[str, Any]) -> ExchangeSection:

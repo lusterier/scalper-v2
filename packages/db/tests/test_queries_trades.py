@@ -26,6 +26,7 @@ import pytest
 from packages.db.queries.trades import (
     ClosedTradeRow,
     count_open_trades,
+    select_pnl_peak_and_current,
     select_recent_closed_trades,
     sum_realized_pnl_since,
 )
@@ -294,4 +295,83 @@ async def test_sum_realized_pnl_since_live_table_dispatch() -> None:
 
     conn.fetchrow = _capture
     await sum_realized_pnl_since(conn, table_name="trades", bot_id="beta", since=_SINCE)
+    assert "FROM trades " in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# select_pnl_peak_and_current (T-525b)
+# ---------------------------------------------------------------------------
+
+
+async def test_pnl_peak_and_current_returns_decimal_tuple() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(
+        return_value={"peak": Decimal("120.0000"), "current": Decimal("75.0000")}
+    )
+    peak, current = await select_pnl_peak_and_current(
+        conn, table_name="paper_trades", bot_id="alpha"
+    )
+    assert peak == Decimal("120.0000")
+    assert current == Decimal("75.0000")
+    assert isinstance(peak, Decimal)
+    assert isinstance(current, Decimal)
+
+
+async def test_pnl_peak_and_current_zero_rows_returns_decimal_zero_pair() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value={"peak": Decimal("0"), "current": Decimal("0")})
+    peak, current = await select_pnl_peak_and_current(conn, table_name="trades", bot_id="alpha")
+    assert (peak, current) == (Decimal("0"), Decimal("0"))
+
+
+async def test_pnl_peak_and_current_none_row_returns_zero_pair() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    assert await select_pnl_peak_and_current(conn, table_name="trades", bot_id="ghost") == (
+        Decimal("0"),
+        Decimal("0"),
+    )
+
+
+async def test_pnl_peak_and_current_sql_window_frame_and_l021_no_cast() -> None:
+    """WG#3 explicit ROWS UNBOUNDED PRECEDING frame; WG#2 L-021 no cast
+    (lifetime — only $1 column-direct x2, no timestamp param)."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> dict[str, Decimal]:
+        captured.append((sql, *args))
+        return {"peak": Decimal("0"), "current": Decimal("0")}
+
+    conn.fetchrow = _capture
+    await select_pnl_peak_and_current(conn, table_name="paper_trades", bot_id="alpha")
+    sql = captured[0][0]
+    assert "FROM paper_trades " in sql
+    assert "SUM(realized_pnl) OVER (ORDER BY closed_at, id ROWS UNBOUNDED PRECEDING)" in sql
+    assert "COALESCE(MAX(running), 0) AS peak" in sql
+    assert "status = 'closed'" in sql
+    assert "realized_pnl IS NOT NULL" in sql
+    # WG#2 L-021: lifetime → no timestamp param → NO ::cast anywhere; only $1.
+    assert "::" not in sql
+    assert "$1" in sql
+    assert "$2" not in sql
+    low = sql.lower()
+    assert "now()" not in low
+    assert "current_timestamp" not in low
+    assert "current_date" not in low
+    # Doubled WHERE byte-identical (peak + current over same population).
+    assert sql.count("WHERE bot_id = $1 AND status = 'closed' AND realized_pnl IS NOT NULL") == 2
+    assert captured[0][1:] == ("alpha",)
+
+
+async def test_pnl_peak_and_current_live_table_dispatch() -> None:
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_a: Any) -> dict[str, Decimal]:
+        captured.append(sql)
+        return {"peak": Decimal("0"), "current": Decimal("0")}
+
+    conn.fetchrow = _capture
+    await select_pnl_peak_and_current(conn, table_name="trades", bot_id="beta")
     assert "FROM trades " in captured[0]

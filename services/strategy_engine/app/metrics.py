@@ -46,6 +46,7 @@ class Metrics:
     signals_blocked_cooldown: Counter
     signals_blocked_caps: Counter
     signals_blocked_loss_limit: Counter
+    signals_blocked_drawdown: Counter
 
 
 def build_strategy_engine_metrics(registry: CollectorRegistry) -> Metrics:
@@ -59,8 +60,11 @@ def build_strategy_engine_metrics(registry: CollectorRegistry) -> Metrics:
     * T-525a2 ``signals_blocked_loss_limit_total{bot_id, reason}`` —
       incremented each time the pre-scoring daily-loss kill-switch gate blocks
       a signal (``reason`` = the binding latch reason: ``daily_loss_limit`` on
-      a fresh trip, or the pre-existing latch's reason — e.g. ``max_drawdown``
-      once T-525b ships).
+      a fresh trip, or the pre-existing latch's reason — e.g. ``max_drawdown``).
+    * T-525b ``signals_blocked_drawdown_total{bot_id, reason}`` — incremented
+      each time the pre-scoring max-drawdown hard-stop gate blocks a signal
+      (``reason`` = ``max_drawdown`` on a fresh trip, or the pre-existing
+      latch's reason — reason-agnostic cross-block).
     """
     return Metrics(
         signals_blocked_cooldown=Counter(
@@ -78,6 +82,12 @@ def build_strategy_engine_metrics(registry: CollectorRegistry) -> Metrics:
         signals_blocked_loss_limit=Counter(
             "signals_blocked_loss_limit_total",
             "Signals suppressed by the pre-scoring daily-loss kill-switch gate (T-525a2).",
+            labelnames=("bot_id", "reason"),
+            registry=registry,
+        ),
+        signals_blocked_drawdown=Counter(
+            "signals_blocked_drawdown_total",
+            "Signals suppressed by the pre-scoring max-drawdown hard-stop gate (T-525b).",
             labelnames=("bot_id", "reason"),
             registry=registry,
         ),

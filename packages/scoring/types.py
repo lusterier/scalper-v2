@@ -337,6 +337,11 @@ class RiskSection(BaseModel):
     max_open_trades_global: int = Field(default=0, ge=0)
     # T-525a1 daily loss limit threshold (USD; enforced by T-525a2 gate)
     daily_loss_limit_usd: Decimal = Field(default=Decimal("0"), ge=0)
+    # T-525b max-drawdown hard-stop: Decimal fraction give-back of the lifetime
+    # profit peak (mirror sl_pct/tp_pct fraction convention — "0.20" = 20%).
+    # 0 = disabled; no le bound (give-back can exceed 1.0 when current<0<peak).
+    # Enforced by the T-525b drawdown gate; declaration-only here.
+    max_drawdown_pct: Decimal = Field(default=Decimal("0"), ge=0)
 
 
 class BotConfig(BaseModel):
