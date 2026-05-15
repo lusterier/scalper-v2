@@ -45,10 +45,12 @@ from packages.bus.schemas.orders import (
     subject_for_orders_event,
 )
 from packages.db.queries.execution import (
+    delete_position_state,
     insert_order,
     insert_position_state,
     insert_trade,
     insert_trading_event,
+    select_open_order_id_by_trade_id,
     update_trade_close,
 )
 from packages.exchange.errors import UnknownState
@@ -64,6 +66,7 @@ if TYPE_CHECKING:
     from packages.bus import BusProtocol, MessageEnvelope
     from packages.bus.schemas.orders import OrderRequest
     from packages.core import BotId, CorrelationId
+    from packages.db.queries.execution import PositionStateRow
     from packages.exchange.protocols import ExchangeClient
     from packages.exchange.types import OrderPlaceResult
 
@@ -75,6 +78,7 @@ __all__ = [
     "compute_tp_price",
     "compute_tp_size",
     "emergency_close",
+    "emergency_close_tracked_position",
     "emit_post_commit_events",
     "emit_post_commit_shadow_start_event",
     "opposite_side",
@@ -353,6 +357,153 @@ async def emergency_close(
                 event_type=event_type,
                 error=str(exc),
             )
+
+
+# ---------------------------------------------------------------------------
+# SL-watchdog emergency-close of an ALREADY-tracked position (T-534b1)
+# ---------------------------------------------------------------------------
+
+
+async def emergency_close_tracked_position(
+    *,
+    adapter: ExchangeClient,
+    bus: BusProtocol,
+    pool: asyncpg.Pool,
+    bound_logger: BoundLogger,
+    bot_id: BotId,
+    ps_row: PositionStateRow,
+    now_fn: Callable[[], datetime],
+) -> None:
+    """Emergency-flatten + DB-close an EXISTING tracked position (T-534b1).
+
+    The T-534b2 SL-watchdog's close primitive: a position that exists on
+    Bybit AND in ``position_state`` whose exchange-side SL has vanished.
+    NO marker decorator — verbatim-mirror of :func:`emergency_close`,
+    which is itself undecorated (the ``@idempotent`` / ``@non_idempotent``
+    markers in this codebase live on the composed leaf write primitives —
+    ``adapter.place_market_order`` / ``update_trade_close`` /
+    ``delete_position_state`` / ``insert_trading_event`` — NOT on the
+    service-layer orchestration helper that sequences them; §N3 is
+    satisfied at those primitives).
+
+    **Deliberate deviation from the TASKS.md T-534b2-line text "reuse
+    `placement_persist.emergency_close`"** (operator OQ-A=A): that helper's
+    signature needs placement-time artifacts (``request: OrderRequest`` /
+    ``envelope: MessageEnvelope`` / ``place_result: OrderPlaceResult`` /
+    ``fill_price``) which a periodic watchdog tick does NOT have, and it
+    ``insert_order``\\ s + creates a NEW trade (SL-set-failure scenario,
+    trade not yet persisted). Here the trade is ALREADY fully persisted
+    (``ps_row.trade_id``); the correct precedent is
+    :func:`services.execution.app.restart._close_orphan_db` (existing-trade
+    close: resolve close_order_id from ``trade_id``, tx-wrap
+    ``update_trade_close`` + ``delete_position_state``).
+
+    ``realized_pnl`` / ``exit_price`` are ``Decimal('0')`` placeholders per
+    H-012 (closed-P&L source-of-truth = T-220 cumulative-delta audit;
+    verbatim-mirror :func:`emergency_close`, NOT a real compute).
+    """
+    from packages.core import CorrelationId  # local — runtime construct (annotation-only above)
+
+    close_at = now_fn()
+    correlation_id = CorrelationId(f"sl-watchdog-{bot_id}-{ps_row.symbol}")
+    try:
+        close_result = await adapter.place_market_order(
+            ps_row.symbol,
+            opposite_side(ps_row.side),
+            ps_row.remaining_qty,
+            reduce_only=True,
+        )
+    except UnknownState as exc:
+        bound_logger.error(
+            "execution.sl_watchdog_close_unknown_state",
+            bot_id=bot_id,
+            symbol=ps_row.symbol,
+            error=str(exc),
+        )
+        return
+    close_exchange_order_id = close_result.exchange_order_id
+
+    try:
+        async with pool.acquire() as conn:
+            open_oid = await select_open_order_id_by_trade_id(conn, ps_row.trade_id)
+            if open_oid is None:
+                bound_logger.error(
+                    "execution.sl_watchdog_close_open_order_missing",
+                    bot_id=bot_id,
+                    trade_id=ps_row.trade_id,
+                    symbol=ps_row.symbol,
+                )
+                return
+            order_closed_payload = OrderClosed(
+                bot_id=str(bot_id),
+                order_id=open_oid,
+                exchange_order_id=close_exchange_order_id,
+                symbol=ps_row.symbol,
+                timestamp=close_at,
+                realized_pnl=Decimal("0"),
+                close_reason="emergency",
+            )
+            # Atomic close+delete+audit (verbatim-mirror emergency_close
+            # placement_persist tx — insert_trading_event INSIDE the tx so
+            # a partial failure cannot leave a closed trade with no audit).
+            async with conn.transaction():
+                await update_trade_close(
+                    conn,
+                    trade_id=ps_row.trade_id,
+                    exit_price=Decimal("0"),
+                    realized_pnl=Decimal("0"),
+                    fees_paid=None,
+                    closed_at=close_at,
+                    close_reason="emergency",
+                    close_order_id=open_oid,
+                )
+                await delete_position_state(
+                    conn,
+                    bot_id=str(bot_id),
+                    symbol=ps_row.symbol,
+                )
+                await insert_trading_event(
+                    conn,
+                    occurred_at=close_at,
+                    bot_id=str(bot_id),
+                    correlation_id=str(correlation_id),
+                    event_type="sl_watchdog_emergency_close",
+                    payload=order_closed_payload.model_dump(mode="json"),
+                )
+    except Exception as exc:
+        bound_logger.error(
+            "execution.sl_watchdog_close_persist_failed",
+            bot_id=bot_id,
+            symbol=ps_row.symbol,
+            error=str(exc),
+        )
+        return
+
+    bound_logger.warning(
+        "sl_watchdog.emergency_close_pnl_pending_audit_reconcile",
+        bot_id=bot_id,
+        symbol=ps_row.symbol,
+        close_order_id=open_oid,
+    )
+    # Single OrderClosed emit — one isolated try/except (NO for-loop:
+    # emergency_close's loop exists only because it emits 2 events; this
+    # leaf emits 1). NO OrderPlaced — the open order is already persisted.
+    from packages.bus import MessageEnvelope as _Env  # local import — avoid cycle
+
+    try:
+        publish_envelope = _Env(
+            correlation_id=correlation_id,
+            publisher="execution-service",
+            payload=order_closed_payload.model_dump(mode="json"),
+        )
+        await bus.publish(subject_for_orders_event(bot_id), publish_envelope)
+    except Exception as exc:
+        bound_logger.error(
+            "execution.event_publish_failed",
+            bot_id=bot_id,
+            event_type="order_closed",
+            error=str(exc),
+        )
 
 
 # ---------------------------------------------------------------------------

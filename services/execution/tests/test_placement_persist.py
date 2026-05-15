@@ -15,9 +15,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 from packages.bus import MessageEnvelope
 from packages.bus.schemas.orders import OrderRequest
-from packages.core import BotId
+from packages.core import BotId, is_idempotent, is_non_idempotent
+from packages.db.queries.execution import PositionStateRow
 from packages.exchange.errors import UnknownState
 from packages.exchange.types import OrderPlaceResult
+from services.execution.app import placement_persist as pp
 from services.execution.app.placement_persist import (
     OrderRequestDedupConsumer,
     compute_notional_usd,
@@ -25,6 +27,7 @@ from services.execution.app.placement_persist import (
     compute_tp_price,
     compute_tp_size,
     emergency_close,
+    emergency_close_tracked_position,
     opposite_side,
 )
 
@@ -793,3 +796,224 @@ async def test_emit_post_commit_shadow_start_publish_failure_logs_does_not_raise
     )
     log_keys = [call.args[0] for call in logger.error.call_args_list]
     assert "execution.shadow_start_publish_failed" in log_keys
+
+
+# ---------------------------------------------------------------------------
+# emergency_close_tracked_position (T-534b1 — SL-watchdog close primitive)
+# ---------------------------------------------------------------------------
+
+
+def _ps_row(side: str = "buy") -> PositionStateRow:
+    return PositionStateRow(
+        bot_id="alpha",
+        symbol="BTCUSDT",
+        trade_id=42,
+        side=side,  # type: ignore[arg-type]
+        entry_price=Decimal("65000"),
+        qty=Decimal("0.05"),
+        remaining_qty=Decimal("0.05"),
+        sl_price=None,
+        tp_price=None,
+        sl_type=None,
+    )
+
+
+def _tracked_pool() -> MagicMock:
+    pool = MagicMock()
+    conn = MagicMock()
+
+    @asynccontextmanager
+    async def _acquire() -> Any:
+        yield conn
+
+    @asynccontextmanager
+    async def _transaction() -> Any:
+        yield None
+
+    pool.acquire = _acquire
+    conn.transaction = _transaction
+    return pool
+
+
+def _patch_tracked_queries(
+    monkeypatch: Any,
+    *,
+    open_oid: int | None = 7,
+) -> dict[str, Any]:
+    mocks: dict[str, Any] = {
+        "select_open_order_id_by_trade_id": AsyncMock(return_value=open_oid),
+        "update_trade_close": AsyncMock(return_value=None),
+        "delete_position_state": AsyncMock(return_value=None),
+        "insert_trading_event": AsyncMock(return_value=None),
+    }
+    for name, mock in mocks.items():
+        monkeypatch.setattr(pp, name, mock)
+    return mocks
+
+
+async def test_tracked_close_marker_mirrors_undecorated_emergency_close() -> None:
+    """Verbatim-mirror: emergency_close is undecorated (markers live on the
+    composed leaf primitives, §N3) → emergency_close_tracked_position is too."""
+    assert is_idempotent(emergency_close) is False
+    assert is_non_idempotent(emergency_close) is False
+    assert is_idempotent(emergency_close_tracked_position) is False
+    assert is_non_idempotent(emergency_close_tracked_position) is False
+
+
+async def test_tracked_close_happy_path_flatten_tx_audit_emit(
+    monkeypatch: Any,
+) -> None:
+    q = _patch_tracked_queries(monkeypatch, open_oid=7)
+    pool = _tracked_pool()
+    adapter = _ok_close_adapter()
+    bus = _ok_bus()
+    logger = MagicMock()
+    await emergency_close_tracked_position(
+        adapter=adapter,
+        bus=bus,
+        pool=pool,
+        bound_logger=logger,
+        bot_id=BotId("alpha"),
+        ps_row=_ps_row(side="buy"),
+        now_fn=lambda: _FIXED_NOW,
+    )
+    # Reduce-only opposite-side flatten with remaining_qty.
+    args = adapter.place_market_order.await_args.args
+    kw = adapter.place_market_order.await_args.kwargs
+    assert args[0] == "BTCUSDT"
+    assert args[1] == "sell"  # opposite of buy
+    assert args[2] == Decimal("0.05")  # ps_row.remaining_qty
+    assert kw.get("reduce_only") is True
+    # update_trade_close: existing trade_id, close_reason='emergency', 0 placeholders.
+    utc_kw = q["update_trade_close"].await_args.kwargs
+    assert utc_kw["trade_id"] == 42
+    assert utc_kw["close_reason"] == "emergency"
+    assert utc_kw["close_order_id"] == 7
+    assert utc_kw["exit_price"] == Decimal("0")
+    assert utc_kw["realized_pnl"] == Decimal("0")
+    assert utc_kw["fees_paid"] is None
+    # delete_position_state (bot_id, symbol).
+    dps_kw = q["delete_position_state"].await_args.kwargs
+    assert dps_kw["bot_id"] == "alpha"
+    assert dps_kw["symbol"] == "BTCUSDT"
+    # Audit row: distinct event_type + committed sl-watchdog correlation_id.
+    ite_kw = q["insert_trading_event"].await_args.kwargs
+    assert ite_kw["event_type"] == "sl_watchdog_emergency_close"
+    assert ite_kw["correlation_id"] == "sl-watchdog-alpha-BTCUSDT"
+    # Single OrderClosed emit with the committed correlation_id.
+    bus.publish.assert_awaited_once()
+    env = bus.publish.await_args.args[1]
+    assert env.correlation_id == "sl-watchdog-alpha-BTCUSDT"
+    log_keys = [c.args[0] for c in logger.warning.call_args_list]
+    assert "sl_watchdog.emergency_close_pnl_pending_audit_reconcile" in log_keys
+
+
+async def test_tracked_close_unknown_state_returns_before_db_and_emit(
+    monkeypatch: Any,
+) -> None:
+    q = _patch_tracked_queries(monkeypatch)
+    pool = _tracked_pool()
+    adapter = MagicMock()
+    adapter.place_market_order = AsyncMock(side_effect=UnknownState("ws drop"))
+    bus = _ok_bus()
+    logger = MagicMock()
+    await emergency_close_tracked_position(
+        adapter=adapter,
+        bus=bus,
+        pool=pool,
+        bound_logger=logger,
+        bot_id=BotId("alpha"),
+        ps_row=_ps_row(),
+        now_fn=lambda: _FIXED_NOW,
+    )
+    q["update_trade_close"].assert_not_awaited()
+    q["delete_position_state"].assert_not_awaited()
+    bus.publish.assert_not_awaited()
+    log_keys = [c.args[0] for c in logger.error.call_args_list]
+    assert "execution.sl_watchdog_close_unknown_state" in log_keys
+
+
+async def test_tracked_close_open_oid_none_returns_without_close(
+    monkeypatch: Any,
+) -> None:
+    q = _patch_tracked_queries(monkeypatch, open_oid=None)
+    pool = _tracked_pool()
+    adapter = _ok_close_adapter()
+    bus = _ok_bus()
+    logger = MagicMock()
+    await emergency_close_tracked_position(
+        adapter=adapter,
+        bus=bus,
+        pool=pool,
+        bound_logger=logger,
+        bot_id=BotId("alpha"),
+        ps_row=_ps_row(),
+        now_fn=lambda: _FIXED_NOW,
+    )
+    q["update_trade_close"].assert_not_awaited()
+    q["delete_position_state"].assert_not_awaited()
+    q["insert_trading_event"].assert_not_awaited()
+    bus.publish.assert_not_awaited()
+    log_keys = [c.args[0] for c in logger.error.call_args_list]
+    assert "execution.sl_watchdog_close_open_order_missing" in log_keys
+
+
+async def test_tracked_close_persist_exception_logs_and_returns(
+    monkeypatch: Any,
+) -> None:
+    q = _patch_tracked_queries(monkeypatch)
+    q["update_trade_close"] = AsyncMock(side_effect=RuntimeError("db down"))
+    monkeypatch.setattr(pp, "update_trade_close", q["update_trade_close"])
+    pool = _tracked_pool()
+    adapter = _ok_close_adapter()
+    bus = _ok_bus()
+    logger = MagicMock()
+    await emergency_close_tracked_position(
+        adapter=adapter,
+        bus=bus,
+        pool=pool,
+        bound_logger=logger,
+        bot_id=BotId("alpha"),
+        ps_row=_ps_row(),
+        now_fn=lambda: _FIXED_NOW,
+    )
+    bus.publish.assert_not_awaited()
+    log_keys = [c.args[0] for c in logger.error.call_args_list]
+    assert "execution.sl_watchdog_close_persist_failed" in log_keys
+
+
+async def test_tracked_close_publish_failure_is_logged_not_raised(
+    monkeypatch: Any,
+) -> None:
+    _patch_tracked_queries(monkeypatch)
+    pool = _tracked_pool()
+    adapter = _ok_close_adapter()
+    bus = MagicMock()
+    bus.publish = AsyncMock(side_effect=RuntimeError("nats down"))
+    logger = MagicMock()
+    await emergency_close_tracked_position(
+        adapter=adapter,
+        bus=bus,
+        pool=pool,
+        bound_logger=logger,
+        bot_id=BotId("alpha"),
+        ps_row=_ps_row(),
+        now_fn=lambda: _FIXED_NOW,
+    )
+    log_keys = [c.args[0] for c in logger.error.call_args_list]
+    assert "execution.event_publish_failed" in log_keys
+
+
+async def test_tracked_close_uses_now_fn_for_close_at(monkeypatch: Any) -> None:
+    q = _patch_tracked_queries(monkeypatch)
+    pool = _tracked_pool()
+    await emergency_close_tracked_position(
+        adapter=_ok_close_adapter(),
+        bus=_ok_bus(),
+        pool=pool,
+        bound_logger=MagicMock(),
+        bot_id=BotId("alpha"),
+        ps_row=_ps_row(),
+        now_fn=lambda: _FIXED_NOW,
+    )
+    assert q["update_trade_close"].await_args.kwargs["closed_at"] == _FIXED_NOW
