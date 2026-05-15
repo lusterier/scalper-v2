@@ -801,3 +801,139 @@ async def test_caps_not_blocked_passes_through_to_step_3c(
     )
     await handler(_envelope(_signal()))
     caps["bus"].publish.assert_awaited()
+
+
+# region: T-525a2 pre-scoring daily-loss kill-switch gate --------------------
+
+
+async def test_signal_blocked_by_loss_limit_skips_db_and_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-525a2 WG#7: loss-limit blocked → signal_blocked_loss_limit log
+    (Decimal-as-str) + Prom inc + NO scoring_evaluations / orders.requests /
+    signals.rejected. Dual-side pin. Cooldown + caps short-circuit inactive
+    via all-zero _bot_config RiskSection (no stub needed for those)."""
+    from decimal import Decimal
+
+    from services.strategy_engine.app.loss_limit_gate import LossLimitDecision
+
+    blocked = LossLimitDecision(
+        blocked=True,
+        reason="daily_loss_limit",
+        cumulative_loss_usd=Decimal("-105.0000"),
+        limit_usd=Decimal("100"),
+    )
+
+    async def _stub_check_loss_limit(**_kwargs: Any) -> LossLimitDecision:
+        return blocked
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.check_daily_loss_limit",
+        _stub_check_loss_limit,
+    )
+
+    async def _signal_id_must_not_run(*_a: Any, **_k: Any) -> int:
+        raise AssertionError("step 3c reached despite loss-limit blocked")
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.select_signal_id_by_idempotency_key",
+        _signal_id_must_not_run,
+    )
+
+    metrics = MagicMock()
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=AssertionError("pool.acquire must not run"))
+    bus = _mock_bus()
+    captured_trading = MagicMock()
+
+    handler = make_signal_handler(
+        bot_id="alpha",  # type: ignore[arg-type]
+        bot_config=_bot_config(),
+        resolver=MagicMock(),
+        pool=pool,
+        bus=bus,
+        trading_logger=captured_trading,
+        system_logger=MagicMock(),
+        audit_logger=MagicMock(),
+        now_fn=lambda: _FIXED_NOW,
+        max_signal_age_seconds=600,
+        metrics=metrics,
+    )
+    await handler(_envelope(_signal()))
+
+    captured_trading.info.assert_called_once()
+    call = captured_trading.info.call_args
+    assert call.args[0] == "signal_blocked_loss_limit"
+    kw = call.kwargs
+    assert kw["bot_id"] == "alpha"
+    assert kw["idempotency_key"] == "key-1"
+    assert kw["symbol"] == "BTCUSDT"
+    assert kw["reason"] == "daily_loss_limit"
+    # Decimal logged via str() (exact).
+    assert kw["cumulative_loss_usd"] == "-105.0000"
+    assert kw["limit_usd"] == "100"
+
+    metrics.signals_blocked_loss_limit.labels.assert_called_once_with(
+        bot_id="alpha", reason="daily_loss_limit"
+    )
+    metrics.signals_blocked_loss_limit.labels.return_value.inc.assert_called_once_with()
+
+    bus.publish.assert_not_awaited()
+    pool.acquire.assert_not_called()
+
+
+async def test_loss_limit_not_blocked_passes_through_to_step_3c(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loss-limit gate not blocked → consumer proceeds to 3c..3h normally."""
+    from services.strategy_engine.app.loss_limit_gate import LossLimitDecision
+
+    async def _stub(**_kwargs: Any) -> LossLimitDecision:
+        return LossLimitDecision(
+            blocked=False, reason=None, cumulative_loss_usd=None, limit_usd=None
+        )
+
+    monkeypatch.setattr("services.strategy_engine.app.consumer.check_daily_loss_limit", _stub)
+    handler, caps = _build_handler(
+        evaluate_result=_scoring_result(decision="execute"),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal()))
+    caps["bus"].publish.assert_awaited()
+
+
+async def test_gate_chain_order_cooldown_caps_loss_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WG#8: gates run in order cooldown → caps → loss-limit (3rd sibling last)."""
+    from services.strategy_engine.app.concurrent_caps_gate import CapsDecision
+    from services.strategy_engine.app.cooldown_gate import CooldownDecision
+    from services.strategy_engine.app.loss_limit_gate import LossLimitDecision
+
+    order: list[str] = []
+
+    async def _cd(**_k: Any) -> CooldownDecision:
+        order.append("cooldown")
+        return CooldownDecision(
+            active=False, reason=None, cooldown_until=None, streak_count=0, last_loss_at=None
+        )
+
+    async def _caps(**_k: Any) -> CapsDecision:
+        order.append("caps")
+        return CapsDecision(blocked=False, reason=None, current_count=None, cap_limit=None)
+
+    async def _ll(**_k: Any) -> LossLimitDecision:
+        order.append("loss_limit")
+        return LossLimitDecision(
+            blocked=False, reason=None, cumulative_loss_usd=None, limit_usd=None
+        )
+
+    monkeypatch.setattr("services.strategy_engine.app.consumer.check_cooldown", _cd)
+    monkeypatch.setattr("services.strategy_engine.app.consumer.check_concurrent_caps", _caps)
+    monkeypatch.setattr("services.strategy_engine.app.consumer.check_daily_loss_limit", _ll)
+    handler, _ = _build_handler(
+        evaluate_result=_scoring_result(decision="execute"),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal()))
+    assert order == ["cooldown", "caps", "loss_limit"]

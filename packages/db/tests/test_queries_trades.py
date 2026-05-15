@@ -27,6 +27,7 @@ from packages.db.queries.trades import (
     ClosedTradeRow,
     count_open_trades,
     select_recent_closed_trades,
+    sum_realized_pnl_since,
 )
 
 _T1 = datetime(2026, 5, 15, 10, 0, 0, tzinfo=UTC)
@@ -217,4 +218,80 @@ async def test_count_open_trades_live_table_dispatch() -> None:
 
     conn.fetchrow = _capture
     await count_open_trades(conn, table_name="trades", bot_id=None)
+    assert "FROM trades " in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# sum_realized_pnl_since (T-525a2)
+# ---------------------------------------------------------------------------
+
+_SINCE = datetime(2026, 5, 15, 0, 0, 0, tzinfo=UTC)
+
+
+async def test_sum_realized_pnl_since_returns_decimal() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=(Decimal("-105.0000"),))
+    total = await sum_realized_pnl_since(
+        conn, table_name="paper_trades", bot_id="alpha", since=_SINCE
+    )
+    assert total == Decimal("-105.0000")
+    assert isinstance(total, Decimal)
+
+
+async def test_sum_realized_pnl_since_zero_rows_returns_decimal_zero() -> None:
+    """COALESCE → Decimal('0') (never None) on a fresh trading day."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=(Decimal("0"),))
+    total = await sum_realized_pnl_since(conn, table_name="trades", bot_id="alpha", since=_SINCE)
+    assert total == Decimal("0")
+
+
+async def test_sum_realized_pnl_since_none_row_returns_decimal_zero() -> None:
+    """Defensive: fetchrow None → Decimal('0') (gate must not crash)."""
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    total = await sum_realized_pnl_since(conn, table_name="trades", bot_id="alpha", since=_SINCE)
+    assert total == Decimal("0")
+
+
+async def test_sum_realized_pnl_since_sql_l021_timestamptz_cast_and_charter() -> None:
+    """WG#2 / L-021: SQL ships explicit $2::timestamptz; charter predicates;
+    $1 column-direct (no cast); no NOW()/CURRENT_TIMESTAMP/current_date."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> tuple[Decimal]:
+        captured.append((sql, *args))
+        return (Decimal("0"),)
+
+    conn.fetchrow = _capture
+    await sum_realized_pnl_since(conn, table_name="paper_trades", bot_id="alpha", since=_SINCE)
+    sql = captured[0][0]
+    assert "FROM paper_trades " in sql
+    assert "WHERE bot_id = $1" in sql
+    assert "status = 'closed'" in sql
+    assert "realized_pnl IS NOT NULL" in sql
+    assert "COALESCE(SUM(realized_pnl), 0)" in sql
+    # L-021: explicit timestamptz cast on the comparison parameter.
+    assert "closed_at >= $2::timestamptz" in sql
+    # $1 stays column-direct TEXT equality — no cast literal on it.
+    assert "$1::" not in sql
+    low = sql.lower()
+    assert "now()" not in low
+    assert "current_timestamp" not in low
+    assert "current_date" not in low
+    # $N binds positional: $1 bot_id, $2 since.
+    assert captured[0][1:] == ("alpha", _SINCE)
+
+
+async def test_sum_realized_pnl_since_live_table_dispatch() -> None:
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_a: Any) -> tuple[Decimal]:
+        captured.append(sql)
+        return (Decimal("0"),)
+
+    conn.fetchrow = _capture
+    await sum_realized_pnl_since(conn, table_name="trades", bot_id="beta", since=_SINCE)
     assert "FROM trades " in captured[0]

@@ -24,7 +24,7 @@ inference is unambiguous in these positions.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal  # noqa: TC003 — runtime annotation on @dataclass slot
+from decimal import Decimal  # runtime: sum_realized_pnl_since returns Decimal (T-525a2)
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -40,6 +40,7 @@ __all__ = [
     "TradeTableName",
     "count_open_trades",
     "select_recent_closed_trades",
+    "sum_realized_pnl_since",
 ]
 
 
@@ -151,3 +152,50 @@ async def count_open_trades(
         )
         row = await conn.fetchrow(sql, bot_id)
     return int(row[0]) if row is not None else 0
+
+
+async def sum_realized_pnl_since(
+    conn: _DbExecutor,
+    *,
+    table_name: TradeTableName,
+    bot_id: str,
+    since: datetime,
+) -> Decimal:
+    """SUM(realized_pnl) of a bot's closed trades since ``since`` (UTC).
+
+    Powers the T-525a2 daily-loss kill-switch gate: ``since`` is UTC-midnight
+    of the current trading day, so the sum is the bot's cumulative realized
+    P&L for today. Charter invariant inlined (mirror
+    :func:`select_recent_closed_trades`): only ``status = 'closed' AND
+    realized_pnl IS NOT NULL`` rows count; ``COALESCE(SUM(realized_pnl), 0)``
+    so zero matching rows return ``Decimal('0')`` (NEVER ``None`` — the gate
+    compares ``total <= -daily_loss_limit_usd`` and must not crash on a fresh
+    trading day with no closes yet).
+
+    §5.13 / §N1: ``realized_pnl`` is ``NUMERIC(20,4)`` → asyncpg returns
+    ``Decimal``; ``COALESCE(...,0)`` stays NUMERIC → ``Decimal``. NO
+    ``float()`` cast anywhere on the P&L path (math-validator Gate 4).
+
+    L-021 SQL-parameter type-cast audit: ``$1`` (``bot_id``) is column-direct
+    TEXT equality (``WHERE bot_id = $1``) → L-021-safe, no cast. ``$2``
+    (``since``) sits in a **comparison-operator context** (``closed_at >=
+    $2``) — exactly the L-021 failure class ("comparison operators across
+    unioned types"; the T-537a1 ci-full crash was a ``timestamptz <=``
+    mis-inference). The SQL therefore ships an **explicit
+    ``$2::timestamptz`` cast** (``closed_at`` is genuinely ``timestamptz``
+    per migrations 0005/0008 — the cast type is correct). The mock unit test
+    pins ``"$2::timestamptz" in sql`` as a regression guard.
+
+    ``table_name`` is a :data:`TradeTableName` Literal; f-string inlining is
+    injection-safe (no arbitrary strings).
+    """
+    sql = (
+        f"SELECT COALESCE(SUM(realized_pnl), 0) FROM {table_name} "  # noqa: S608  # nosec B608
+        "WHERE bot_id = $1 AND status = 'closed' AND realized_pnl IS NOT NULL "
+        "AND closed_at >= $2::timestamptz"
+    )
+    row = await conn.fetchrow(sql, bot_id, since)
+    if row is None:
+        return Decimal("0")
+    total = row[0]
+    return total if isinstance(total, Decimal) else Decimal(str(total))

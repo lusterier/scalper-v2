@@ -59,6 +59,7 @@ from packages.scoring import evaluate
 
 from .concurrent_caps_gate import check_concurrent_caps
 from .cooldown_gate import check_cooldown
+from .loss_limit_gate import check_daily_loss_limit
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -210,6 +211,38 @@ def make_signal_handler(
             metrics.signals_blocked_caps.labels(
                 bot_id=str(bot_id),
                 reason=caps.reason or "unknown",
+            ).inc()
+            return
+
+        # T-525a2 pre-scoring daily-loss kill-switch gate. Runs AFTER the T-524
+        # caps gate (chain cooldown → caps → loss-limit) — same 3b→3c boundary,
+        # same silent-skip pattern. Reads the T-525a1 persistent latch; trips +
+        # latches when today's cumulative realized P&L ≤ -daily_loss_limit_usd;
+        # sticky intra-day. Short-circuits before DB when daily_loss_limit_usd<=0.
+        loss_limit = await check_daily_loss_limit(
+            pool=pool,
+            bot_id=bot_id,
+            exchange_mode=bot_config.exchange.mode,
+            now=now,
+            risk_config=bot_config.risk,
+        )
+        if loss_limit.blocked:
+            trading_logger.info(
+                "signal_blocked_loss_limit",
+                bot_id=bot_id,
+                idempotency_key=signal.idempotency_key,
+                symbol=signal.symbol,
+                reason=loss_limit.reason,
+                cumulative_loss_usd=(
+                    str(loss_limit.cumulative_loss_usd)
+                    if loss_limit.cumulative_loss_usd is not None
+                    else None
+                ),
+                limit_usd=(str(loss_limit.limit_usd) if loss_limit.limit_usd is not None else None),
+            )
+            metrics.signals_blocked_loss_limit.labels(
+                bot_id=str(bot_id),
+                reason=loss_limit.reason or "unknown",
             ).inc()
             return
 

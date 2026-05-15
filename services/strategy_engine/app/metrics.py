@@ -45,6 +45,7 @@ class Metrics:
 
     signals_blocked_cooldown: Counter
     signals_blocked_caps: Counter
+    signals_blocked_loss_limit: Counter
 
 
 def build_strategy_engine_metrics(registry: CollectorRegistry) -> Metrics:
@@ -55,6 +56,11 @@ def build_strategy_engine_metrics(registry: CollectorRegistry) -> Metrics:
     * T-524 ``signals_blocked_caps_total{bot_id, reason}`` — incremented each
       time the pre-scoring concurrent-trades caps gate blocks a signal
       (``max_open_trades_per_bot`` / ``max_open_trades_global``).
+    * T-525a2 ``signals_blocked_loss_limit_total{bot_id, reason}`` —
+      incremented each time the pre-scoring daily-loss kill-switch gate blocks
+      a signal (``reason`` = the binding latch reason: ``daily_loss_limit`` on
+      a fresh trip, or the pre-existing latch's reason — e.g. ``max_drawdown``
+      once T-525b ships).
     """
     return Metrics(
         signals_blocked_cooldown=Counter(
@@ -66,6 +72,12 @@ def build_strategy_engine_metrics(registry: CollectorRegistry) -> Metrics:
         signals_blocked_caps=Counter(
             "signals_blocked_caps_total",
             "Signals suppressed by the strategy-engine pre-scoring concurrent-caps gate (T-524).",
+            labelnames=("bot_id", "reason"),
+            registry=registry,
+        ),
+        signals_blocked_loss_limit=Counter(
+            "signals_blocked_loss_limit_total",
+            "Signals suppressed by the pre-scoring daily-loss kill-switch gate (T-525a2).",
             labelnames=("bot_id", "reason"),
             registry=registry,
         ),
