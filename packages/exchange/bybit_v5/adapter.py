@@ -90,6 +90,14 @@ def _map_position_row(item: dict[str, Any]) -> Position:
       report avgPrice=``"0"``).
     * ``unrealisedPnl == ""`` -> ``unrealized_pnl=None`` (W#3: ``"0"`` is
       a valid zero-PnL state; preserve as ``Decimal("0")``).
+    * ``stopLoss`` (T-534a) -> ``sl_price``: blank/``""``/``"0"``/
+      ``"0.00"``/non-positive -> ``None``. **Deliberate divergence from
+      the sibling ``avgPrice "0"``-preserve rule above**: an exchange
+      stop-loss at price 0 is semantically impossible — Bybit's no-SL
+      sentinel on ``stopLoss`` is exactly a blank or non-positive value,
+      so collapsing it to ``None`` is the correct read-semantic for the
+      T-534b watchdog (vs ``avgPrice "0"`` which is a legitimate
+      recently-closed-flat snapshot value).
 
     H-015 round-trip: ``Decimal(item["size"])`` preserves wire string
     exactness (no float coercion).
@@ -107,6 +115,12 @@ def _map_position_row(item: dict[str, Any]) -> Position:
     leverage = int(str(leverage_raw)) if leverage_raw not in ("", None) else None
     unrealized_raw = item.get("unrealisedPnl")
     unrealized_pnl = Decimal(str(unrealized_raw)) if unrealized_raw not in ("", None) else None
+    # T-534a: no-float decode (mirror entry_price/unrealized_pnl above);
+    # non-positive/blank stopLoss is Bybit's no-SL sentinel -> None (see
+    # docstring: deliberate divergence from avgPrice "0"-preserve W#3).
+    sl_raw = item.get("stopLoss")
+    _sl = Decimal(str(sl_raw)) if sl_raw not in ("", None) else None
+    sl_price = _sl if (_sl is not None and _sl > 0) else None
     return Position(
         symbol=item["symbol"],
         side=side,
@@ -114,6 +128,7 @@ def _map_position_row(item: dict[str, Any]) -> Position:
         entry_price=entry_price,
         leverage=leverage,
         unrealized_pnl=unrealized_pnl,
+        sl_price=sl_price,
     )
 
 

@@ -94,6 +94,7 @@ def _exchange_pos(
         entry_price=Decimal("50000"),
         leverage=10,
         unrealized_pnl=Decimal("0"),
+        sl_price=None,  # T-534a: reconcile tests don't exercise SL (T-534b).
     )
 
 
@@ -409,7 +410,10 @@ async def test_position_size_zero_filtered_out(
         entry_price=None,
         leverage=None,
         unrealized_pnl=None,
+        sl_price=None,
     )
+    # T-534a: flat (size==0) → sl_price is None too (docstring invariant).
+    assert flat_pos.sl_price is None
     adapter = _make_adapter([flat_pos])
 
     await reconcile_on_startup(**_kwargs(adapters={"alpha": adapter}))

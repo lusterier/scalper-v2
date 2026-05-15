@@ -112,6 +112,7 @@ def test_paper_and_bybit_position_have_same_field_set() -> None:
         entry_price=Decimal("50000.50"),
         leverage=10,
         unrealized_pnl=Decimal("0.05"),
+        sl_price=Decimal("49000.00"),
     )
     bybit_pos = Position(
         symbol="BTCUSDT",
@@ -120,11 +121,20 @@ def test_paper_and_bybit_position_have_same_field_set() -> None:
         entry_price=Decimal("50000.50"),
         leverage=10,
         unrealized_pnl=Decimal("0.05"),
+        sl_price=Decimal("49000.00"),
     )
     paper_fields = {f.name for f in dataclasses.fields(paper_pos)}
     bybit_fields = {f.name for f in dataclasses.fields(bybit_pos)}
     assert paper_fields == bybit_fields
-    assert paper_fields == {"symbol", "side", "size", "entry_price", "leverage", "unrealized_pnl"}
+    assert paper_fields == {
+        "symbol",
+        "side",
+        "size",
+        "entry_price",
+        "leverage",
+        "unrealized_pnl",
+        "sl_price",
+    }
 
 
 def test_paper_and_bybit_flat_position_have_same_field_nullability() -> None:
@@ -136,6 +146,7 @@ def test_paper_and_bybit_flat_position_have_same_field_nullability() -> None:
         entry_price=None,
         leverage=None,
         unrealized_pnl=None,
+        sl_price=None,
     )
     bybit_flat = Position(
         symbol="BTCUSDT",
@@ -144,6 +155,7 @@ def test_paper_and_bybit_flat_position_have_same_field_nullability() -> None:
         entry_price=None,
         leverage=None,
         unrealized_pnl=None,
+        sl_price=None,
     )
     assert paper_flat.side is None
     assert bybit_flat.side is None
@@ -153,6 +165,9 @@ def test_paper_and_bybit_flat_position_have_same_field_nullability() -> None:
     assert bybit_flat.leverage is None
     assert paper_flat.unrealized_pnl is None
     assert bybit_flat.unrealized_pnl is None
+    # T-534a: flat → sl_price None too (same nullability semantic both modes).
+    assert paper_flat.sl_price is None
+    assert bybit_flat.sl_price is None
 
 
 def test_paper_and_bybit_orderplaceresult_field_set_matches() -> None:
@@ -178,10 +193,11 @@ def test_paper_and_bybit_orderplaceresult_field_set_matches() -> None:
     assert bybit_result.paper_trade_id is None
 
 
-def test_paper_and_bybit_positionevent_share_field_set_with_position() -> None:
-    """PositionEvent = Position + occurred_at; semantic distinction snapshot vs stream.
-
-    Brief §11.1 / packages/exchange/types.py:105-124. Both adapters' WS
+def test_paper_and_bybit_positionevent_field_set_excludes_sl_price() -> None:
+    """T-534a / OQ-5=b: PositionEvent field set is pinned (explicit 7-set)
+    and deliberately EXCLUDES the REST-snapshot-only ``sl_price`` that
+    ``Position`` gained — the two previously field-mirrored types diverge
+    (no WS-stream SL-existence consumer; §0.8). Both adapters' WS
     stream_positions() emit PositionEvent with this exact field set.
     """
     paper_event = PositionEvent(

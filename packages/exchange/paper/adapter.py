@@ -1322,6 +1322,13 @@ class PaperExchange:
                 entry_price=Decimal(row["entry_price"]),
                 leverage=None,
                 unrealized_pnl=None,
+                # T-534a / OQ-4=A: paper SL is PaperExchange-internal
+                # synthetic state with no exchange-side "dropped SL"
+                # failure mode, so the T-534b watchdog skips paper bots
+                # entirely (mirror T-218c paper-skip + ADR-0010 paper/
+                # live distinction). sl_price is therefore always None
+                # for paper — never read by the (live-only) watchdog.
+                sl_price=None,
             )
             for row in rows
         ]

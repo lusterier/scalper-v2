@@ -121,15 +121,19 @@ class Position:
     ``size`` is **absolute non-negative**: direction lives in ``side``,
     not in the sign of ``size``. ``size == 0`` means the bot is flat for
     this symbol; in that case ``side`` is ``None`` and ``entry_price`` /
-    ``leverage`` / ``unrealized_pnl`` are all ``None`` (no live position
-    metadata to report). This convention mirrors Bybit V5's position API
-    and avoids sign-flip bugs at the wire/domain seam.
+    ``leverage`` / ``unrealized_pnl`` / ``sl_price`` are all ``None`` (no
+    live position metadata to report). This convention mirrors Bybit V5's
+    position API and avoids sign-flip bugs at the wire/domain seam.
 
     Field set is intentionally minimal (§0.8). T-216 (placement) and
     T-221 (post-restart reconciliation) are the first downstream
     consumers; additional fields (``mark_price``, ``liq_price``,
     ``position_idx``, etc.) land via their own task plan-docs only when
-    a concrete consumer surfaces.
+    a concrete consumer surfaces. ``sl_price`` (T-534a) is the first such
+    addition — its concrete consumer is the T-534b SL-watchdog, which
+    polls :meth:`ExchangeClient.get_positions` to verify the exchange-side
+    stop-loss still exists for each open position (mid-session naked-
+    position protection).
     """
 
     symbol: str
@@ -138,6 +142,7 @@ class Position:
     entry_price: Decimal | None
     leverage: int | None
     unrealized_pnl: Decimal | None
+    sl_price: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,12 +174,22 @@ class PositionEvent:
     """Single position update from the exchange's private WS stream
     (:meth:`ExchangeClient.stream_positions`).
 
-    Same field set as :class:`Position` plus ``occurred_at`` so consumers
+    Same field set as :class:`Position` **except** ``sl_price`` (which is
+    REST-snapshot-only — see below), plus ``occurred_at`` so consumers
     (T-218 dispatcher) can correlate with execution events by timestamp
     ordering. ``Position`` and ``PositionEvent`` are kept as distinct
     types because the semantics differ: ``Position`` is "current state
     right now" (REST snapshot), ``PositionEvent`` is "discrete moment
     in a stream".
+
+    Deliberate decouple (T-534a, OQ-5=b): ``Position`` gained
+    ``sl_price`` but ``PositionEvent`` did NOT. The only SL-existence
+    consumer is the T-534b watchdog, which is a periodic
+    :meth:`ExchangeClient.get_positions` poll (REST), not a WS-stream
+    consumer. Per §0.8 (fields land only when a concrete consumer
+    surfaces) adding ``sl_price`` to ``PositionEvent`` would be a
+    consumer-less field; the two previously field-mirrored types
+    intentionally diverge here.
     """
 
     symbol: str

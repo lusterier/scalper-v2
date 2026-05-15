@@ -472,6 +472,7 @@ def _position_row(
     avg_price: str = "65000",
     leverage: str = "10",
     unrealised_pnl: str = "12.34",
+    stop_loss: str = "63000",
 ) -> dict[str, str]:
     return {
         "symbol": symbol,
@@ -480,6 +481,7 @@ def _position_row(
         "avgPrice": avg_price,
         "leverage": leverage,
         "unrealisedPnl": unrealised_pnl,
+        "stopLoss": stop_loss,
     }
 
 
@@ -505,6 +507,7 @@ async def test_get_positions_maps_active_position_row_to_position_dataclass() ->
     assert p.entry_price == _D("65000")
     assert p.leverage == 10
     assert p.unrealized_pnl == _D("12.34")
+    assert p.sl_price == _D("63000")  # T-534a
 
 
 async def test_get_positions_with_symbol_filter_passes_query_param() -> None:
@@ -548,6 +551,7 @@ async def test_get_positions_maps_flat_row_with_empty_side_to_none_side() -> Non
                     avg_price="",
                     leverage="",
                     unrealised_pnl="",
+                    stop_loss="",
                 ),
             ],
         },
@@ -559,6 +563,7 @@ async def test_get_positions_maps_flat_row_with_empty_side_to_none_side() -> Non
     assert p.entry_price is None
     assert p.leverage is None
     assert p.unrealized_pnl is None
+    assert p.sl_price is None  # T-534a: flat → no SL
 
 
 async def test_get_positions_preserves_zero_string_in_avg_price_and_unrealised_pnl() -> None:
@@ -577,6 +582,35 @@ async def test_get_positions_preserves_zero_string_in_avg_price_and_unrealised_p
     p = (await adapter.get_positions())[0]
     assert p.entry_price == _D("0")
     assert p.unrealized_pnl == _D("0")
+
+
+@pytest.mark.parametrize(
+    ("stop_loss", "expected"),
+    [
+        ("27000.5", Decimal("27000.5")),  # real SL → exact Decimal, no float
+        ("", None),  # blank → no SL
+        ("0", None),  # Bybit no-SL sentinel
+        ("0.00", None),  # Bybit no-SL sentinel
+        ("-1", None),  # defensive: non-positive never a real SL
+    ],
+)
+async def test_get_positions_sl_price_decode_golden(
+    stop_loss: str,
+    expected: Decimal | None,
+) -> None:
+    """T-534a: stopLoss decode — Decimal(str(...)) no-float; blank/non-
+    positive → None (deliberate divergence from avgPrice '0'-preserve W#3;
+    an exchange SL at price 0 is semantically impossible = 'no SL set')."""
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={"list": [_position_row(stop_loss=stop_loss)]},
+    )
+    adapter = _make_adapter(client=client)
+    p = (await adapter.get_positions())[0]
+    assert p.sl_price == expected
+    if expected is not None:
+        assert isinstance(p.sl_price, Decimal)
+        assert str(p.sl_price) == "27000.5"  # no float coercion
 
 
 # --- T-208b: get_fill_price (3 tests) --------------------------------------

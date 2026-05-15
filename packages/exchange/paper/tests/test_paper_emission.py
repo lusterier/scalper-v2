@@ -387,7 +387,9 @@ async def test_get_positions_maps_remaining_qty_to_position_size(
 async def test_get_positions_returns_leverage_and_unrealized_pnl_as_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Paper-fixed-fields invariant: no leverage column, no live mark price."""
+    """Paper-fixed-fields invariant: no leverage column, no live mark price,
+    and sl_price always None (T-534a / OQ-4=A — paper SL is synthetic-
+    internal; the live-only T-534b watchdog skips paper bots)."""
     pe = _make_paper_exchange()
     rows = [
         _record_like(
@@ -403,6 +405,7 @@ async def test_get_positions_returns_leverage_and_unrealized_pnl_as_none(
     result = await pe.get_positions()
     assert result[0].leverage is None
     assert result[0].unrealized_pnl is None
+    assert result[0].sl_price is None
 
 
 async def test_get_fill_price_returns_decimal_when_match(

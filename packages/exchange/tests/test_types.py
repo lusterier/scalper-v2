@@ -69,9 +69,11 @@ def test_position_open_long() -> None:
         entry_price=Decimal("65000.00"),
         leverage=10,
         unrealized_pnl=Decimal("12.50"),
+        sl_price=Decimal("64000.00"),
     )
     assert p.side == "buy"
     assert p.size == Decimal("0.05")
+    assert p.sl_price == Decimal("64000.00")
 
 
 def test_position_flat_uses_none_fields() -> None:
@@ -82,10 +84,13 @@ def test_position_flat_uses_none_fields() -> None:
         entry_price=None,
         leverage=None,
         unrealized_pnl=None,
+        sl_price=None,
     )
     assert p.side is None
     assert p.size == Decimal("0")
     assert p.entry_price is None
+    # T-534a: flat (size==0) → sl_price is None too (docstring invariant).
+    assert p.sl_price is None
 
 
 def test_position_size_is_decimal_not_float() -> None:
@@ -93,7 +98,7 @@ def test_position_size_is_decimal_not_float() -> None:
     assert "Decimal" in str(fields["size"])
 
 
-def test_position_field_set_is_minimal_six() -> None:
+def test_position_field_set_is_minimal_seven_with_sl_price() -> None:
     fields = {f.name for f in dataclasses.fields(Position)}
     assert fields == {
         "symbol",
@@ -102,6 +107,7 @@ def test_position_field_set_is_minimal_six() -> None:
         "entry_price",
         "leverage",
         "unrealized_pnl",
+        "sl_price",
     }
 
 
@@ -113,6 +119,7 @@ def test_position_is_frozen_and_slotted() -> None:
         entry_price=None,
         leverage=None,
         unrealized_pnl=None,
+        sl_price=None,
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         p.size = Decimal("1")  # type: ignore[misc]
@@ -175,10 +182,25 @@ def test_execution_event_fee_is_required_decimal() -> None:
 # --- PositionEvent ----------------------------------------------------------
 
 
-def test_position_event_carries_occurred_at_plus_position_fields() -> None:
+def test_position_event_excludes_sl_price_carries_occurred_at() -> None:
+    """T-534a / OQ-5=b: PositionEvent deliberately does NOT carry the
+    REST-snapshot-only ``sl_price`` (no WS-stream SL-existence consumer;
+    §0.8). Pinned to an explicit set so the deliberate Position vs
+    PositionEvent field-seam divergence cannot silently re-converge.
+    """
     pe_fields = {f.name for f in dataclasses.fields(PositionEvent)}
+    assert pe_fields == {
+        "symbol",
+        "side",
+        "size",
+        "entry_price",
+        "leverage",
+        "unrealized_pnl",
+        "occurred_at",
+    }
     p_fields = {f.name for f in dataclasses.fields(Position)}
-    assert pe_fields == p_fields | {"occurred_at"}
+    assert "sl_price" in p_fields
+    assert "sl_price" not in pe_fields
 
 
 def test_position_event_constructs_open_state() -> None:
