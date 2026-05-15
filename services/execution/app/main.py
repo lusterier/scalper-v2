@@ -75,7 +75,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from apscheduler.events import EVENT_JOB_ERROR, JobExecutionEvent  # type: ignore[import-untyped]
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
@@ -95,7 +95,9 @@ from packages.observability import (
 from .audit import run_pnl_audit_tick
 from .config import Settings
 from .dispatcher import ExecutionDispatcher, run_dispatcher_for_bot
+from .equity_snapshot import run_equity_snapshot_tick
 from .health import router as health_router
+from .metrics import build_execution_metrics
 from .placement import make_per_bot_handler
 from .pool import build_adapter_pool
 from .restart import reconcile_on_startup
@@ -106,6 +108,8 @@ from .shadow_worker import ShadowWorker
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    from packages.exchange.protocols import ExchangeClient
 
 __all__ = ["create_app"]
 
@@ -118,6 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure(level=settings.log_level)
     logger = get_logger(settings.service_name, "system")
     registry_metrics = make_registry()
+    exec_metrics = build_execution_metrics(registry_metrics)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -355,6 +360,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             id="pnl_audit",
             misfire_grace_time=120,
         )
+
+        async def _equity_snapshot_job() -> None:
+            equity_logger = logger.bind(component="equity_snapshot")
+            await run_equity_snapshot_tick(
+                pool=pool,
+                # L-023: reflow-stable cast (string forward-ref, runtime
+                # no-op) — NOT an inline `# type: ignore[arg-type]` like the
+                # _audit_job site above; that form migrates off its kwarg
+                # under ruff-format reflow (bit T-525a2/b).
+                sub_account_to_adapter=cast(
+                    "dict[str, ExchangeClient]",
+                    sub_account_to_adapter,
+                ),
+                sub_account_to_bot_ids=sub_account_to_bot_ids,
+                metrics=exec_metrics,
+                bound_logger=equity_logger,
+                now_fn=lambda: datetime.now(UTC),
+            )
+
+        scheduler.add_job(
+            _equity_snapshot_job,
+            trigger="interval",
+            seconds=settings.execution_equity_snapshot_interval_seconds,
+            id="equity_snapshot",
+            misfire_grace_time=120,
+        )
         scheduler.start()
 
         # 8. State attach.
@@ -368,6 +399,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.position_lifecycle_tasks = position_lifecycle_tasks
         app.state.closed_pnl_locks = closed_pnl_locks
         app.state.scheduler = scheduler
+        app.state.exec_metrics = exec_metrics
         app.state.shadow_worker = shadow_worker
         app.state.shadow_rejected_worker = shadow_rejected_worker
 

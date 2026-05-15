@@ -728,9 +728,10 @@ def test_daily_report_runs_at_configured_utc_time(
     mock_rate_limiter: MagicMock,
     monkeypatch: object,
 ) -> None:
-    """H-021 verbatim test name (per ADR-0007 D6) — scheduler.add_job invoked once
-    with id='pnl_audit', trigger='interval', seconds=Settings.execution_audit_tick_interval_seconds,
-    misfire_grace_time=120, and NO timezone= kwarg (UTC enforced at scheduler ctor only).
+    """H-021 verbatim test name (per ADR-0007 D6) — scheduler.add_job invoked
+    twice (id='pnl_audit' T-220b + id='equity_snapshot' T-531), each
+    trigger='interval', seconds=its Settings interval, misfire_grace_time=120,
+    and NO timezone= kwarg (UTC enforced at scheduler ctor only per ADR-0007 D2).
     """
     from unittest.mock import AsyncMock as _AsyncMock
     from unittest.mock import MagicMock as _MagicMock
@@ -777,14 +778,24 @@ def test_daily_report_runs_at_configured_utc_time(
     app = create_app(settings=settings)  # type: ignore[arg-type]
     with TestClient(app):
         pass
-    assert len(captured_add_job_kwargs) == 1
-    add_job_kwargs = captured_add_job_kwargs[0]
-    assert add_job_kwargs["id"] == "pnl_audit"
-    assert add_job_kwargs["trigger"] == "interval"
-    assert add_job_kwargs["seconds"] == settings.execution_audit_tick_interval_seconds  # type: ignore[attr-defined]
-    assert add_job_kwargs["misfire_grace_time"] == 120
+    # T-531 added a 2nd scheduled job — filter by id (L-015 generalized to
+    # unit test: this assertion was `== 1` + `[0]` pre-T-531).
+    assert len(captured_add_job_kwargs) == 2
+    by_id = {k["id"]: k for k in captured_add_job_kwargs}
+    assert set(by_id) == {"pnl_audit", "equity_snapshot"}
+
+    audit_kwargs = by_id["pnl_audit"]
+    assert audit_kwargs["trigger"] == "interval"
+    assert audit_kwargs["seconds"] == settings.execution_audit_tick_interval_seconds  # type: ignore[attr-defined]
+    assert audit_kwargs["misfire_grace_time"] == 120
     # Critical: NO timezone= kwarg per ADR-0007 D2 (UTC enforced at scheduler ctor).
-    assert "timezone" not in add_job_kwargs
+    assert "timezone" not in audit_kwargs
+
+    equity_kwargs = by_id["equity_snapshot"]
+    assert equity_kwargs["trigger"] == "interval"
+    assert equity_kwargs["seconds"] == settings.execution_equity_snapshot_interval_seconds  # type: ignore[attr-defined]
+    assert equity_kwargs["misfire_grace_time"] == 120
+    assert "timezone" not in equity_kwargs
 
 
 def test_lifespan_shutdown_calls_scheduler_shutdown_wait_true_before_adapter_close(
