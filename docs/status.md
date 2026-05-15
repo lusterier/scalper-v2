@@ -1,5 +1,29 @@
 # Session status
 
+## 2026-05-15 (T-526 cooldown gate CLOSED — first ADR-0011 risk-management hardening task; F5 counter advances 39/55 → 40/55; NEW RiskSection forward-compat container; NEW L-022 lesson; §0.3 overage 1.92× operator-approved)
+
+**F5 phase counter advances 39/55 → 40/55** per L-007 (T-526 already in denominator; numerator+1). **T-526 = first of the 13 ADR-0011 mandatory hardening tasks (T-524..T-536) shipped** — risk-management cluster lead.
+
+### T-526 — per-bot pre-scoring cooldown gate (after-loss + losing-streak)
+
+- **Origin**: F5 mandatory hardening per ADR-0011 risk-management cluster (T-524 + T-525 + T-526). Per-bot signal-acceptance gate at strategy-engine `consumer.py` between BRIEF §9.4 step 3b (symbol filter) + 3c (signal_id resolve). Mirror `signal_expired` / `signal_outside_universe` silent-skip precedent verbatim.
+- **Architecture (operator OQs 4, plan-stage 2026-05-15, all default A)**: OQ-1=A **derive-from-trades** (NO `bot_cooldown_state` table, NO `orders.events.<bot_id>` subscribe, NO restart reconcile — `trades`/`paper_trades` durable per §18.3; ADR-0011 anticipated H-027 stays reserved for T-525 kill-switch persistence, explicitly NOT triggered here); OQ-2=A loss = `realized_pnl < 0` strict; OQ-3=A silent skip + `signal_blocked_cooldown` trading.log info + `signals_blocked_cooldown_total{bot_id,reason}` Prom counter (NO scoring_evaluations / NO signals.rejected / NO shadow-rejected-start); OQ-4=A combined `cooldown_until = max(loss_until, streak_until)`, reason names binding knob(s).
+- **NEW `RiskSection`** (`packages/scoring/types.py`): frozen + `extra="forbid"` (operator-approved CONCERN swap from plan-stated `strict=True` 2026-05-15 — ShadowConfig precedent; typo-catch goal; strict-coercion irrelevant for `int Field(ge=0)`). Forward-compat container — T-524 (`max_open_trades_*`) + T-525 (`daily_loss_limit_usd` + `max_drawdown_pct`) will add fields to this same model. `BotConfig.risk` + `yaml_loader._parse_risk` + alpha/beta.yaml all-zero `risk:` block (fixture parity).
+- **NEW modules**: `packages/db/queries/trades.py` (`select_recent_closed_trades` + `ClosedTradeRow` + `TradeTableName` Literal); `services/strategy_engine/app/cooldown_gate.py` (`check_cooldown` + `CooldownDecision` + 3 helpers); `services/strategy_engine/app/metrics.py` (FIRST strategy-engine svc-metric scaffolding — mirror signal_gateway pattern; future T-524/T-525 reuse the `Metrics` dataclass).
+- **All 4 review gates**: plan-reviewer single-pass APPROVE 2026-05-15 (5 WG) → drift-checker ON TRACK (mid-impl) → drift-checker **DRIFT** (final; §0.3 LOC BLOCKER 1.92× + 2 CONCERNs; operator-resolved Option A accept-overage + keep-extra-forbid 2026-05-15) → brief-reviewer **SHIP** (5/5 WG + 15/15 AC + §N1-N9 + 0 H-NNN regression). Math-validator out of scope per Gate 4 (no financial math).
+- **§0.3 LOC overage**: ~515 src vs plan ~245 = **1.92× (~115 over 400 cap)**. Operator-approved 2026-05-15 Option A (accept + declared 14-row per-file breakdown in commit body + plan §LOC budget). Root cause: WG-heavy plan under-estimated docstring overhead (cooldown_gate.py 241 LOC ≈ 130 logic + 111 WG-mandated docs; trades.py 102 ≈ 15 logic + 87 docs) + AC#8-mandated first-svc-metric scaffolding (metrics.py 63) never line-budgeted.
+- **NEW L-022 lesson**: WG-heavy plans (≥4 WG items) or first-of-kind-scaffolding ACs systematically under-estimate src LOC; plan-reviewer adds +20-30% contingency + states adjusted estimate; **drift-checker treats "ON TRACK but ≥1.5× plan src" as auto NEEDS DISCUSSION** (escalate at mid-impl, don't silently pass — §0.3 cap is a brief gate independent of plan-fidelity verdict).
+- **Tests**: 30 new unit + 2 integration (env-gated testcontainer; executed locally `POSTGRES_TEST_DSN=postgresql://scalper:devpass@127.0.0.1:5432/postgres` 2/2 PASS per WG#3) = 32. CI-fast 2266 passed + 48 skipped + 0 regressions; mypy strict 0/77; ruff clean. cooldown_gate.py 99% unit coverage (§N5).
+- **No new deps (§0.9)**. **Commit**: `c1363f4` on `feat/T-526-cooldown-gate` pre-merge. **Plan**: `docs/plans/T-526.md`.
+
+### Next session pickup
+
+- **T-524** — Bot-level concurrent-trades caps (`max_open_trades_per_bot` + `max_open_trades_global`); extends NEW `RiskSection` (T-526 seed). Likely NEEDS `orders.events.<bot_id>` subscribe for in-flight position counter (T-526 deliberately did NOT add it — §9.4 step 4 `ctx.bot.concurrent_positions_count` still unimplemented).
+- **T-525** — Daily loss limit + max drawdown stop; **H-027 anticipated** (kill-switch persistence across restart — mirror T-221 reconcile); L-007 split-watch flagged at ADR-0011 time.
+- **T-526 sets the RiskSection + first-svc-metric precedent** — T-524/T-525 should reuse `RiskSection` (extend, don't add parallel sections) + `services/strategy_engine/app/metrics.py` `Metrics` dataclass (add Counter fields).
+- Remaining ADR-0011 hardening cluster: T-524, T-525, T-527, T-528, T-530..T-536 (11 tasks) — biggest remaining F5 block; gates T-519 (hazard audit) → T-521 (docs) → T-522 (close-out E1..E6).
+- **L-022 active control now live** — next plan-reviewer invocations apply the +20-30% WG-contingency rule; next drift-checker invocations apply the ≥1.5× auto-NEEDS-DISCUSSION rule.
+
 ## 2026-05-12 (late-night XXVII — T-520 hardening shortlist multi-commit CLOSED; F5 counter advances 38/55 → 39/55; 4 sub-commits ship 4 shortlist items; closes T-F3+ + F4+ T-306 + T-401c + audit residue runbook)
 
 **F5 phase counter advances 38/55 → 39/55** per L-007. **T-520 multi-commit task fully CLOSED** at 4 sub-commits (`c075b1e` feat(T-520-livemode) + `505f8ed` feat(T-520-history) + `8486ce3` fix(T-520-symbolmap) + `046451d` docs(T-520-audit-runbook)) + chore close `___pending___`. 3 prior cherry-picks from F5-start session (`bb5d57b` + `9d1370e` + `bc1cab7`) bring total T-520 closed items to 7.
