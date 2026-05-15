@@ -23,7 +23,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from packages.db.queries.trades import ClosedTradeRow, select_recent_closed_trades
+from packages.db.queries.trades import (
+    ClosedTradeRow,
+    count_open_trades,
+    select_recent_closed_trades,
+)
 
 _T1 = datetime(2026, 5, 15, 10, 0, 0, tzinfo=UTC)
 _T2 = datetime(2026, 5, 15, 9, 50, 0, tzinfo=UTC)
@@ -131,3 +135,86 @@ async def test_binds_bot_id_and_limit_in_dollar_one_dollar_two_order() -> None:
     conn.fetch = _capture
     await select_recent_closed_trades(conn, bot_id="alpha", table_name="trades", limit=7)
     assert captured_args == [("alpha", 7)]
+
+
+# ---------------------------------------------------------------------------
+# count_open_trades (T-524)
+# ---------------------------------------------------------------------------
+
+
+async def test_count_open_trades_returns_typed_int() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=(7,))
+    n = await count_open_trades(conn, table_name="trades", bot_id="alpha")
+    assert n == 7
+    assert isinstance(n, int)
+
+
+async def test_count_open_trades_none_row_returns_zero() -> None:
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    n = await count_open_trades(conn, table_name="trades", bot_id="alpha")
+    assert n == 0
+
+
+async def test_count_open_trades_per_bot_sql_has_status_open_and_bot_id() -> None:
+    """WG#1: per-bot SQL contains `status = 'open'` + `bot_id = $1`."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> tuple[int]:
+        captured.append((sql, *args))
+        return (0,)
+
+    conn.fetchrow = _capture
+    await count_open_trades(conn, table_name="trades", bot_id="alpha")
+    sql = captured[0][0]
+    assert "FROM trades " in sql
+    assert "WHERE bot_id = $1 AND status = 'open'" in sql
+    # WG#2 L-021: no ::text / ::timestamptz cast literals (column-direct $1 only).
+    assert "::text" not in sql
+    assert "::timestamptz" not in sql
+    assert captured[0][1:] == ("alpha",)
+
+
+async def test_count_open_trades_global_sql_has_no_bot_id_predicate() -> None:
+    """WG#1: global SQL (bot_id=None) has `status = 'open'` and NO bot_id bind."""
+    conn = MagicMock()
+    captured: list[tuple[Any, ...]] = []
+
+    async def _capture(sql: str, *args: Any) -> tuple[int]:
+        captured.append((sql, *args))
+        return (0,)
+
+    conn.fetchrow = _capture
+    await count_open_trades(conn, table_name="trades", bot_id=None)
+    sql = captured[0][0]
+    assert "WHERE status = 'open'" in sql
+    assert "bot_id" not in sql
+    assert captured[0][1:] == ()  # no $1 bind
+
+
+async def test_count_open_trades_paper_table_dispatch() -> None:
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_a: Any) -> tuple[int]:
+        captured.append(sql)
+        return (0,)
+
+    conn.fetchrow = _capture
+    await count_open_trades(conn, table_name="paper_trades", bot_id="beta")
+    assert "FROM paper_trades " in captured[0]
+
+
+async def test_count_open_trades_live_table_dispatch() -> None:
+    conn = MagicMock()
+    captured: list[str] = []
+
+    async def _capture(sql: str, *_a: Any) -> tuple[int]:
+        captured.append(sql)
+        return (0,)
+
+    conn.fetchrow = _capture
+    await count_open_trades(conn, table_name="trades", bot_id=None)
+    assert "FROM trades " in captured[0]

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ClosedTradeRow",
     "TradeTableName",
+    "count_open_trades",
     "select_recent_closed_trades",
 ]
 
@@ -100,3 +101,53 @@ async def select_recent_closed_trades(
         )
         for row in rows
     ]
+
+
+async def count_open_trades(
+    conn: _DbExecutor,
+    *,
+    table_name: TradeTableName,
+    bot_id: str | None,
+) -> int:
+    """COUNT(*) of open positions for the T-524 concurrent-trades caps gate.
+
+    Charter invariant inlined: ``WHERE status = 'open'``. Per-bot count
+    (``bot_id`` given) adds ``AND bot_id = $1``; global count (``bot_id`` is
+    ``None``) has NO bot_id predicate (counts every open position in
+    ``table_name`` across all bots in this exchange-mode realm — paper bots
+    count ``paper_trades``, live/testnet bots count ``trades`` per T-524
+    OQ-3=A per-exchange-mode-realm semantic).
+
+    A position is "open" iff ``status = 'open'`` (schema has only
+    ``open``/``closed``; a partially-closed position keeps ``status='open'``
+    through partial TP and still consumes a concurrent slot — counted, per
+    T-524 OQ-4 default A). Distinct from
+    :func:`select_recent_closed_trades` which is the ``status = 'closed'``
+    side for the T-526 cooldown gate.
+
+    L-021 SQL-parameter type-cast audit: the only parameter is ``$1``
+    (``bot_id``), used in ``WHERE bot_id = $1`` — direct column equality on a
+    TEXT column → L-021-safe; no ``::text`` cast needed (asyncpg inference is
+    unambiguous in column-direct equality position). No other ``$N``
+    parameters exist: the caps comparison (``count >= cap``) is a Python-side
+    int compare in :mod:`services.strategy_engine.app.concurrent_caps_gate`,
+    NOT a SQL ``LIMIT``/arithmetic bind. No timestamp predicate exists
+    (``status`` + optional ``bot_id`` only) → no ``::timestamptz`` cast site.
+
+    ``table_name`` is a :data:`TradeTableName` Literal (compile-time-checked
+    membership in ``{"trades", "paper_trades"}``); NOT raw user input.
+    Inlining via f-string is safe (no SQL-injection surface).
+    """
+    if bot_id is None:
+        sql = (
+            f"SELECT count(*) FROM {table_name} "  # noqa: S608  # nosec B608
+            "WHERE status = 'open'"
+        )
+        row = await conn.fetchrow(sql)
+    else:
+        sql = (
+            f"SELECT count(*) FROM {table_name} "  # noqa: S608  # nosec B608
+            "WHERE bot_id = $1 AND status = 'open'"
+        )
+        row = await conn.fetchrow(sql, bot_id)
+    return int(row[0]) if row is not None else 0

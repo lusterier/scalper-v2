@@ -57,6 +57,7 @@ from packages.db.queries.scoring import insert_scoring_evaluation
 from packages.db.queries.signal_gateway import select_signal_id_by_idempotency_key
 from packages.scoring import evaluate
 
+from .concurrent_caps_gate import check_concurrent_caps
 from .cooldown_gate import check_cooldown
 
 if TYPE_CHECKING:
@@ -184,6 +185,31 @@ def make_signal_handler(
             metrics.signals_blocked_cooldown.labels(
                 bot_id=str(bot_id),
                 reason=cooldown.reason or "unknown",
+            ).inc()
+            return
+
+        # T-524 pre-scoring concurrent-trades caps gate. Runs AFTER the T-526
+        # cooldown gate (OQ-5 default A) — same 3b→3c boundary, same silent-skip
+        # pattern. Short-circuits before DB hit when both caps disabled.
+        caps = await check_concurrent_caps(
+            pool=pool,
+            bot_id=bot_id,
+            exchange_mode=bot_config.exchange.mode,
+            risk_config=bot_config.risk,
+        )
+        if caps.blocked:
+            trading_logger.info(
+                "signal_blocked_caps",
+                bot_id=bot_id,
+                idempotency_key=signal.idempotency_key,
+                symbol=signal.symbol,
+                reason=caps.reason,
+                current_count=caps.current_count,
+                cap_limit=caps.cap_limit,
+            )
+            metrics.signals_blocked_caps.labels(
+                bot_id=str(bot_id),
+                reason=caps.reason or "unknown",
             ).inc()
             return
 

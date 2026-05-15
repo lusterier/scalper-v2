@@ -44,19 +44,28 @@ class Metrics:
     """
 
     signals_blocked_cooldown: Counter
+    signals_blocked_caps: Counter
 
 
 def build_strategy_engine_metrics(registry: CollectorRegistry) -> Metrics:
     """Declare the §15.3 strategy-engine metrics on ``registry`` and return handles.
 
-    T-526 ships ``signals_blocked_cooldown_total{bot_id, reason}`` — incremented
-    each time the pre-scoring cooldown gate blocks a signal (single-loss cooldown
-    / streak cooldown / both).
+    * T-526 ``signals_blocked_cooldown_total{bot_id, reason}`` — incremented
+      each time the pre-scoring cooldown gate blocks a signal.
+    * T-524 ``signals_blocked_caps_total{bot_id, reason}`` — incremented each
+      time the pre-scoring concurrent-trades caps gate blocks a signal
+      (``max_open_trades_per_bot`` / ``max_open_trades_global``).
     """
     return Metrics(
         signals_blocked_cooldown=Counter(
             "signals_blocked_cooldown_total",
             "Signals suppressed by the strategy-engine pre-scoring cooldown gate (T-526).",
+            labelnames=("bot_id", "reason"),
+            registry=registry,
+        ),
+        signals_blocked_caps=Counter(
+            "signals_blocked_caps_total",
+            "Signals suppressed by the strategy-engine pre-scoring concurrent-caps gate (T-524).",
             labelnames=("bot_id", "reason"),
             registry=registry,
         ),

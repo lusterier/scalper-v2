@@ -51,9 +51,11 @@ scoring:
           lookback_candles: 5
           oi_drop_pct: 1.0
 
-# T-526 risk: block — all-zero defaults disable the pre-scoring cooldown gate
-# (no behavior change vs pre-T-526 baseline). See alpha.yaml comment for details.
+# T-526/T-524 risk: block — all-zero defaults disable cooldown + caps gates
+# (no behavior change vs baseline). See alpha.yaml comment for details.
 risk:
   cooldown_after_loss_minutes: 0
   cooldown_after_streak_n_losses: 0
   cooldown_after_streak_n_losses_minutes: 0
+  max_open_trades_per_bot: 0
+  max_open_trades_global: 0

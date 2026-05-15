@@ -298,26 +298,36 @@ class ShadowConfig(BaseModel):
 
 
 class RiskSection(BaseModel):
-    """§B.1 ``risk:`` block (T-526) — per-bot risk-management knobs.
+    """§B.1 ``risk:`` block — per-bot risk-management knobs (T-526 + T-524).
 
-    Forward-compatible container: T-526 ships cooldown knobs (single-loss +
-    losing-streak); T-524 will add concurrent-trades caps; T-525 will add
+    Forward-compatible container: T-526 shipped cooldown knobs (single-loss +
+    losing-streak); T-524 adds concurrent-trades caps; T-525 will add
     daily-loss-limit + max-drawdown thresholds to this same model.
 
     Per-knob ``0`` value = disabled. Knob semantics intentionally orthogonal:
-    any one of ``cooldown_after_loss_minutes`` / ``cooldown_after_streak_n_losses``
-    / ``cooldown_after_streak_n_losses_minutes`` = ``0`` disables that knob.
-    Both single-loss + streak knobs = ``0`` short-circuits cooldown gate before
-    SELECT (no DB hit on every signal arrival when feature unused). Mirror
-    :class:`ShadowConfig` ``extra="forbid"`` rationale: net-new feature catches
-    operator typos at YAML load.
+
+    * **Cooldown (T-526)**: any one of ``cooldown_after_loss_minutes`` /
+      ``cooldown_after_streak_n_losses`` / ``cooldown_after_streak_n_losses_minutes``
+      = ``0`` disables that knob. Both single-loss + streak knobs = ``0``
+      short-circuits the cooldown gate before SELECT.
+    * **Concurrent caps (T-524)**: ``max_open_trades_per_bot`` /
+      ``max_open_trades_global`` = ``0`` disables that cap. Both = ``0``
+      short-circuits the caps gate before SELECT (no DB hit per signal when
+      feature unused). Block predicate is ``current_open_count >= cap``.
+
+    Mirror :class:`ShadowConfig` ``extra="forbid"`` rationale: net-new feature
+    catches operator typos at YAML load.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # T-526 cooldown knobs
     cooldown_after_loss_minutes: int = Field(default=0, ge=0)
     cooldown_after_streak_n_losses: int = Field(default=0, ge=0)
     cooldown_after_streak_n_losses_minutes: int = Field(default=0, ge=0)
+    # T-524 concurrent-trades caps
+    max_open_trades_per_bot: int = Field(default=0, ge=0)
+    max_open_trades_global: int = Field(default=0, ge=0)
 
 
 class BotConfig(BaseModel):

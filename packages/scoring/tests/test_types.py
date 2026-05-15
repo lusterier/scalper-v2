@@ -452,3 +452,39 @@ def test_bot_config_default_risk_section_when_absent() -> None:
     bot = _basic_bot()
     assert isinstance(bot.risk, RiskSection)
     assert bot.risk.cooldown_after_loss_minutes == 0
+
+
+# ---------------------------------------------------------------------------
+# RiskSection T-524 concurrent-caps extension
+# ---------------------------------------------------------------------------
+
+
+def test_risk_section_caps_fields_default_zero() -> None:
+    """T-524: 2 new cap knobs default to 0 (disabled)."""
+    rs = RiskSection()
+    assert rs.max_open_trades_per_bot == 0
+    assert rs.max_open_trades_global == 0
+
+
+def test_risk_section_caps_reject_negative() -> None:
+    """T-524 cap fields are Field(ge=0); negative ints fail validation."""
+    with pytest.raises(ValidationError):
+        RiskSection(max_open_trades_per_bot=-1)
+    with pytest.raises(ValidationError):
+        RiskSection(max_open_trades_global=-1)
+
+
+def test_risk_section_extra_forbid_still_holds_after_caps_ext() -> None:
+    """T-526 invariant regression guard: extra='forbid' still rejects typos
+    after the T-524 field additions (and cooldown knobs still coexist)."""
+    with pytest.raises(ValidationError):
+        RiskSection(max_open_trade_per_bot=3)  # type: ignore[call-arg]  # typo: missing 's'
+    # Coexistence: cooldown + caps knobs set together, all preserved.
+    rs = RiskSection(
+        cooldown_after_loss_minutes=10,
+        max_open_trades_per_bot=3,
+        max_open_trades_global=20,
+    )
+    assert rs.cooldown_after_loss_minutes == 10
+    assert rs.max_open_trades_per_bot == 3
+    assert rs.max_open_trades_global == 20

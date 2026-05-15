@@ -700,3 +700,104 @@ async def test_cooldown_inactive_passes_through_to_step_3c(
     await handler(_envelope(_signal()))
     # Step 3c..3h ran → bus.publish on orders.requests fired.
     caps["bus"].publish.assert_awaited()
+
+
+# region: T-524 pre-scoring concurrent-caps gate ----------------------------
+
+
+async def test_signal_blocked_by_caps_skips_db_and_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-524 WG#5: caps blocked → signal_blocked_caps log + Prom counter inc +
+    NO scoring_evaluations write + NO orders.requests / signals.rejected publish.
+    Dual-side pin (what fires + what does NOT). Cooldown gate short-circuits
+    inactive via all-zero _bot_config RiskSection (no stub needed)."""
+    from services.strategy_engine.app.concurrent_caps_gate import CapsDecision
+
+    blocked = CapsDecision(
+        blocked=True,
+        reason="max_open_trades_per_bot",
+        current_count=3,
+        cap_limit=3,
+    )
+
+    async def _stub_check_caps(**_kwargs: Any) -> CapsDecision:
+        return blocked
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.check_concurrent_caps",
+        _stub_check_caps,
+    )
+
+    async def _signal_id_must_not_run(*_a: Any, **_k: Any) -> int:
+        raise AssertionError("step 3c reached despite caps blocked")
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.select_signal_id_by_idempotency_key",
+        _signal_id_must_not_run,
+    )
+
+    metrics = MagicMock()
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=AssertionError("pool.acquire must not run"))
+    bus = _mock_bus()
+    captured_trading = MagicMock()
+
+    handler = make_signal_handler(
+        bot_id="alpha",  # type: ignore[arg-type]
+        bot_config=_bot_config(),
+        resolver=MagicMock(),
+        pool=pool,
+        bus=bus,
+        trading_logger=captured_trading,
+        system_logger=MagicMock(),
+        audit_logger=MagicMock(),
+        now_fn=lambda: _FIXED_NOW,
+        max_signal_age_seconds=600,
+        metrics=metrics,
+    )
+    await handler(_envelope(_signal()))
+
+    # Pin: signal_blocked_caps logged with EXACT 6-kwarg field set per WG#5.
+    captured_trading.info.assert_called_once()
+    call = captured_trading.info.call_args
+    assert call.args[0] == "signal_blocked_caps"
+    kw = call.kwargs
+    assert kw["bot_id"] == "alpha"
+    assert kw["idempotency_key"] == "key-1"
+    assert kw["symbol"] == "BTCUSDT"
+    assert kw["reason"] == "max_open_trades_per_bot"
+    assert kw["current_count"] == 3
+    assert kw["cap_limit"] == 3
+
+    # Pin: Prom counter incremented with bot_id + reason labels.
+    metrics.signals_blocked_caps.labels.assert_called_once_with(
+        bot_id="alpha", reason="max_open_trades_per_bot"
+    )
+    metrics.signals_blocked_caps.labels.return_value.inc.assert_called_once_with()
+
+    # Pin: NO DB writes + NO bus publishes + NO step-3c signal_id lookup.
+    bus.publish.assert_not_awaited()
+    pool.acquire.assert_not_called()
+
+
+async def test_caps_not_blocked_passes_through_to_step_3c(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caps gate not blocked → consumer proceeds to 3c..3h normally."""
+    from services.strategy_engine.app.concurrent_caps_gate import CapsDecision
+
+    async def _stub_check_caps(**_kwargs: Any) -> CapsDecision:
+        return CapsDecision(blocked=False, reason=None, current_count=None, cap_limit=None)
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.check_concurrent_caps",
+        _stub_check_caps,
+    )
+
+    handler, caps = _build_handler(
+        evaluate_result=_scoring_result(decision="execute"),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal()))
+    caps["bus"].publish.assert_awaited()
