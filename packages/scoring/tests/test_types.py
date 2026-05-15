@@ -488,3 +488,41 @@ def test_risk_section_extra_forbid_still_holds_after_caps_ext() -> None:
     assert rs.cooldown_after_loss_minutes == 10
     assert rs.max_open_trades_per_bot == 3
     assert rs.max_open_trades_global == 20
+
+
+# ---------------------------------------------------------------------------
+# RiskSection T-525a1 daily_loss_limit_usd Decimal extension
+# ---------------------------------------------------------------------------
+
+
+def test_risk_section_daily_loss_limit_default_zero_decimal() -> None:
+    """T-525a1: daily_loss_limit_usd defaults to Decimal('0') (disabled)."""
+    rs = RiskSection()
+    assert rs.daily_loss_limit_usd == Decimal("0")
+    assert isinstance(rs.daily_loss_limit_usd, Decimal)
+
+
+def test_risk_section_daily_loss_limit_accepts_decimal() -> None:
+    """Accepts a positive Decimal money value, exact."""
+    rs = RiskSection(daily_loss_limit_usd=Decimal("100.50"))
+    assert rs.daily_loss_limit_usd == Decimal("100.50")
+
+
+def test_risk_section_daily_loss_limit_rejects_negative() -> None:
+    """Field(ge=0): negative threshold fails validation."""
+    with pytest.raises(ValidationError):
+        RiskSection(daily_loss_limit_usd=Decimal("-1"))
+
+
+def test_risk_section_all_three_task_knobs_coexist() -> None:
+    """T-526 cooldown + T-524 caps + T-525a1 loss-limit coexist; extra=forbid holds."""
+    rs = RiskSection(
+        cooldown_after_loss_minutes=10,
+        max_open_trades_per_bot=3,
+        daily_loss_limit_usd=Decimal("250.00"),
+    )
+    assert rs.cooldown_after_loss_minutes == 10
+    assert rs.max_open_trades_per_bot == 3
+    assert rs.daily_loss_limit_usd == Decimal("250.00")
+    with pytest.raises(ValidationError):
+        RiskSection(daily_loss_limit_used=Decimal("5"))  # type: ignore[call-arg]  # typo

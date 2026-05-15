@@ -1038,3 +1038,59 @@ def test_yaml_loader_alpha_fixture_loads_with_risk_block(tmp_path: Path) -> None
     # All-zero risk block matches RiskSection() defaults.
     assert cfg.risk.cooldown_after_loss_minutes == 0
     assert cfg.risk.cooldown_after_streak_n_losses == 0
+
+
+# ---------------------------------------------------------------------------
+# T-525a1 daily_loss_limit_usd Decimal coercion
+# ---------------------------------------------------------------------------
+
+
+def test_yaml_loader_daily_loss_limit_string_quoted_exact_decimal() -> None:
+    """String-quoted ``"100.50"`` → exact Decimal('100.50')."""
+    from decimal import Decimal as _Decimal
+
+    yaml_txt = _T514_BASE_YAML + '\nrisk:\n  daily_loss_limit_usd: "100.50"\n'
+    cfg = load_bot_config_from_string(yaml_txt)
+    assert cfg.risk.daily_loss_limit_usd == _Decimal("100.50")
+
+
+def test_yaml_loader_daily_loss_limit_float_given_no_binary_artefact() -> None:
+    """CONCERN path: unquoted float ``100.10`` (NOT exactly binary-representable)
+    → Decimal('100.1') via _to_decimal's Decimal(str(value)); MUST NOT be the
+    Decimal(100.10) binary expansion (100.0999999999999943157...)."""
+    from decimal import Decimal as _Decimal
+
+    yaml_txt = _T514_BASE_YAML + "\nrisk:\n  daily_loss_limit_usd: 100.10\n"
+    cfg = load_bot_config_from_string(yaml_txt)
+    val = cfg.risk.daily_loss_limit_usd
+    # Via Decimal(str(float)) → clean short decimal. The direct Decimal(float)
+    # path would yield 100.0999999999999943157... — str() proves we did NOT
+    # take it (clean "100.1", no long binary expansion).
+    assert val == _Decimal("100.1")
+    assert str(val) == "100.1"
+    assert "999999" not in str(val)
+
+
+def test_yaml_loader_daily_loss_limit_missing_defaults_zero_decimal() -> None:
+    """Absent knob → Decimal('0') (disabled)."""
+    from decimal import Decimal as _Decimal
+
+    yaml_txt = _T514_BASE_YAML + "\nrisk:\n  cooldown_after_loss_minutes: 5\n"
+    cfg = load_bot_config_from_string(yaml_txt)
+    assert cfg.risk.daily_loss_limit_usd == _Decimal("0")
+
+
+def test_yaml_loader_int_knobs_stay_int_no_decimal_bleed() -> None:
+    """_RISK_DECIMAL_FIELDS contains only daily_loss_limit_usd — int knobs stay int."""
+    yaml_txt = _T514_BASE_YAML + (
+        "\nrisk:\n"
+        "  cooldown_after_loss_minutes: 10\n"
+        "  max_open_trades_per_bot: 3\n"
+        '  daily_loss_limit_usd: "50"\n'
+    )
+    cfg = load_bot_config_from_string(yaml_txt)
+    assert isinstance(cfg.risk.cooldown_after_loss_minutes, int)
+    assert not isinstance(cfg.risk.cooldown_after_loss_minutes, bool)
+    assert isinstance(cfg.risk.max_open_trades_per_bot, int)
+    assert cfg.risk.cooldown_after_loss_minutes == 10
+    assert cfg.risk.max_open_trades_per_bot == 3

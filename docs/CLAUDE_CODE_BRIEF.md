@@ -2823,6 +2823,14 @@ All with audit log entries.
 
 **Test.** `test_partial_non_5050_reconciliation_does_not_create_duplicate`.
 
+### H-027 — Risk kill-switch latch must persist across restart + re-evaluate on startup
+
+**Context.** A latched risk kill-switch (daily loss limit — T-525a2; max drawdown — T-525b) protects operator capital by stopping a bot once a loss threshold is crossed. If the latch were held only in process memory, a strategy-engine restart (deploy, crash, OOM) would reset it and silently re-enable a bot the operator's risk limit had stopped — direct capital-loss exposure (the bot resumes trading mid-loss-streak). ADR-0011 anticipated this; formal §20 allocation lands with T-525a1 (the persistence + reconcile substrate) per §0.8.
+
+**Policy.** The latch lives in durable storage — PG `bot_kill_switch_state` (migration 0018), one row per bot. It is re-evaluated on strategy-engine startup (`reconcile_kill_switch_on_startup`, best-effort non-blocking lifespan hook — log+continue, never raises into lifespan): a *daily* latch whose `daily_anchor_date` precedes the current UTC date is cleared (a new trading day); a same-UTC-day daily latch is retained (the stop survives the restart) and warn-logged for operator visibility; a `max_drawdown` latch (T-525b) is never cleared by a UTC-day rollover (hard-stop). The per-signal gate (T-525a2) additionally reads the persistent latch on every signal, so persistence + startup-reconcile + per-signal-read jointly guarantee a restart cannot resurrect a stopped bot.
+
+**Test.** `test_kill_switch_latch_survives_simulated_restart_same_utc_day` (latch written → fresh reconcile+read simulating restart → still tripped) + `test_reconcile_clears_stale_prior_utc_day_latch`.
+
 ### H-030 — Open-fill must not decrement remaining_qty
 
 **Context.** ExecutionDispatcher subtracts `qty_delta` from `position_state.remaining_qty` on every execution event. Placement tx writes `remaining_qty=request.qty` at trade-open commit (`placement_persist.py:419`). If the dispatcher unconditionally subtracts qty for the open-fill audit event (the WS execution event for the same fill), `remaining_qty` drops to 0 → triggers close-flow → trade marked closed in DB while position is still open on exchange. Operator-discovered shipped-code bug 2026-05-08; fix shipped via `fix(T-218b-open-fill-qty-bug)` precedent.
@@ -2831,7 +2839,7 @@ All with audit log entries.
 
 **Test.** `test_process_open_fill_does_not_decrement_remaining_qty` (regression guard) + `test_process_open_fill_with_zero_remaining_qty_does_NOT_trigger_close` (defensive-guard pin) + restored `test_process_open_fill_orders_lookup_to_open_branch` with realistic placement-time `remaining_qty=event.qty` semantics.
 
-H-numbering note: H-027/H-028/H-029 are reserved for ADR-0011 anticipated hazards (T-525/T-534/T-535 per pre-live operational hardening cluster); H-030 is the first concrete hazard discovered post-ADR-0011. **Companion sibling H-031** (paper adapter must not feed live ExecutionDispatcher) shipped via `fix(T-218c-paper-dispatcher-skip)` 2026-05-08 — together H-030 + H-031 complete dispatcher safety contract for live + paper modes respectively.
+H-numbering note: H-027 formally allocated 2026-05-15 at T-525a1 implementation (kill-switch persistence + reconcile substrate; daily-loss writer = T-525a2, drawdown = T-525b). H-028/H-029 remain reserved for ADR-0011 anticipated hazards (T-534/T-535 per pre-live operational hardening cluster); H-030 is the first concrete hazard discovered post-ADR-0011. **Companion sibling H-031** (paper adapter must not feed live ExecutionDispatcher) shipped via `fix(T-218c-paper-dispatcher-skip)` 2026-05-08 — together H-030 + H-031 complete dispatcher safety contract for live + paper modes respectively.
 
 ### H-031 — Paper adapter must not feed live ExecutionDispatcher
 

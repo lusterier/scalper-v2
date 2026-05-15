@@ -352,6 +352,10 @@ _EXECUTION_DECIMAL_FIELDS: frozenset[str] = frozenset(
     },
 )
 
+# T-525a1: `risk:` block fields needing Decimal coercion (USD money per §5.13).
+# Only daily_loss_limit_usd — the 5 cooldown/cap knobs stay int (no bleed).
+_RISK_DECIMAL_FIELDS: frozenset[str] = frozenset({"daily_loss_limit_usd"})
+
 
 def _parse_exchange(spec: dict[str, Any]) -> ExchangeSection:
     """Build ExchangeSection from §B.1 ``exchange:`` block (T-310a)."""
@@ -408,16 +412,23 @@ def _parse_shadow(spec: dict[str, Any] | None) -> ShadowConfig | None:
 
 
 def _parse_risk(spec: dict[str, Any] | None) -> RiskSection:
-    """Parse ``risk:`` YAML block per T-526; return default-zero RiskSection if absent.
+    """Parse ``risk:`` YAML block (T-526 cooldown + T-524 caps + T-525a1 loss-limit).
 
-    Missing block or empty dict → ``RiskSection()`` (all-zero defaults = cooldown
-    gate disabled; short-circuits before SELECT per cooldown_gate.py docstring).
+    Missing block or empty dict → ``RiskSection()`` (all-zero defaults = every
+    knob disabled; gates short-circuit before SELECT).
     Pydantic ``extra="forbid"`` on :class:`RiskSection` catches operator typos at
     YAML load (net-new feature; mirror :func:`_parse_shadow` convention).
+
+    T-525a1: ``daily_loss_limit_usd`` is Decimal-coerced via :func:`_to_decimal`
+    (mirror :func:`_parse_execution`) so a float-given YAML value (``100.50``)
+    becomes ``Decimal("100.50")`` via ``Decimal(str(value))`` — no binary-float
+    artefact (§5.13 / §N1). The 5 cooldown/cap knobs are NOT in
+    :data:`_RISK_DECIMAL_FIELDS` → stay int (no coercion bleed).
     """
     if not spec:
         return RiskSection()
-    return RiskSection(**spec)
+    coerced = {k: (_to_decimal(v) if k in _RISK_DECIMAL_FIELDS else v) for k, v in spec.items()}
+    return RiskSection(**coerced)
 
 
 def load_bot_config_from_string(

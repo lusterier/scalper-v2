@@ -21,7 +21,7 @@ All models are ``frozen=True`` per §5.3 immutability convention.
 from __future__ import annotations
 
 import re
-from decimal import Decimal  # noqa: TC003 — runtime annotation on Pydantic Decimal fields
+from decimal import Decimal  # runtime: RiskSection.daily_loss_limit_usd=Decimal("0") (T-525a1)
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -314,6 +314,13 @@ class RiskSection(BaseModel):
       ``max_open_trades_global`` = ``0`` disables that cap. Both = ``0``
       short-circuits the caps gate before SELECT (no DB hit per signal when
       feature unused). Block predicate is ``current_open_count >= cap``.
+    * **Daily loss limit (T-525a1 knob / T-525a2 enforcement)**:
+      ``daily_loss_limit_usd`` = ``0`` disables. When the bot's cumulative
+      realized P&L for the current UTC trading day reaches
+      ``<= -daily_loss_limit_usd`` the T-525a2 gate latches a persistent
+      kill-switch (``bot_kill_switch_state``). ``Decimal`` per §5.13 (USD
+      money). T-525a1 declares the knob; the SUM/threshold arithmetic is
+      T-525a2 (this field is declaration-only here — no math).
 
     Mirror :class:`ShadowConfig` ``extra="forbid"`` rationale: net-new feature
     catches operator typos at YAML load.
@@ -328,6 +335,8 @@ class RiskSection(BaseModel):
     # T-524 concurrent-trades caps
     max_open_trades_per_bot: int = Field(default=0, ge=0)
     max_open_trades_global: int = Field(default=0, ge=0)
+    # T-525a1 daily loss limit threshold (USD; enforced by T-525a2 gate)
+    daily_loss_limit_usd: Decimal = Field(default=Decimal("0"), ge=0)
 
 
 class BotConfig(BaseModel):

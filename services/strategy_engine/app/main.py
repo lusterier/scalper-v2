@@ -67,6 +67,7 @@ from packages.scoring.registry import load_plugin_registry
 from .config import Settings
 from .consumer import make_signal_handler
 from .health import router as health_router
+from .kill_switch_reconcile import reconcile_kill_switch_on_startup
 from .metrics import build_registry, build_strategy_engine_metrics
 
 if TYPE_CHECKING:
@@ -121,6 +122,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.plugin_registry = plugin_registry
         app.state.bot_config = bot_config
         app.state.resolver = resolver
+
+        # 6.5. T-525a1 — re-evaluate the persistent kill-switch latch at startup
+        # (H-027). AFTER pool create, BEFORE subscribe so a stale prior-UTC-day
+        # daily latch is cleared (or a same-day stop retained + warn-logged)
+        # before the first signal can be consumed. Best-effort: never raises
+        # into lifespan (the per-signal gate, T-525a2, re-evaluates anyway).
+        await reconcile_kill_switch_on_startup(
+            pool=pool,
+            bot_id=settings.bot_id,
+            now_fn=lambda: datetime.now(UTC),
+            system_logger=logger,
+        )
 
         # 7. T-310b — subscribe to signals.validated with bot-bound handler.
         # Single subscription per process (one container per bot per §9.4:1530).
