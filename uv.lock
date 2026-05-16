@@ -21,6 +21,7 @@ members = [
     "scalper-v2-outbox",
     "scalper-v2-scoring",
     "scalper-v2-signal-gateway",
+    "scalper-v2-sizing",
     "scalper-v2-strategy-engine",
 ]
 
@@ -1693,6 +1694,17 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = "==0.45.0" },
     { name = "uvloop", specifier = "==0.22.1" },
 ]
+
+[[package]]
+name = "scalper-v2-sizing"
+version = "0.1.0"
+source = { editable = "packages/sizing" }
+dependencies = [
+    { name = "scalper-v2-scoring" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "scalper-v2-scoring", editable = "packages/scoring" }]
 
 [[package]]
 name = "scalper-v2-strategy-engine"
