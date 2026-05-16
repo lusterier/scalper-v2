@@ -236,3 +236,17 @@ def test_slippage_model_in_packages_exchange_paper_all() -> None:
 
     assert "SlippageModel" in paper_mod.__all__
     assert paper_mod.SlippageModel is SlippageModel
+
+
+@pytest.mark.asyncio
+async def test_get_funding_fees_window_paper_always_empty() -> None:
+    """T-532a: paper has NO perpetual-funding model → always ``[]``
+    (documented limitation). Decision #8 sub_account==bot_id contract
+    enforced for parity with get_closed_pnl_window."""
+    from datetime import UTC, datetime
+
+    pe = _make_pe()
+    since = datetime(2026, 5, 2, tzinfo=UTC)
+    assert await pe.get_funding_fees_window("test-bot", since) == []
+    with pytest.raises(ValueError, match="sub_account mismatch"):
+        await pe.get_funding_fees_window("other-sub", since)

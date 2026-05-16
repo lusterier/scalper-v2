@@ -85,6 +85,7 @@ from packages.exchange.errors import OrderRejected
 from packages.exchange.types import (
     AccountBalance,
     ExecutionEvent,
+    FundingFee,
     InstrumentInfo,
     OrderPlaceResult,
     Position,
@@ -1391,6 +1392,19 @@ class PaperExchange:
                 bot_id=str(self._bot_id),
                 since=since,
             )
+
+    @idempotent
+    async def get_funding_fees_window(self, sub_account: str, since: datetime) -> list[FundingFee]:
+        """T-532a — paper has NO perpetual-funding model → always ``[]``
+        (documented limitation, mirror the T-530 ``get_account_balance``
+        paper-limitation / T-534a paper ``sl_price=None`` posture — NOT a
+        TODO). Decision #8 sub_account==bot_id contract still enforced for
+        parity with :meth:`get_closed_pnl_window`."""
+        if sub_account != str(self._bot_id):
+            raise ValueError(
+                f"sub_account mismatch: got {sub_account!r}, expected {str(self._bot_id)!r}"
+            )
+        return []
 
     @idempotent
     async def get_account_balance(self, sub_account: str) -> AccountBalance:

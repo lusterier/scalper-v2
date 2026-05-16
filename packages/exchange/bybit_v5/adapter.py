@@ -25,7 +25,7 @@ per H-025) + optional Prometheus :class:`Counter`
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -40,6 +40,7 @@ from packages.exchange.errors import (
 from packages.exchange.types import (
     AccountBalance,
     ExecutionEvent,
+    FundingFee,
     InstrumentInfo,
     OrderPlaceResult,
     Position,
@@ -71,6 +72,7 @@ _SELL: Literal["Sell"] = "Sell"
 # Bybit's own limit cap, NOT operationally tunable (mirror T-205
 # _MAX_CAS_RETRIES=3 precedent; F5+ refactors to streaming aggregator).
 _MAX_CLOSED_PNL_PAGES = 10
+_MAX_FUNDING_PAGES = 10  # T-532a — mirror _MAX_CLOSED_PNL_PAGES (Bybit page cap)
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +504,81 @@ class BybitV5Adapter:
             },
         )
         return total
+
+    @idempotent
+    async def get_funding_fees_window(self, sub_account: str, since: datetime) -> list[FundingFee]:
+        """T-532a — funding settlements in ``[since, now]`` (T-532b first consumer).
+
+        Bybit V5 ``GET /v5/asset/transaction-log`` ``type=SETTLEMENT``
+        accepts ``startTime`` (Unix ms); one :class:`FundingFee` per row.
+        Verbatim-mirrors :meth:`get_closed_pnl_window` (the
+        windowed-paginated-pull sibling): sub_account validation BEFORE
+        ``limiter.acquire`` (OQ-10 default A), ``int(since.timestamp()*1000)``
+        UTC→ms, cursor pagination capped at ``_MAX_FUNDING_PAGES``,
+        ``RateLimitError → _on_rate_limit_hit → raise``.
+
+        Limiter key ``"positions"`` — ``/v5/asset/*`` shares the ``positions``
+        group exactly as ``get_account_balance``'s ``/v5/account/*`` does (no
+        new ``EndpointGroup`` — verbatim that documented precedent). ``funding``
+        decode via ``Decimal(str(...))`` (§5.13 — no float; money carries
+        float-risk, the ``get_account_balance`` discipline, NOT
+        ``get_closed_pnl_window``'s bare ``Decimal()``). ``transactionTime``
+        Unix-ms → UTC ``datetime`` via the ws.py:123/149 codebase convention
+        ``datetime.fromtimestamp(int(...) / 1000, tz=UTC)``. Signed: negative
+        = funding paid, positive = received. Returns ``list[FundingFee]``
+        (deliberate divergence from :meth:`get_closed_pnl_window`'s
+        ``-> Decimal`` aggregate — T-532b stores per-settlement rows +
+        feeds the T-220 cumulative-delta a separate funding term, OQ-1/3=A).
+        """
+        if sub_account != self._sub_account:
+            raise ValueError(
+                f"sub_account mismatch: got {sub_account!r}, expected {self._sub_account!r}",
+            )
+        since_ms = int(since.timestamp() * 1000)
+        fees: list[FundingFee] = []
+        cursor: str | None = None
+        for _page in range(_MAX_FUNDING_PAGES):
+            params: dict[str, Any] = {
+                "category": _CATEGORY,
+                "type": "SETTLEMENT",
+                "limit": 200,
+                "startTime": since_ms,
+            }
+            if cursor is not None:
+                params["cursor"] = cursor
+            await self._limiter.acquire(self._sub_account, "positions")
+            try:
+                result = await self._client.request(
+                    "GET",
+                    "/v5/asset/transaction-log",
+                    params=params,
+                    retries=3,
+                )
+            except RateLimitError:
+                await self._on_rate_limit_hit("positions")
+                raise
+            for item in result.get("list", []):
+                fees.append(
+                    FundingFee(
+                        symbol=item["symbol"],
+                        settled_at=datetime.fromtimestamp(
+                            int(item["transactionTime"]) / 1000, tz=UTC
+                        ),
+                        funding=Decimal(str(item["funding"])),
+                    )
+                )
+            cursor = result.get("nextPageCursor") or None
+            if not cursor:
+                return fees
+        logger.warning(
+            "bybit_v5.funding_fees_window_pagination_capped_at_max_pages",
+            extra={
+                "max_pages": _MAX_FUNDING_PAGES,
+                "sub_account": sub_account,
+                "since": since.isoformat(),
+            },
+        )
+        return fees
 
     @idempotent
     async def get_account_balance(self, sub_account: str) -> AccountBalance:

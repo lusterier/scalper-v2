@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from .types import (
         AccountBalance,
         ExecutionEvent,
+        FundingFee,
         InstrumentInfo,
         OrderPlaceResult,
         Position,
@@ -170,6 +171,31 @@ class ExchangeClient(Protocol):
         observed OHLC close (the same source PaperExchange simulates fills
         from — backtest/replay-deterministic). Unknown symbol →
         :class:`OrderRejected`.
+        """
+        ...
+
+    @idempotent
+    async def get_funding_fees_window(self, sub_account: str, since: datetime) -> list[FundingFee]:
+        """Funding settlements in ``[since, now]`` (T-532a; T-532b first consumer).
+
+        ``@idempotent`` — a pure read; retry-safe (mirror
+        :meth:`get_closed_pnl_window` — the windowed-paginated-pull sibling).
+        The CI conformance test enforces the marker. ``sub_account`` is the
+        bot's sub-account string; the adapter validates it == its own bound
+        sub_account BEFORE any rate-limit acquire (verbatim mirror
+        :meth:`get_closed_pnl_window`). UTC contract: caller MUST pass an
+        aware UTC datetime; ``int(since.timestamp() * 1000)`` → Bybit
+        ``startTime`` Unix ms.
+
+        Live: Bybit ``GET /v5/asset/transaction-log`` ``type=SETTLEMENT``,
+        cursor-paginated → one :class:`FundingFee` per row (``symbol`` /
+        ``transactionTime`` ms → ``settled_at`` / ``funding`` signed
+        ``Decimal``). Deliberate divergence from
+        :meth:`get_closed_pnl_window`'s ``-> Decimal`` aggregate: storage
+        (migration 0021 ``funding_fees``) + the T-220 cumulative-delta audit
+        (OQ-3=A separate cumulative funding term, H-017-clean) need
+        per-settlement records, NOT a sum. Paper: ``[]`` — no
+        perpetual-funding model (documented limitation).
         """
         ...
 

@@ -26,6 +26,7 @@ from typing import Literal
 __all__ = [
     "AccountBalance",
     "ExecutionEvent",
+    "FundingFee",
     "InstrumentInfo",
     "OrderPlaceResult",
     "Position",
@@ -84,6 +85,37 @@ class AccountBalance:
     total_equity: Decimal
     margin_balance: Decimal
     unrealized_pnl: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class FundingFee:
+    """One funding-settlement record — returned by
+    :meth:`ExchangeClient.get_funding_fees_window` (T-532a).
+
+    Live: one Bybit ``GET /v5/asset/transaction-log`` ``type=SETTLEMENT``
+    row — ``symbol`` / ``transactionTime`` (Unix ms) / ``funding`` (signed:
+    negative = funding paid, positive = funding received). T-532b's
+    APScheduler poll tick fans these into ``funding_fees`` rows (migration
+    0021) and feeds the T-220 cumulative-delta audit a SEPARATE cumulative
+    funding term (OQ-3=A — H-017-clean, never folded into
+    ``trades.realized_pnl``).
+
+    Paper: ``get_funding_fees_window`` returns ``[]`` — paper has no
+    perpetual-funding model (documented limitation, mirror the T-530
+    ``AccountBalance`` paper-limitation / T-534a paper ``sl_price=None``
+    posture).
+
+    ``funding`` is :class:`~decimal.Decimal` money (§5.13 — no float on the
+    decode; signed). ``settled_at`` is UTC-aware (adapter constructs from the
+    Bybit ``transactionTime`` Unix-ms epoch; mirror the ``OrderPlaceResult``
+    ``placed_at`` UTC convention — internal frozen dataclass, the UTC
+    contract is by construction, NOT a Pydantic validator: these are
+    Python-internal frozen dataclasses, NOT NATS wire schemas).
+    """
+
+    symbol: str
+    settled_at: datetime  # UTC; adapter constructs from Bybit transactionTime ms
+    funding: Decimal
 
 
 @dataclass(frozen=True, slots=True)

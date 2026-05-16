@@ -1276,3 +1276,116 @@ async def test_get_mark_price_acquires_limiter_with_market_group() -> None:
     adapter = _make_adapter(client=client, limiter=limiter)
     await adapter.get_mark_price("BTCUSDT")
     limiter.acquire.assert_awaited_once_with("sub-a", "market")
+
+
+# --- T-532a: get_funding_fees_window (funding-settlement windowed pull) ----
+
+
+async def test_get_funding_fees_window_passes_settlement_params() -> None:
+    """`since` → Unix ms; endpoint + type=SETTLEMENT + category + limit."""
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [], "nextPageCursor": ""})
+    adapter = _make_adapter(client=client)
+    since = datetime(2026, 5, 2, 9, 0, 0, tzinfo=UTC)
+    await adapter.get_funding_fees_window("sub-a", since)
+    call = client.request.await_args
+    assert call.args == ("GET", "/v5/asset/transaction-log")
+    assert call.kwargs["params"]["startTime"] == int(since.timestamp() * 1000)
+    assert call.kwargs["params"]["type"] == "SETTLEMENT"
+    assert call.kwargs["params"]["category"] == "linear"
+    assert call.kwargs["params"]["limit"] == 200
+
+
+async def test_get_funding_fees_window_decodes_signed_settlements() -> None:
+    """§N4 golden: signed funding Decimal (no float artefact) + ms→UTC
+    settled_at. Inverse-ms identity proves the conversion (NOT
+    impl-against-itself). Hand-authored expected Decimals."""
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {
+                    "symbol": "BTCUSDT",
+                    "transactionTime": "1700000000000",
+                    "funding": "-0.12345678",
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "transactionTime": "1700003600000",
+                    "funding": "0.5",
+                },
+            ],
+            "nextPageCursor": "",
+        }
+    )
+    adapter = _make_adapter(client=client)
+    fees = await adapter.get_funding_fees_window("sub-a", datetime(2023, 11, 14, tzinfo=UTC))
+    assert len(fees) == 2
+    assert fees[0].symbol == "BTCUSDT"
+    assert fees[0].funding == Decimal("-0.12345678")  # signed debit, exact
+    assert str(fees[0].funding) == "-0.12345678"  # no binary-float artefact
+    assert fees[0].settled_at.tzinfo == UTC
+    assert int(fees[0].settled_at.timestamp() * 1000) == 1700000000000
+    assert fees[1].symbol == "ETHUSDT"
+    assert fees[1].funding == Decimal("0.5")  # credit
+    assert int(fees[1].settled_at.timestamp() * 1000) == 1700003600000
+
+
+async def test_get_funding_fees_window_paginates_via_next_page_cursor() -> None:
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        side_effect=[
+            {
+                "list": [{"symbol": "BTCUSDT", "transactionTime": "1700000000000", "funding": "1"}],
+                "nextPageCursor": "page-2",
+            },
+            {
+                "list": [{"symbol": "BTCUSDT", "transactionTime": "1700003600000", "funding": "2"}],
+                "nextPageCursor": "",
+            },
+        ],
+    )
+    adapter = _make_adapter(client=client)
+    fees = await adapter.get_funding_fees_window("sub-a", datetime(2023, 11, 14, tzinfo=UTC))
+    assert [f.funding for f in fees] == [Decimal("1"), Decimal("2")]
+    assert client.request.await_count == 2
+
+
+async def test_get_funding_fees_window_empty_window_returns_empty_list() -> None:
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [], "nextPageCursor": ""})
+    adapter = _make_adapter(client=client)
+    fees = await adapter.get_funding_fees_window("sub-a", datetime(2026, 5, 2, tzinfo=UTC))
+    assert fees == []
+
+
+async def test_get_funding_fees_window_validates_sub_account_before_limiter() -> None:
+    """ValueError BEFORE limiter.acquire — no token consumed (mirror closed_pnl)."""
+    client = _make_client_mock()
+    limiter = _make_limiter_mock()
+    adapter = _make_adapter(client=client, limiter=limiter)
+    since = datetime(2026, 5, 2, 9, 0, 0, tzinfo=UTC)
+    with pytest.raises(ValueError, match="sub_account mismatch"):
+        await adapter.get_funding_fees_window("other-sub", since)
+    assert limiter.acquire.await_count == 0
+    assert client.request.await_count == 0
+
+
+async def test_get_funding_fees_window_on_RateLimitError_reraises() -> None:
+    """RateLimitError → _on_rate_limit_hit("positions") signalled + re-raised."""
+    client = _make_client_mock()
+    client.request = AsyncMock(side_effect=RateLimitError("retCode=10006"))
+    adapter = _make_adapter(client=client)
+    with pytest.raises(RateLimitError):
+        await adapter.get_funding_fees_window("sub-a", datetime(2026, 5, 2, tzinfo=UTC))
+
+
+async def test_get_funding_fees_window_acquires_positions_bucket() -> None:
+    """`/v5/asset/*` shares the `positions` limiter group (verbatim the
+    get_account_balance `/v5/account/*` precedent — no new EndpointGroup)."""
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [], "nextPageCursor": ""})
+    limiter = _make_limiter_mock()
+    adapter = _make_adapter(client=client, limiter=limiter)
+    await adapter.get_funding_fees_window("sub-a", datetime(2026, 5, 2, tzinfo=UTC))
+    limiter.acquire.assert_awaited_once_with("sub-a", "positions")
