@@ -98,20 +98,34 @@ class SizingTierWire(BaseModel):
 
 
 class SizingSpecForWire(BaseModel):
-    """§B.1 ``sizing:`` block on the ``OrderRequest`` wire (T-527b2b, OQ-6b).
+    """§B.1 ``sizing:`` block on the ``OrderRequest`` wire (T-527b2b /
+    T-528b, OQ-6b).
 
     Producer (strategy-engine) maps ``BotConfig.sizing: SizingSection`` →
-    this; execution-service placement seam consumes it (ADR-0013). Carries
-    only the compute inputs (tiers/score_multipliers/max_notional_per_symbol)
-    — ``tier_promotion``/``tier_demotion`` are operator OQ-2=A deferred and
+    this; execution-service placement seam consumes it (ADR-0013). Thin
+    transport: carries the compute inputs for both ``method`` paths —
+    ``method: "tier"`` (T-527b2b: tiers/score_multipliers) or
+    ``method: "risk_per_sl"`` (T-528b: ``risk_pct``);
+    ``max_notional_per_symbol`` + the cap apply to BOTH. ``method`` /
+    ``risk_pct`` are ADDITIVE with defaults (``"tier"`` / ``None``) so old
+    payloads validate (``OrderRequest.schema_version`` stays "1.0").
+    ``SizingSection`` is the validation authority (the producer maps from an
+    already-validated instance — incl. the method↔risk_pct coupling); this
+    model deliberately does NOT re-validate that coupling (thin transport;
+    the execution seam narrows ``risk_pct`` defensively per L-019).
+    ``tiers`` / ``score_multipliers`` stay REQUIRED — the producer always
+    passes them explicitly (``[]`` / ``{}`` for a risk_per_sl bot).
+    ``tier_promotion`` / ``tier_demotion`` are operator OQ-2=A deferred and
     not modeled (separate ``T-F5+``). ``extra="forbid"`` catches wire
-    corruption (the producer maps from an already-validated ``SizingSection``).
+    corruption.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    method: Literal["tier", "risk_per_sl"] = "tier"
     tiers: list[SizingTierWire]
     score_multipliers: dict[str, Decimal]
+    risk_pct: Decimal | None = None
     max_notional_per_symbol: dict[str, Decimal]
 
 

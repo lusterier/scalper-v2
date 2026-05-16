@@ -244,3 +244,42 @@ def test_sizing_spec_for_wire_extra_forbid() -> None:
             max_notional_per_symbol={"default": Decimal("1")},
             tier_promotion={"min_trades": 10},  # type: ignore[call-arg]
         )
+
+
+# ---------------------------------------------------------------------------
+# T-528b — SizingSpecForWire.method/risk_pct (risk-per-SL on the wire)
+# ---------------------------------------------------------------------------
+
+
+def test_sizing_spec_for_wire_method_defaults_tier() -> None:
+    """Backward-compat: absent method/risk_pct → "tier"/None (a T-527b2b
+    payload validates unchanged — additive optional fields)."""
+    spec = SizingSpecForWire(
+        tiers=[SizingTierWire(balance_min=Decimal("500"), size=Decimal("700"))],
+        score_multipliers={"4": Decimal("1")},
+        max_notional_per_symbol={"default": Decimal("3000")},
+    )
+    assert spec.method == "tier"
+    assert spec.risk_pct is None
+
+
+def test_sizing_spec_for_wire_risk_per_sl_round_trip_bit_identical() -> None:
+    """risk-per-SL wire shape round-trips model_dump(mode='json')→str→
+    model_validate bit-identically; risk_pct keeps exact Decimal (no
+    binary-float collapse — extends the T-527b2b first-Decimal-on-wire pin).
+    A risk_per_sl bot carries tiers=[]/score_multipliers={} (T-528a)."""
+    original = SizingSpecForWire(
+        method="risk_per_sl",
+        tiers=[],
+        score_multipliers={},
+        risk_pct=Decimal("0.01"),
+        max_notional_per_symbol={"default": Decimal("3000")},
+    )
+    raw = original.model_dump(mode="json")
+    restored = SizingSpecForWire.model_validate(raw)
+    assert restored.method == "risk_per_sl"
+    assert restored.risk_pct == Decimal("0.01")
+    assert str(restored.risk_pct) == "0.01"  # no binary-float artefact
+    assert isinstance(restored.risk_pct, Decimal)
+    assert restored.tiers == []
+    assert restored.score_multipliers == {}

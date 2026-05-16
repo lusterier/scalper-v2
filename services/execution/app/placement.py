@@ -67,7 +67,7 @@ from packages.exchange.errors import (
 )
 from packages.exchange.quantize import quantize_qty
 from packages.scoring.types import SizingTier
-from packages.sizing import compute_qty_from_sizing
+from packages.sizing import compute_qty_from_risk, compute_qty_from_sizing
 
 from .lifecycle import run_position_monitor_for_trade
 from .placement_persist import (
@@ -159,13 +159,18 @@ def make_per_bot_handler(
                 subject_bot_id=bot_id,
                 payload_bot_id=request.bot_id,
             )
-        # T-527b2b / ADR-0013: §B.1 tier sizing compute seam (before the
+        # T-527b2b / T-528b / ADR-0013: §B.1 sizing compute seam (before the
         # T-529 quantize). request.sizing is None → static request.qty path
-        # byte-unchanged (backward-compat). On a fetch RAISE (B1) / compute
-        # ValueError / sub-lowest-tier (compute None, OQ-4=A) → skip BEFORE
-        # place_market_order (log + signals_skipped_sizing counter; no order,
-        # no DLQ — sizing fetch is pre-trade, transient blip → defer signal;
-        # mirrors the get_instrument_info transient-failure posture below).
+        # byte-unchanged (backward-compat). T-528b dispatches on
+        # request.sizing.method: "risk_per_sl" → compute_qty_from_risk,
+        # "tier"/default → the shipped compute_qty_from_sizing (byte-
+        # unchanged). On a fetch RAISE (B1) / compute ValueError /
+        # sub-lowest-tier (compute None, OQ-4=A; reused verbatim for BOTH
+        # methods per OQ-B1=A — for risk_per_sl None = total_equity<=0
+        # no-capital) → skip BEFORE place_market_order (log +
+        # signals_skipped_sizing counter; no order, no DLQ — sizing fetch is
+        # pre-trade, transient blip → defer signal; mirrors the
+        # get_instrument_info transient-failure posture below).
         working_qty = request.qty
         if request.sizing is not None:
             try:
@@ -182,30 +187,69 @@ def make_per_bot_handler(
                     bot_id=str(bot_id), reason="fetch_failed"
                 ).inc()
                 return
-            tiers = [
-                SizingTier(balance_min=t.balance_min, size=t.size) for t in request.sizing.tiers
-            ]
-            try:
-                computed_qty = compute_qty_from_sizing(
-                    total_equity=balance.total_equity,
-                    mark_price=mark_price,
-                    tiers=tiers,
-                    score=request.score,
-                    score_multipliers=request.sizing.score_multipliers,
-                    max_notional_per_symbol=request.sizing.max_notional_per_symbol,
-                    symbol=request.symbol,
-                )
-            except ValueError as exc:
-                logger.error(
-                    "execution.sizing_compute_failed",
-                    bot_id=bot_id,
-                    symbol=request.symbol,
-                    error=str(exc),
-                )
-                metrics.signals_skipped_sizing.labels(
-                    bot_id=str(bot_id), reason="compute_error"
-                ).inc()
-                return
+            if request.sizing.method == "risk_per_sl":
+                # OQ-2=A risk-per-SL. Defensive narrowing (L-019): the wire
+                # does NOT re-validate the method<->risk_pct coupling
+                # (SizingSection is the producer-side authority); execution
+                # must not trust-without-checking — a None here = wire
+                # corruption / producer bug → the verbatim compute_error
+                # skip (also satisfies mypy Decimal|None -> Decimal).
+                if request.sizing.risk_pct is None:
+                    logger.error(
+                        "execution.sizing_compute_failed",
+                        bot_id=bot_id,
+                        symbol=request.symbol,
+                        error="risk_per_sl sizing requires risk_pct (None on wire)",
+                    )
+                    metrics.signals_skipped_sizing.labels(
+                        bot_id=str(bot_id), reason="compute_error"
+                    ).inc()
+                    return
+                try:
+                    computed_qty = compute_qty_from_risk(
+                        total_equity=balance.total_equity,
+                        mark_price=mark_price,
+                        sl_pct=request.sl_pct,
+                        risk_pct=request.sizing.risk_pct,
+                        max_notional_per_symbol=request.sizing.max_notional_per_symbol,
+                        symbol=request.symbol,
+                    )
+                except ValueError as exc:
+                    logger.error(
+                        "execution.sizing_compute_failed",
+                        bot_id=bot_id,
+                        symbol=request.symbol,
+                        error=str(exc),
+                    )
+                    metrics.signals_skipped_sizing.labels(
+                        bot_id=str(bot_id), reason="compute_error"
+                    ).inc()
+                    return
+            else:
+                tiers = [
+                    SizingTier(balance_min=t.balance_min, size=t.size) for t in request.sizing.tiers
+                ]
+                try:
+                    computed_qty = compute_qty_from_sizing(
+                        total_equity=balance.total_equity,
+                        mark_price=mark_price,
+                        tiers=tiers,
+                        score=request.score,
+                        score_multipliers=request.sizing.score_multipliers,
+                        max_notional_per_symbol=request.sizing.max_notional_per_symbol,
+                        symbol=request.symbol,
+                    )
+                except ValueError as exc:
+                    logger.error(
+                        "execution.sizing_compute_failed",
+                        bot_id=bot_id,
+                        symbol=request.symbol,
+                        error=str(exc),
+                    )
+                    metrics.signals_skipped_sizing.labels(
+                        bot_id=str(bot_id), reason="compute_error"
+                    ).inc()
+                    return
             if computed_qty is None:
                 logger.info(
                     "execution.signal_skipped_sub_lowest_tier",

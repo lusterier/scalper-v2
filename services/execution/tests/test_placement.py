@@ -1306,3 +1306,108 @@ async def test_sizing_none_uses_static_qty_path_unchanged() -> None:
     adapter.place_market_order.assert_awaited_once_with("BTCUSDT", "buy", Decimal("0.001"))
     adapter.get_account_balance.assert_not_awaited()
     adapter.get_mark_price.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# T-528b — sizing.method dispatch (risk_per_sl vs tier; OQ-2/3/B1=A)
+# ---------------------------------------------------------------------------
+
+_RISK_SIZING_WIRE: dict[str, Any] = {
+    "method": "risk_per_sl",
+    "tiers": [],
+    "score_multipliers": {},
+    "risk_pct": "0.01",
+    "max_notional_per_symbol": {"default": "3000"},
+}
+
+
+async def test_sizing_risk_per_sl_dispatches_to_compute_qty_from_risk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L-017 both-sides: method='risk_per_sl' → compute_qty_from_risk IS
+    called (with request.sl_pct + wire risk_pct) AND compute_qty_from_sizing
+    is NOT; the computed qty (quantized) reaches place_market_order."""
+    spy_risk = MagicMock(return_value=Decimal("2"))
+    spy_tier = MagicMock(return_value=Decimal("99"))
+    monkeypatch.setattr("services.execution.app.placement.compute_qty_from_risk", spy_risk)
+    monkeypatch.setattr("services.execution.app.placement.compute_qty_from_sizing", spy_tier)
+    adapter = _ok_adapter()
+    adapter.get_account_balance = AsyncMock(return_value=_account_balance("10000"))
+    adapter.get_mark_price = AsyncMock(return_value=Decimal("700"))
+    handler, _, _, _ = _build(adapter=adapter)
+    await handler(_envelope(_request_payload(sizing=_RISK_SIZING_WIRE)))
+    spy_risk.assert_called_once()
+    assert spy_risk.call_args.kwargs["sl_pct"] == Decimal("0.005")  # request.sl_pct
+    assert spy_risk.call_args.kwargs["risk_pct"] == Decimal("0.01")
+    spy_tier.assert_not_called()
+    adapter.place_market_order.assert_awaited_once()
+    assert adapter.place_market_order.await_args.args[2] == Decimal("2")
+
+
+async def test_sizing_tier_method_dispatches_to_compute_qty_from_sizing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L-017 mirror: method='tier' (default; _SIZING_WIRE has no method key)
+    → compute_qty_from_sizing IS called AND compute_qty_from_risk is NOT
+    (the shipped T-527b2b tier path byte-unchanged)."""
+    spy_risk = MagicMock(return_value=Decimal("99"))
+    spy_tier = MagicMock(return_value=Decimal("2"))
+    monkeypatch.setattr("services.execution.app.placement.compute_qty_from_risk", spy_risk)
+    monkeypatch.setattr("services.execution.app.placement.compute_qty_from_sizing", spy_tier)
+    adapter = _ok_adapter()
+    adapter.get_account_balance = AsyncMock(return_value=_account_balance("1500"))
+    adapter.get_mark_price = AsyncMock(return_value=Decimal("700"))
+    handler, _, _, _ = _build(adapter=adapter)
+    await handler(_envelope(_request_payload(sizing=_SIZING_WIRE)))
+    spy_tier.assert_called_once()
+    spy_risk.assert_not_called()
+    adapter.place_market_order.assert_awaited_once()
+    assert adapter.place_market_order.await_args.args[2] == Decimal("2")
+
+
+async def test_sizing_risk_per_sl_risk_pct_none_skips_compute_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L-019 defensive guard: method='risk_per_sl' but risk_pct absent on the
+    wire (None — the thin transport does NOT re-validate the coupling) →
+    compute_error skip BEFORE place; compute_qty_from_risk NEVER called."""
+    spy_risk = MagicMock(return_value=Decimal("2"))
+    monkeypatch.setattr("services.execution.app.placement.compute_qty_from_risk", spy_risk)
+    registry = CollectorRegistry()
+    metrics = build_execution_metrics(registry)
+    adapter = _ok_adapter()
+    adapter.get_account_balance = AsyncMock(return_value=_account_balance("10000"))
+    adapter.get_mark_price = AsyncMock(return_value=Decimal("700"))
+    handler, _, _, _ = _build(adapter=adapter, metrics=metrics)
+    wire_no_risk_pct = {k: v for k, v in _RISK_SIZING_WIRE.items() if k != "risk_pct"}
+    await handler(_envelope(_request_payload(sizing=wire_no_risk_pct)))
+    spy_risk.assert_not_called()
+    adapter.place_market_order.assert_not_awaited()
+    assert (
+        registry.get_sample_value(
+            "signals_skipped_sizing_total",
+            {"bot_id": "alpha", "reason": "compute_error"},
+        )
+        == 1.0
+    )
+
+
+async def test_sizing_risk_per_sl_zero_equity_skips_sub_lowest_tier() -> None:
+    """OQ-B1=A: real compute_qty_from_risk, total_equity 0 → None → the
+    shipped sub_lowest_tier skip reused verbatim (shared low-cardinality
+    label for the risk-per-SL no-capital path); NO place_market_order."""
+    registry = CollectorRegistry()
+    metrics = build_execution_metrics(registry)
+    adapter = _ok_adapter()
+    adapter.get_account_balance = AsyncMock(return_value=_account_balance("0"))
+    adapter.get_mark_price = AsyncMock(return_value=Decimal("700"))
+    handler, _, _, _ = _build(adapter=adapter, metrics=metrics)
+    await handler(_envelope(_request_payload(sizing=_RISK_SIZING_WIRE)))
+    adapter.place_market_order.assert_not_awaited()
+    assert (
+        registry.get_sample_value(
+            "signals_skipped_sizing_total",
+            {"bot_id": "alpha", "reason": "sub_lowest_tier"},
+        )
+        == 1.0
+    )

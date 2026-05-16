@@ -354,3 +354,24 @@ def test_order_request_backward_compat_payload_without_sizing() -> None:
     rebuilt = OrderRequest.model_validate(legacy_payload)
     assert rebuilt.sizing is None
     assert rebuilt.schema_version == "1.0"
+
+
+def test_order_request_risk_per_sl_sizing_round_trips() -> None:
+    """T-528b: an OrderRequest carrying a risk_per_sl SizingSpecForWire
+    round-trips method/risk_pct exact; schema_version stays '1.0'."""
+    from packages.bus.payloads import SizingSpecForWire
+
+    spec = SizingSpecForWire(
+        method="risk_per_sl",
+        tiers=[],
+        score_multipliers={},
+        risk_pct=Decimal("0.01"),
+        max_notional_per_symbol={"default": Decimal("3000")},
+    )
+    request = OrderRequest(**_base_order_kwargs(), sizing=spec)  # type: ignore[arg-type]
+    rebuilt = OrderRequest.model_validate(request.model_dump(mode="json"))
+    assert rebuilt.sizing is not None
+    assert rebuilt.sizing.method == "risk_per_sl"
+    assert rebuilt.sizing.risk_pct == Decimal("0.01")
+    assert str(rebuilt.sizing.risk_pct) == "0.01"
+    assert rebuilt.schema_version == "1.0"

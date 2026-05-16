@@ -429,18 +429,23 @@ async def _publish_order_request(
             for v in bot_config.shadow.variants
         ]
         shadow_max_duration_hours = Decimal(str(bot_config.shadow.max_duration_hours))
-    # T-527b2b / OQ-6b: map BotConfig.sizing (SizingSection, packages.scoring)
-    # → SizingSpecForWire (packages.bus.payloads) — different types, identical
-    # structure (bus cannot import scoring — cycle; mirror the shadow→VariantSpec
-    # map above). None → no tier sizing → execution uses static execution.qty.
+    # T-527b2b / T-528b / OQ-6b: map BotConfig.sizing (SizingSection,
+    # packages.scoring) → SizingSpecForWire (packages.bus.payloads) —
+    # different types, identical structure (bus cannot import scoring —
+    # cycle; mirror the shadow→VariantSpec map above). None → no sizing →
+    # execution uses static execution.qty. T-528b carries method/risk_pct;
+    # a risk_per_sl bot's tiers==[]/score_multipliers=={} (T-528a) flow
+    # through the existing comprehension/dict faithfully.
     sizing_payload: SizingSpecForWire | None = None
     if bot_config.sizing is not None:
         sizing_payload = SizingSpecForWire(
+            method=bot_config.sizing.method,
             tiers=[
                 SizingTierWire(balance_min=t.balance_min, size=t.size)
                 for t in bot_config.sizing.tiers
             ],
             score_multipliers=dict(bot_config.sizing.score_multipliers),
+            risk_pct=bot_config.sizing.risk_pct,
             max_notional_per_symbol=dict(bot_config.sizing.max_notional_per_symbol),
         )
     request = OrderRequest(
