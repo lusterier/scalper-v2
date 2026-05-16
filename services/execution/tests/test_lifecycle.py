@@ -24,8 +24,17 @@ import pytest
 
 from packages.core import BotId
 from packages.db.queries.execution import PositionStateRow
+from packages.exchange.errors import (
+    AuthError,
+    NetworkTimeout,
+    OrderRejected,
+    RateLimitError,
+    UnknownState,
+)
+from packages.exchange.types import Position
 from services.execution.app import lifecycle as lifecycle_mod
 from services.execution.app.lifecycle import (
+    _detect_sl_overwrite,
     _update_best_price,
     _update_mfe_mae,
     run_position_monitor_for_trade,
@@ -185,6 +194,13 @@ def _build_args(
     used_adapter = adapter if adapter is not None else MagicMock()
     if adapter is None:
         used_adapter.set_trading_stop = AsyncMock()
+    # T-535 (L-015 generalized to this unit-test helper): the monitor now
+    # calls adapter.get_positions(symbol) every tick (SL-overwrite check).
+    # Default to a benign empty snapshot so existing body tests are
+    # unaffected (no matching position → _detect_sl_overwrite returns,
+    # no emit); tests exercising the check pre-set their own get_positions.
+    if not isinstance(getattr(used_adapter, "get_positions", None), AsyncMock):
+        used_adapter.get_positions = AsyncMock(return_value=[])
     return {
         "bot_id": BotId("alpha"),
         "symbol": "BTCUSDT",
@@ -616,3 +632,193 @@ async def test_run_position_monitor_be_set_failure_logs_error_and_continues_loop
     assert "execution.lifecycle_be_set_failed" in error_event_names
     # WG#16 else clause — no UPDATE on exception path.
     patched_queries["update_position_state_sl"].assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# T-535 / H-029 — _detect_sl_overwrite (out-of-FSM SL modification)
+# ---------------------------------------------------------------------------
+
+
+def _position(
+    *,
+    symbol: str = "BTCUSDT",
+    size: Decimal = Decimal("10"),
+    sl_price: Decimal | None = Decimal("90"),
+) -> Position:
+    return Position(
+        symbol=symbol,
+        side="buy",
+        size=size,
+        entry_price=Decimal("100"),
+        leverage=10,
+        unrealized_pnl=Decimal("0"),
+        sl_price=sl_price,
+    )
+
+
+@pytest.fixture
+def patched_insert_event(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(lifecycle_mod, "insert_trading_event", mock)
+    return mock
+
+
+def _detect_args(
+    *,
+    adapter: MagicMock,
+    ps_sl_price: Decimal | None = Decimal("95"),
+    ps_sl_type: str | None = "protective",
+) -> dict[str, Any]:
+    return {
+        "conn": _FakeConn(),
+        "adapter": adapter,
+        "bound_logger": MagicMock(),
+        "bot_id": BotId("alpha"),
+        "symbol": "BTCUSDT",
+        "trade_id": 7,
+        "ps_sl_price": ps_sl_price,
+        "ps_sl_type": ps_sl_type,
+        "now_fn": lambda: _FIXED_NOW,
+    }
+
+
+async def test_sl_overwrite_detected_emits_trading_event(
+    patched_insert_event: AsyncMock,
+) -> None:
+    """exchange_sl != ps.sl_price → one sl_overwrite_detected row + WARN."""
+    adapter = MagicMock()
+    adapter.get_positions = AsyncMock(return_value=[_position(sl_price=Decimal("90"))])
+    args = _detect_args(adapter=adapter, ps_sl_price=Decimal("95"))
+    await _detect_sl_overwrite(**args)
+
+    patched_insert_event.assert_awaited_once()
+    assert patched_insert_event.await_args is not None
+    kw = patched_insert_event.await_args.kwargs
+    assert kw["event_type"] == "sl_overwrite_detected"
+    assert kw["bot_id"] == "alpha"
+    assert kw["correlation_id"] == "sl-overwrite-alpha-BTCUSDT-7"
+    assert kw["occurred_at"] == _FIXED_NOW
+    payload = kw["payload"]
+    # WG#2 / L-011/L-013 — payload is provably JSON-native.
+    assert isinstance(payload["expected_sl_price"], str)
+    assert isinstance(payload["observed_sl_price"], str)
+    assert isinstance(payload["trade_id"], int)
+    assert isinstance(payload["sl_type"], (str, type(None)))
+    assert isinstance(payload["bot_id"], str)
+    assert payload["expected_sl_price"] == "95"
+    assert payload["observed_sl_price"] == "90"
+    assert payload["trade_id"] == 7
+    warn_names = [c.args[0] for c in args["bound_logger"].warning.call_args_list]
+    assert "execution.sl_overwrite_detected" in warn_names
+
+
+@pytest.mark.parametrize(
+    "exchange_sl",
+    [Decimal("95"), Decimal("95.00")],
+)
+async def test_sl_overwrite_no_false_positive_on_matching_sl(
+    patched_insert_event: AsyncMock,
+    exchange_sl: Decimal,
+) -> None:
+    """exchange_sl == ps.sl_price (incl. post-legit-trail steady state, and
+    Decimal-equal-different-scale) → NO emit. H-029 false-positive pin.
+    """
+    adapter = MagicMock()
+    adapter.get_positions = AsyncMock(return_value=[_position(sl_price=exchange_sl)])
+    # Realistic post-legit-trail steady state: the prior tick's FSM trail
+    # wrote BOTH exchange and DB to this value (L-017 — realistic pre-state,
+    # not an artificial placeholder).
+    await _detect_sl_overwrite(
+        **_detect_args(adapter=adapter, ps_sl_price=Decimal("95"), ps_sl_type="trail"),
+    )
+    patched_insert_event.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        AuthError("a"),
+        OrderRejected("o"),
+        NetworkTimeout("n"),
+        RateLimitError("r"),
+        UnknownState("u"),
+    ],
+)
+async def test_sl_overwrite_skipped_on_get_positions_error(
+    patched_insert_event: AsyncMock,
+    exc: Exception,
+) -> None:
+    """Transient/failed get_positions = uncertainty, NOT an overwrite."""
+    adapter = MagicMock()
+    adapter.get_positions = AsyncMock(side_effect=exc)
+    args = _detect_args(adapter=adapter)
+    await _detect_sl_overwrite(**args)
+    patched_insert_event.assert_not_awaited()
+    err_names = [c.args[0] for c in args["bound_logger"].error.call_args_list]
+    assert "execution.sl_overwrite_check_failed" in err_names
+
+
+async def test_sl_overwrite_skipped_when_exchange_sl_none(
+    patched_insert_event: AsyncMock,
+) -> None:
+    """exchange_sl is None = SL removed (T-534b2/H-028 domain) / paper → defer."""
+    adapter = MagicMock()
+    adapter.get_positions = AsyncMock(return_value=[_position(sl_price=None)])
+    await _detect_sl_overwrite(**_detect_args(adapter=adapter))
+    patched_insert_event.assert_not_awaited()
+
+
+async def test_sl_overwrite_skipped_when_position_flat_or_absent(
+    patched_insert_event: AsyncMock,
+) -> None:
+    """No matching position, or size==0 (flat) → T-221/watchdog domain, no emit."""
+    adapter = MagicMock()
+    adapter.get_positions = AsyncMock(return_value=[])
+    await _detect_sl_overwrite(**_detect_args(adapter=adapter))
+    patched_insert_event.assert_not_awaited()
+
+    adapter.get_positions = AsyncMock(
+        return_value=[_position(size=Decimal("0"), sl_price=Decimal("90"))],
+    )
+    await _detect_sl_overwrite(**_detect_args(adapter=adapter))
+    patched_insert_event.assert_not_awaited()
+
+
+async def test_sl_overwrite_skipped_when_ps_sl_price_none(
+    patched_insert_event: AsyncMock,
+) -> None:
+    """FSM has no SL on record → early return, get_positions not even awaited."""
+    adapter = MagicMock()
+    adapter.get_positions = AsyncMock(return_value=[_position()])
+    await _detect_sl_overwrite(**_detect_args(adapter=adapter, ps_sl_price=None))
+    adapter.get_positions.assert_not_awaited()
+    patched_insert_event.assert_not_awaited()
+
+
+async def test_run_position_monitor_invokes_sl_overwrite_then_continues(
+    patched_queries: dict[str, Any],
+    patched_insert_event: AsyncMock,
+    fast_sleep: AsyncMock,
+) -> None:
+    """Call-site (WG#5): _detect_sl_overwrite runs between the monitor-tick
+    update and the BE/trail block; a detected overwrite is emit-only and
+    does NOT short-circuit the FSM (select_trade_fsm_params still reached).
+    """
+    bus = MagicMock()
+    bus.kv_get = AsyncMock(return_value=(b"100", 1))
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(sl_price=Decimal("95"), sl_type="protective"),
+        None,  # 2nd tick: graceful exit
+    ]
+    adapter = MagicMock()
+    adapter.get_positions = AsyncMock(return_value=[_position(sl_price=Decimal("90"))])
+    adapter.set_trading_stop = AsyncMock()
+    pool = _build_pool()
+    args = _build_args(pool=pool, bus=bus, adapter=adapter)
+    await run_position_monitor_for_trade(**args)
+
+    adapter.get_positions.assert_awaited_with("BTCUSDT")
+    patched_insert_event.assert_awaited_once()  # 90 != 95 → detected
+    # FSM continued past the check (OQ-2=A non-destructive): the BE/trail
+    # path was reached on the same tick.
+    patched_queries["select_trade_fsm_params"].assert_called()
