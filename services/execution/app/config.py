@@ -116,6 +116,11 @@ class Settings(BaseSettings):
     execution_trail_audit_tick_interval_seconds: int = 300
     execution_trail_audit_drift_tolerance_pct: Decimal = Decimal("0.001")
 
+    # T-532b — funding-fee poll tick (ADR-0011 funding-fee tracking; windowed
+    # pull mirror execution_audit_* interval+window; §N9/L-001; ADR-0007 D7).
+    execution_funding_fee_poll_interval_seconds: int = 300
+    execution_funding_fee_poll_window_seconds: int = 10800
+
     # T-221 — post-restart reconciliation race-window (H-026 spec literal 60s).
     execution_reconcile_race_window_seconds: int = 60
 

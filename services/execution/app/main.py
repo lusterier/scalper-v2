@@ -96,6 +96,7 @@ from .audit import run_pnl_audit_tick
 from .config import Settings
 from .dispatcher import ExecutionDispatcher, run_dispatcher_for_bot
 from .equity_snapshot import run_equity_snapshot_tick
+from .funding_fee_poll import run_funding_fee_poll_tick
 from .health import router as health_router
 from .metrics import build_execution_metrics
 from .placement import make_per_bot_handler
@@ -392,6 +393,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             trigger="interval",
             seconds=settings.execution_equity_snapshot_interval_seconds,
             id="equity_snapshot",
+            misfire_grace_time=120,
+        )
+
+        # T-532b — funding-fee poll tick (ADR-0011 funding-fee tracking;
+        # consumer leaf of T-532). Stores funding_fees rows + emits one
+        # funding_settlement_window trading_event per sub-account.
+        async def _funding_fee_poll_job() -> None:
+            funding_logger = logger.bind(component="funding_fee_poll")
+            await run_funding_fee_poll_tick(
+                pool=pool,
+                # L-023: reflow-stable cast (string forward-ref, runtime
+                # no-op) — NOT an inline `# type: ignore[arg-type]` (mirror
+                # _equity_snapshot_job; sub_account_to_adapter is
+                # dict[str, object] in the lifespan).
+                sub_account_to_adapter=cast(
+                    "dict[str, ExchangeClient]",
+                    sub_account_to_adapter,
+                ),
+                sub_account_to_bot_ids=sub_account_to_bot_ids,
+                window_seconds=settings.execution_funding_fee_poll_window_seconds,
+                bound_logger=funding_logger,
+                now_fn=lambda: datetime.now(UTC),
+            )
+
+        scheduler.add_job(
+            _funding_fee_poll_job,
+            trigger="interval",
+            seconds=settings.execution_funding_fee_poll_interval_seconds,
+            id="funding_fee_poll",
             misfire_grace_time=120,
         )
 

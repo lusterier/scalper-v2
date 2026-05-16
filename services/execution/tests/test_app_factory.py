@@ -735,10 +735,11 @@ def test_daily_report_runs_at_configured_utc_time(
     monkeypatch: object,
 ) -> None:
     """H-021 verbatim test name (per ADR-0007 D6) — scheduler.add_job invoked
-    four times (id='pnl_audit' T-220b + id='equity_snapshot' T-531 +
-    id='sl_watchdog' T-534b2 + id='trail_audit' T-536), each
-    trigger='interval', seconds=its Settings interval, misfire_grace_time=120,
-    and NO timezone= kwarg (UTC enforced at scheduler ctor only per ADR-0007 D2).
+    five times (id='pnl_audit' T-220b + id='equity_snapshot' T-531 +
+    id='sl_watchdog' T-534b2 + id='trail_audit' T-536 + id='funding_fee_poll'
+    T-532b), each trigger='interval', seconds=its Settings interval,
+    misfire_grace_time=120, and NO timezone= kwarg (UTC enforced at scheduler
+    ctor only per ADR-0007 D2).
     """
     from unittest.mock import AsyncMock as _AsyncMock
     from unittest.mock import MagicMock as _MagicMock
@@ -788,9 +789,15 @@ def test_daily_report_runs_at_configured_utc_time(
     # T-531 added a 2nd scheduled job + T-534b2 a 3rd — filter by id (L-015
     # generalized to unit test: this was `== 1` + `[0]` pre-T-531, `== 2`
     # pre-T-534b2).
-    assert len(captured_add_job_kwargs) == 4
+    assert len(captured_add_job_kwargs) == 5
     by_id = {k["id"]: k for k in captured_add_job_kwargs}
-    assert set(by_id) == {"pnl_audit", "equity_snapshot", "sl_watchdog", "trail_audit"}
+    assert set(by_id) == {
+        "pnl_audit",
+        "equity_snapshot",
+        "sl_watchdog",
+        "trail_audit",
+        "funding_fee_poll",
+    }
 
     audit_kwargs = by_id["pnl_audit"]
     assert audit_kwargs["trigger"] == "interval"
@@ -816,6 +823,12 @@ def test_daily_report_runs_at_configured_utc_time(
     assert trail_audit_kwargs["seconds"] == settings.execution_trail_audit_tick_interval_seconds  # type: ignore[attr-defined]
     assert trail_audit_kwargs["misfire_grace_time"] == 120
     assert "timezone" not in trail_audit_kwargs
+
+    funding_kwargs = by_id["funding_fee_poll"]
+    assert funding_kwargs["trigger"] == "interval"
+    assert funding_kwargs["seconds"] == settings.execution_funding_fee_poll_interval_seconds  # type: ignore[attr-defined]
+    assert funding_kwargs["misfire_grace_time"] == 120
+    assert "timezone" not in funding_kwargs
 
 
 def test_lifespan_shutdown_calls_scheduler_shutdown_wait_true_before_adapter_close(
