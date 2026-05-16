@@ -93,6 +93,19 @@ def test_adapter_methods_carry_correct_idempotency_markers(
 
 
 @pytest.mark.parametrize("adapter_cls", _ADAPTERS_UNDER_TEST)
+def test_get_mark_price_is_idempotent_read(adapter_cls: type) -> None:
+    """T-527b1: get_mark_price is a pure read → @idempotent, NOT @non_idempotent
+    (the introspective test above only pins 'some marker'; this pins the
+    correct one for a retry-safe read, mirror get_account_balance/get_instrument_info)."""
+    # Variable getattr (mirror the :89 file convention) — mypy-safe adapter-method
+    # marker resolution on the parametrized ``type`` (NOT ExchangeClient.method).
+    name = "get_mark_price"
+    method = getattr(adapter_cls, name)
+    assert is_idempotent(method) is True
+    assert is_non_idempotent(method) is False
+
+
+@pytest.mark.parametrize("adapter_cls", _ADAPTERS_UNDER_TEST)
 def test_adapter_unlabeled_methods_carry_no_markers(adapter_cls: type) -> None:
     """T-201 W#1 negative: streams + close MUST NOT carry markers.
 
@@ -150,9 +163,10 @@ def test_unlabeled_methods_set_is_complete() -> None:
 
     Pinned counts:
 
-    * ExchangeClient declares exactly 13 public methods (4 writes + 6 reads
+    * ExchangeClient declares exactly 14 public methods (4 writes + 7 reads
       + 2 streams + 1 lifecycle; T-220a ``get_closed_pnl_window``, T-529
-      ``get_instrument_info``, T-530 ``get_account_balance``). Catches future
+      ``get_instrument_info``, T-530 ``get_account_balance``, T-527b1
+      ``get_mark_price``). Catches future
       Python upstream additions to ``typing.Protocol`` that might silently
       expand the surface and pass the contract test vacuously.
     * ``_UNLABELED_METHODS`` has exactly 3 entries (``stream_executions``,
@@ -163,8 +177,10 @@ def test_unlabeled_methods_set_is_complete() -> None:
     """
     protocol_methods = _protocol_method_names()
     # T-530: NEW get_account_balance = 13th public method.
-    assert len(protocol_methods) == 13, (
-        f"ExchangeClient must declare exactly 13 public methods (§11.1 + T-220a + T-529 + T-530); "
+    # T-527b1: NEW get_mark_price = 14th public method.
+    assert len(protocol_methods) == 14, (
+        f"ExchangeClient must declare exactly 14 public methods "
+        f"(§11.1 + T-220a + T-529 + T-530 + T-527b1); "
         f"got {len(protocol_methods)}: {sorted(protocol_methods)}"
     )
     bad = _UNLABELED_METHODS - protocol_methods

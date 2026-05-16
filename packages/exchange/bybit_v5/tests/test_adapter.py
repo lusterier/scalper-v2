@@ -1076,6 +1076,7 @@ async def test_get_closed_pnl_cumulative_acquires_limiter_with_positions_group()
             lambda a: a.get_account_balance("sub-a"),
             "positions",
         ),
+        ("get_mark_price", lambda a: a.get_mark_price("BTCUSDT"), "market"),
     ],
 )
 async def test_read_methods_on_rate_limit_error_signal_upstream_and_re_raise(
@@ -1219,3 +1220,59 @@ async def test_get_account_balance_acquires_limiter_with_positions_group() -> No
     adapter = _make_adapter(client=client, limiter=limiter)
     await adapter.get_account_balance("sub-a")
     limiter.acquire.assert_awaited_once_with("sub-a", "positions")
+
+
+# --- T-527b1: get_mark_price (Bybit /v5/market/tickers) -------------------
+
+
+async def test_get_mark_price_decodes_mark_price_and_calls_tickers_endpoint() -> None:
+    """Golden /v5/market/tickers response → exact Decimal markPrice; HTTP shape."""
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [{"symbol": "BTCUSDT", "markPrice": "42500.75", "lastPrice": "42499.10"}]
+        }
+    )
+    adapter = _make_adapter(client=client)
+    price = await adapter.get_mark_price("BTCUSDT")
+    assert price == _D("42500.75")  # markPrice, NOT lastPrice
+    call = client.request.await_args
+    assert call.args == ("GET", "/v5/market/tickers")
+    assert call.kwargs["params"] == {"category": "linear", "symbol": "BTCUSDT"}
+    assert call.kwargs["retries"] == 3
+
+
+async def test_get_mark_price_preserves_decimal_no_float_artefact() -> None:
+    """Decimal(str(markPrice)) — exact, no binary-float expansion (§5.3/§N1)."""
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [{"markPrice": "0.000012345"}]})
+    adapter = _make_adapter(client=client)
+    price = await adapter.get_mark_price("PEPEUSDT")
+    assert price == _D("0.000012345")
+    assert str(price) == "0.000012345"
+
+
+async def test_get_mark_price_raises_order_rejected_when_instrument_not_found() -> None:
+    """Empty list response → OrderRejected (delisted / typo'd symbol)."""
+    from packages.exchange.errors import OrderRejected
+
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": []})
+    adapter = _make_adapter(client=client)
+    with pytest.raises(OrderRejected) as exc_info:
+        await adapter.get_mark_price("UNKNOWN")
+    assert "UNKNOWN" in str(exc_info.value)
+
+
+async def test_get_mark_price_acquires_limiter_with_market_group() -> None:
+    """Public-market 'market' bucket (NOT 'positions'); mirror get_instrument_info."""
+    client = _make_client_mock()
+    client.request = AsyncMock(return_value={"list": [{"markPrice": "100"}]})
+    limiter = _make_limiter_mock()
+    adapter = _make_adapter(client=client, limiter=limiter)
+    await adapter.get_mark_price("BTCUSDT")
+    limiter.acquire.assert_awaited_once_with("sub-a", "market")

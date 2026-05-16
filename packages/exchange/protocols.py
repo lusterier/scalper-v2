@@ -153,6 +153,26 @@ class ExchangeClient(Protocol):
         """
         ...
 
+    @idempotent
+    async def get_mark_price(self, symbol: str) -> Decimal:
+        """Pre-trade reference price for §B.1 sizing (T-527b2 first consumer).
+
+        ``@idempotent`` — a pure read; retry-safe (mirror
+        :meth:`get_instrument_info`). The CI conformance test enforces the
+        marker. Public-market read: NO sub-account scope (contrast
+        :meth:`get_account_balance`). **NOT cached** — mark price is live
+        market data (deliberate divergence from :meth:`get_instrument_info`'s
+        1h-TTL deterministic-metadata cache; ADR-0013).
+
+        Live: Bybit ``GET /v5/market/tickers?category=linear&symbol=…`` →
+        ``result.list[0].markPrice`` (the liquidation/PnL reference price,
+        manipulation-resistant — NOT lastPrice/indexPrice). Paper: last
+        observed OHLC close (the same source PaperExchange simulates fills
+        from — backtest/replay-deterministic). Unknown symbol →
+        :class:`OrderRejected`.
+        """
+        ...
+
     def stream_executions(self) -> AsyncIterator[ExecutionEvent]: ...
 
     def stream_positions(self) -> AsyncIterator[PositionEvent]: ...

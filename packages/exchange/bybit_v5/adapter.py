@@ -550,6 +550,42 @@ class BybitV5Adapter:
             unrealized_pnl=Decimal(str(acct["totalPerpUPL"])),
         )
 
+    @idempotent
+    async def get_mark_price(self, symbol: str) -> Decimal:
+        """Return the live Bybit mark price for ``symbol`` (T-527b1).
+
+        T-527b2 §B.1 sizing reference price (notional ÷ mark_price → qty).
+        Mirrors :meth:`get_instrument_info`'s public-market shape but
+        **deliberately NOT cached** — mark price is live market data, not
+        deterministic metadata (ADR-0013). Public endpoint: NO sub-account
+        validation (contrast :meth:`get_account_balance`).
+
+        HTTP: GET /v5/market/tickers?category=linear&symbol=<symbol>.
+        Response shape: ``result.list[0].markPrice`` (string). ``markPrice``
+        is the liquidation/PnL reference (manipulation-resistant) — NOT
+        ``lastPrice``/``indexPrice``. Decimal preserved per §5.3 (no float).
+
+        Empty list response → :class:`OrderRejected` (instrument not found
+        on exchange — delisted or typo'd symbol; mirror
+        :meth:`get_instrument_info`).
+        """
+        await self._limiter.acquire(self._sub_account, "market")
+        try:
+            result = await self._client.request(
+                "GET",
+                "/v5/market/tickers",
+                params={"category": _CATEGORY, "symbol": symbol},
+                retries=3,
+            )
+        except RateLimitError:
+            await self._on_rate_limit_hit("market")
+            raise
+        items = result.get("list", [])
+        if not items:
+            msg = f"instrument not found on exchange: {symbol}"
+            raise OrderRejected(msg)
+        return Decimal(str(items[0]["markPrice"]))
+
     # T-209 stream + close (delegates to BybitV5PrivateWs) ------------------
 
     def stream_executions(self) -> AsyncIterator[ExecutionEvent]:

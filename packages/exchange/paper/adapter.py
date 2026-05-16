@@ -1423,6 +1423,25 @@ class PaperExchange:
             unrealized_pnl=Decimal("0"),
         )
 
+    @idempotent
+    async def get_mark_price(self, symbol: str) -> Decimal:
+        """T-527b1 — paper reference price = last observed OHLC close.
+
+        Returns ``_last_price[symbol]`` — the SAME source
+        :meth:`place_market_order` uses to simulate fills (populated by
+        :meth:`_on_candle` live / :meth:`_process_replay_candle` replay), so
+        sizing (T-527b2) and the simulated fill price stay consistent and
+        backtest/replay-deterministic. Public-market parity: NO sub-account
+        validation (contrast :meth:`get_account_balance`), no DB. Unknown /
+        not-yet-observed symbol → :class:`OrderRejected` (mirror
+        :meth:`get_instrument_info`).
+        """
+        price = self._last_price.get(symbol)
+        if price is None:
+            msg = f"no last price observed for {symbol}"
+            raise OrderRejected(msg)
+        return price
+
     def stream_executions(self) -> AsyncIterator[ExecutionEvent]:
         """Decision #12: ``def`` (NOT ``async def``) per T-201 OQ-1.
 

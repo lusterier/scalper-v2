@@ -527,6 +527,56 @@ async def test_get_account_balance_negative_realized_reduces_wallet(
     assert bal.unrealized_pnl == Decimal("0")
 
 
+# --- T-527b1: get_mark_price (paper = last observed OHLC close) -------------
+
+
+async def test_get_mark_price_returns_last_observed_close() -> None:
+    """Paper reference price = _last_price[symbol] — the SAME source
+    place_market_order simulates fills from (deterministic)."""
+    pe = _make_paper_exchange()
+    pe._last_price["BTCUSDT"] = Decimal("65000.50")
+    price = await pe.get_mark_price("BTCUSDT")
+    assert price == Decimal("65000.50")
+
+
+async def test_get_mark_price_raises_order_rejected_when_unobserved() -> None:
+    """No candle yet for symbol (empty _last_price) → OrderRejected
+    (mirror paper get_instrument_info unknown-symbol)."""
+    from packages.exchange.errors import OrderRejected
+
+    pe = _make_paper_exchange()
+    with pytest.raises(OrderRejected) as exc_info:
+        await pe.get_mark_price("ETHUSDT")
+    assert "ETHUSDT" in str(exc_info.value)
+
+
+async def test_get_mark_price_reflects_candle_populated_last_price() -> None:
+    """Replay/live determinism: _on_candle populates _last_price → get_mark_price
+    returns that exact close (sizing source == fill-simulation source)."""
+    pe = _make_paper_exchange()
+    pe._drain_sl_tp_fill = AsyncMock()  # type: ignore[method-assign]
+    payload = MagicMock()
+    payload.payload = {
+        "schema_version": "1.0",
+        "symbol": "BTCUSDT",
+        "interval": "1m",
+        "bucket_start": datetime(2026, 4, 28, 12, 1, 0, tzinfo=UTC),
+        "open": Decimal("65000"),
+        "high": Decimal("65500"),
+        "low": Decimal("64900"),
+        "close": Decimal("65432.10"),
+        "volume": Decimal("100"),
+        "source": "binance",
+        "is_closed": True,
+    }
+    payload.correlation_id = "corr"
+    payload.published_at = datetime(2026, 4, 28, 12, 0, 0, tzinfo=UTC)
+    payload.publisher = "test"
+    await pe._on_candle(payload)
+    price = await pe.get_mark_price("BTCUSDT")
+    assert price == Decimal("65432.10")
+
+
 # ---------------------------------------------------------------------------
 # T-511b2 / ADR-0010 — emit_parent_lifecycle ctor flag (paper close emit)
 # ---------------------------------------------------------------------------
