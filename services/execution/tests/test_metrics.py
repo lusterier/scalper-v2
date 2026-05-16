@@ -45,4 +45,4 @@ def test_metrics_is_frozen_dataclass() -> None:
     metrics = build_execution_metrics(registry)
     assert dataclasses.is_dataclass(metrics)
     fields = {f.name for f in dataclasses.fields(metrics)}
-    assert fields == {"virtual_balance"}
+    assert fields == {"virtual_balance", "signals_skipped_sizing"}  # T-527b2b added the Counter

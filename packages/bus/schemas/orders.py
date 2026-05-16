@@ -35,7 +35,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
-from packages.bus.payloads import VariantSpec  # noqa: TC001 — runtime use in Pydantic validation
+from packages.bus.payloads import (  # noqa: TC001 — runtime use in Pydantic validation
+    SizingSpecForWire,
+    VariantSpec,
+)
 
 __all__ = [
     "OrderClosed",
@@ -78,10 +81,11 @@ class OrderRequest(BaseModel):
     """§8.4 line 1319 ``orders.requests.<bot_id>`` payload, frozen.
 
     ``schema_version`` stays ``"1.0"`` despite T-511b2 additive
-    ``shadow_variants`` + ``shadow_max_duration_hours`` fields and the T-527a
-    additive ``score`` field — defaults are present, no ``extra="forbid"`` on
-    this model so old payloads still validate. Future breaking changes
-    (rename / type narrow / required field) bump to ``"2.0"``.
+    ``shadow_variants`` + ``shadow_max_duration_hours`` fields, the T-527a
+    additive ``score`` field, and the T-527b2b additive ``sizing`` field —
+    defaults are present, no ``extra="forbid"`` on this model so old payloads
+    still validate. Future breaking changes (rename / type narrow / required
+    field) bump to ``"2.0"``.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -116,6 +120,12 @@ class OrderRequest(BaseModel):
     # None default + no extra="forbid" → old payloads validate (schema_version
     # stays "1.0"). Carried producer→wire in T-527a; UNCONSUMED until T-527b.
     score: float | None = None
+    # T-527b2b / ADR-0013 / OQ-6b: §B.1 sizing block mapped by the strategy-
+    # engine producer from BotConfig.sizing (SizingSection → SizingSpecForWire;
+    # bus cannot import scoring — cycle). None = no tier sizing → execution
+    # placement uses the static execution.qty path (backward-compat). Consumed
+    # at the execution-service placement seam (compute_qty_from_sizing).
+    sizing: SizingSpecForWire | None = None
 
 
 class OrderEventBase(BaseModel):

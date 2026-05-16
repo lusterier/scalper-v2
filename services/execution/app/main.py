@@ -166,6 +166,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # T-217a — single shared registry across all bots; trade_id is BIGSERIAL global-unique.
         position_lifecycle_tasks: dict[int, asyncio.Task[None]] = {}
 
+        # T-527b2b / OQ-7: resolve a bot adapter's sub_account (Bybit
+        # ``_sub_account`` / paper ``_bot_id`` synonym, Decision #8). Defined
+        # here (before the make_per_bot_handler loop — its first use) so the
+        # T-219 dispatcher loop (below) + T-220/equity uses still resolve.
+        def _resolve_sub_account(adapter_obj: object) -> str:
+            sub_account = getattr(adapter_obj, "_sub_account", None)
+            if sub_account is None:
+                bot_id_attr = getattr(adapter_obj, "_bot_id", None)
+                if bot_id_attr is None:
+                    msg = "adapter has no _sub_account or _bot_id attribute"
+                    raise RuntimeError(msg)
+                return str(bot_id_attr)
+            return str(sub_account)
+
         # 5. Per-bot orders.requests.<bot_id> subscription (T-216a + T-216b2 wrap).
         # The handler returned by make_per_bot_handler is the OrderRequestDedupConsumer.consume
         # bound method (H-009 per-bot ring; capacity from Settings). Subscribe failure
@@ -173,6 +187,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for bot_id, adapter in adapter_pool.adapters.items():
             handler = make_per_bot_handler(
                 bot_id=bot_id,
+                sub_account=_resolve_sub_account(adapter),
+                metrics=exec_metrics,
                 adapter=adapter,
                 bus=bus,
                 logger=logger,
@@ -208,16 +224,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Lock is keyed on sub_account string (NOT bot_id). Paper adapters use
         # bot_id-as-sub_account synonym per Decision #8.
         closed_pnl_locks: dict[str, asyncio.Lock] = {}
-
-        def _resolve_sub_account(adapter_obj: object) -> str:
-            sub_account = getattr(adapter_obj, "_sub_account", None)
-            if sub_account is None:
-                bot_id_attr = getattr(adapter_obj, "_bot_id", None)
-                if bot_id_attr is None:
-                    msg = "adapter has no _sub_account or _bot_id attribute"
-                    raise RuntimeError(msg)
-                return str(bot_id_attr)
-            return str(sub_account)
 
         # 6. Per-bot ExecutionDispatcher tasks (T-218a; H-009 per-bot dedup ring).
         # T-218c fix(paper-dispatcher-skip) / H-031: skip dispatcher for paper

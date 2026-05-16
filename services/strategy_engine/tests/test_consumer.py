@@ -284,6 +284,59 @@ async def test_order_request_threads_score_and_leaves_qty_unchanged(
     assert request.qty == Decimal("0.001")
 
 
+async def test_order_request_threads_sizing_when_bot_config_sizing_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-527b2b / OQ-6b: bot_config.sizing (SizingSection) → OrderRequest.sizing
+    (SizingSpecForWire) mirrors tiers/multipliers/caps; qty byte-unchanged."""
+    from packages.scoring.types import SizingSection, SizingTier
+
+    sized_bc = _bot_config().model_copy(
+        update={
+            "sizing": SizingSection(
+                tiers=[
+                    SizingTier(balance_min=Decimal("500"), size=Decimal("700")),
+                    SizingTier(balance_min=Decimal("1000"), size=Decimal("1400")),
+                ],
+                score_multipliers={"4": Decimal("0.75"), "6": Decimal("1.25")},
+                max_notional_per_symbol={"default": Decimal("3000")},
+            )
+        }
+    )
+    handler, caps = _build_handler(
+        bot_config=sized_bc,
+        evaluate_result=_scoring_result(decision="execute", total_score=6.0),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal(action="LONG")))
+    _subject, env = caps["bus"].publish.await_args.args
+    request = OrderRequest.model_validate(env.payload)
+    assert request.sizing is not None
+    assert [(t.balance_min, t.size) for t in request.sizing.tiers] == [
+        (Decimal("500"), Decimal("700")),
+        (Decimal("1000"), Decimal("1400")),
+    ]
+    assert request.sizing.score_multipliers["6"] == Decimal("1.25")
+    assert request.sizing.max_notional_per_symbol["default"] == Decimal("3000")
+    assert request.qty == Decimal("0.001")  # byte-unchanged (L-017 both-sides)
+
+
+async def test_order_request_sizing_none_when_bot_config_sizing_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L-017 other side: no bot_config.sizing → OrderRequest.sizing is None
+    AND qty == bot_config.execution.qty (backward-compat, zero behavior change)."""
+    handler, caps = _build_handler(
+        evaluate_result=_scoring_result(decision="execute"),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal(action="LONG")))
+    _subject, env = caps["bus"].publish.await_args.args
+    request = OrderRequest.model_validate(env.payload)
+    assert request.sizing is None
+    assert request.qty == Decimal("0.001")
+
+
 async def test_decision_passthrough_publishes_order_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

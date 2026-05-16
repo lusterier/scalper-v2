@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
 
 import yaml
+from prometheus_client import CollectorRegistry
 
 from packages.bus import MessageEnvelope, ReplayBus
 from packages.bus.schemas import SignalValidated
@@ -74,6 +75,7 @@ from packages.scoring import FeatureResolver, load_bot_config_from_string
 from packages.scoring.registry import load_plugin_registry
 from services.execution.app.config import Settings as ExecutionSettings
 from services.execution.app.dispatcher import ExecutionDispatcher, run_dispatcher_for_bot
+from services.execution.app.metrics import build_execution_metrics
 from services.execution.app.placement import make_per_bot_handler
 from services.strategy_engine.app.consumer import make_signal_handler
 from services.strategy_engine.app.metrics import (
@@ -488,9 +490,17 @@ async def main(args: argparse.Namespace) -> int:
         # Without this, strategy-engine's order publishes vanish into ReplayBus.
         position_lifecycle_tasks: dict[int, asyncio.Task[None]] = {}
         exec_settings = ExecutionSettings()  # type: ignore[call-arg]  # pydantic-settings env-fallback for database_url
+        # T-527b2b: registry + metrics constructed for type-safe kwarg pass
+        # (mirror strategy_metrics:470-471). Throwaway CollectorRegistry —
+        # backtest is offline replay, no Prometheus scrape endpoint.
+        exec_metrics = build_execution_metrics(CollectorRegistry())
         order_handler = make_per_bot_handler(
             bot_id=bot_id,
             adapter=paper,
+            # Paper adapter sub_account = bot_id-as-sub_account synonym
+            # (Decision #8; what main.py _resolve_sub_account(paper) returns).
+            sub_account=str(bot_id),
+            metrics=exec_metrics,
             bus=bus,
             logger=system_logger,
             pool=pool,

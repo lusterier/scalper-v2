@@ -314,3 +314,43 @@ def test_order_request_backward_compat_payload_without_score() -> None:
     rebuilt = OrderRequest.model_validate(legacy_payload)
     assert rebuilt.score is None
     assert rebuilt.schema_version == "1.0"
+
+
+# ---------------------------------------------------------------------------
+# T-527b2b / OQ-6b — OrderRequest.sizing additive field
+# ---------------------------------------------------------------------------
+
+
+def test_order_request_default_sizing_is_none() -> None:
+    """Bare ctor without sizing → sizing is None; schema_version stays '1.0'."""
+    request = OrderRequest(**_base_order_kwargs())  # type: ignore[arg-type]
+    assert request.sizing is None
+    assert request.schema_version == "1.0"
+
+
+def test_order_request_sizing_round_trips_decimal() -> None:
+    """SizingSpecForWire survives model_dump(mode='json') → model_validate exact."""
+    from packages.bus.payloads import SizingSpecForWire, SizingTierWire
+
+    spec = SizingSpecForWire(
+        tiers=[SizingTierWire(balance_min=Decimal("500"), size=Decimal("700"))],
+        score_multipliers={"4": Decimal("0.75")},
+        max_notional_per_symbol={"default": Decimal("3000")},
+    )
+    request = OrderRequest(**_base_order_kwargs(), sizing=spec)  # type: ignore[arg-type]
+    rebuilt = OrderRequest.model_validate(request.model_dump(mode="json"))
+    assert rebuilt.sizing is not None
+    assert rebuilt.sizing.tiers[0].balance_min == Decimal("500")
+    assert rebuilt.sizing.score_multipliers["4"] == Decimal("0.75")
+    assert rebuilt.sizing.max_notional_per_symbol["default"] == Decimal("3000")
+
+
+def test_order_request_backward_compat_payload_without_sizing() -> None:
+    """An OrderRequest payload OMITTING `sizing` (old producer) still validates
+    → sizing is None, schema_version '1.0' (no extra='forbid')."""
+    legacy_payload = _base_order_kwargs()
+    legacy_payload["qty"] = "0.001"
+    assert "sizing" not in legacy_payload
+    rebuilt = OrderRequest.model_validate(legacy_payload)
+    assert rebuilt.sizing is None
+    assert rebuilt.schema_version == "1.0"

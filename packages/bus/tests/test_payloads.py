@@ -22,6 +22,8 @@ from pydantic import ValidationError
 
 from packages.bus.payloads import (
     ShadowStartPayload,
+    SizingSpecForWire,
+    SizingTierWire,
     TradeClosedPayload,
     VariantSpec,
     subject_for_shadow_start,
@@ -198,3 +200,47 @@ def test_subject_for_shadow_rejected_start() -> None:
 
     assert subject_for_shadow_rejected_start("alpha") == "shadow.rejected.start.alpha"
     assert subject_for_shadow_rejected_start("beta") == "shadow.rejected.start.beta"
+
+
+# ---------------------------------------------------------------------------
+# T-527b2b / OQ-6b — SizingSpecForWire (§B.1 sizing on the OrderRequest wire)
+# ---------------------------------------------------------------------------
+
+
+def test_sizing_spec_for_wire_decimal_round_trip_bit_identical() -> None:
+    """FIRST Decimal-on-wire precision pin: tiers/multipliers/caps survive
+    model_dump(mode='json')→str→model_validate→Decimal bit-identically (no
+    binary-float collapse). §B.1 alpha.yaml block verbatim."""
+    original = SizingSpecForWire(
+        tiers=[
+            SizingTierWire(balance_min=Decimal("500"), size=Decimal("700")),
+            SizingTierWire(balance_min=Decimal("1000"), size=Decimal("1400")),
+        ],
+        score_multipliers={"4": Decimal("0.75"), "6": Decimal("1.25")},
+        max_notional_per_symbol={"default": Decimal("3000"), "BTCUSDT": Decimal("5000")},
+    )
+    raw = original.model_dump(mode="json")
+    restored = SizingSpecForWire.model_validate(raw)
+    assert restored.tiers[0].balance_min == Decimal("500")
+    assert restored.tiers[0].size == Decimal("700")
+    assert restored.tiers[1].balance_min == Decimal("1000")
+    assert restored.score_multipliers["4"] == Decimal("0.75")
+    assert restored.score_multipliers["6"] == Decimal("1.25")
+    assert restored.max_notional_per_symbol["default"] == Decimal("3000")
+    assert restored.max_notional_per_symbol["BTCUSDT"] == Decimal("5000")
+    # Bit-identical: a fractional value's str repr is not a binary-float expansion.
+    assert str(restored.score_multipliers["4"]) == "0.75"
+    assert all(isinstance(t.balance_min, Decimal) for t in restored.tiers)
+
+
+def test_sizing_spec_for_wire_extra_forbid() -> None:
+    """extra='forbid' (mirror VariantSpec) rejects an unknown key on both models."""
+    with pytest.raises(ValidationError):
+        SizingTierWire(balance_min=Decimal("1"), size=Decimal("1"), bogus=1)  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        SizingSpecForWire(
+            tiers=[SizingTierWire(balance_min=Decimal("1"), size=Decimal("1"))],
+            score_multipliers={"4": Decimal("1")},
+            max_notional_per_symbol={"default": Decimal("1")},
+            tier_promotion={"min_trades": 10},  # type: ignore[call-arg]
+        )

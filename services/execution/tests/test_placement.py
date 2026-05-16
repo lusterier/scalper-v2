@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     import asyncio
 
 import pytest
+from prometheus_client import CollectorRegistry
 
 from packages.bus import MessageEnvelope
 from packages.bus.schemas.orders import OrderPlaced, SLMoved
@@ -35,6 +36,7 @@ from packages.exchange.errors import (
     UnknownState,
 )
 from packages.exchange.types import OrderPlaceResult
+from services.execution.app.metrics import build_execution_metrics
 from services.execution.app.placement import (
     FillPriceUnresolvedError,
     make_per_bot_handler,
@@ -181,7 +183,10 @@ def _build(
     dedup_capacity: int = 100,
     now_fn: Any = None,
     position_lifecycle_tasks: dict[int, asyncio.Task[None]] | None = None,
+    sub_account: str = "alpha-sub",
+    metrics: Any = None,
 ) -> tuple[Any, MagicMock, MagicMock, MagicMock]:
+    used_metrics = metrics if metrics is not None else build_execution_metrics(CollectorRegistry())
     used_adapter = adapter or _ok_adapter()
     used_bus = bus or _ok_bus()
     used_pool = pool if pool is not None else _mock_pool()
@@ -190,6 +195,8 @@ def _build(
     logger = MagicMock()
     handler = make_per_bot_handler(
         bot_id=BotId(bot_id),
+        sub_account=sub_account,
+        metrics=used_metrics,
         adapter=used_adapter,
         bus=used_bus,
         logger=logger,
@@ -231,6 +238,8 @@ async def test_two_handlers_have_independent_closures_with_distinct_adapters() -
     logger = MagicMock()
     handler_a = make_per_bot_handler(
         bot_id=BotId("alpha"),
+        sub_account="alpha-sub",
+        metrics=build_execution_metrics(CollectorRegistry()),
         adapter=adapter_a,
         bus=bus,
         logger=logger,
@@ -245,6 +254,8 @@ async def test_two_handlers_have_independent_closures_with_distinct_adapters() -
     )
     handler_b = make_per_bot_handler(
         bot_id=BotId("beta"),
+        sub_account="beta-sub",
+        metrics=build_execution_metrics(CollectorRegistry()),
         adapter=adapter_b,
         bus=bus,
         logger=logger,
@@ -1180,3 +1191,118 @@ async def test_placement_lifecycle_task_not_spawned_on_emergency_close_path(
     handler, _, _, _ = _build(adapter=adapter, position_lifecycle_tasks=lifecycle_tasks)
     await handler(_envelope())
     assert lifecycle_tasks == {}
+
+
+# ---------------------------------------------------------------------------
+# T-527b2b — §B.1 sizing placement seam (capital-path; ADR-0013)
+# ---------------------------------------------------------------------------
+
+_SIZING_WIRE: dict[str, Any] = {
+    "tiers": [
+        {"balance_min": "500", "size": "700"},
+        {"balance_min": "1000", "size": "1400"},
+    ],
+    "score_multipliers": {"4": "0.75"},
+    "max_notional_per_symbol": {"default": "3000"},
+}
+
+
+def _account_balance(total_equity: str) -> Any:
+    from packages.exchange.types import AccountBalance
+
+    eq = Decimal(total_equity)
+    return AccountBalance(
+        wallet_balance=eq,
+        available_balance=eq,
+        total_equity=eq,
+        margin_balance=eq,
+        unrealized_pnl=Decimal("0"),
+    )
+
+
+async def test_sizing_happy_path_substitutes_computed_qty() -> None:
+    """request.sizing set → compute_qty_from_sizing output (quantized) is sent
+    to place_market_order, NOT request.qty. Hand: equity 1500 -> tier {1000,1400};
+    score None -> *1.0 -> 1400; cap default 3000 -> 1400; 1400 / mark 700 = 2;
+    quantize(2, step 0.001) = 2.000. (persist/emit are no-op via the autouse
+    _patch_persist_and_emit fixture.)"""
+    adapter = _ok_adapter()
+    adapter.get_account_balance = AsyncMock(return_value=_account_balance("1500"))
+    adapter.get_mark_price = AsyncMock(return_value=Decimal("700"))
+    handler, _, _, _ = _build(adapter=adapter)
+    await handler(_envelope(_request_payload(sizing=_SIZING_WIRE)))
+    adapter.place_market_order.assert_awaited_once()
+    assert adapter.place_market_order.await_args.args[2] == Decimal("2")  # not 0.001
+
+
+async def test_sizing_sub_lowest_tier_skips_before_place() -> None:
+    """equity 499 < lowest balance_min 500 → compute returns None → skip
+    before place_market_order; signals_skipped_sizing{reason=sub_lowest_tier}."""
+    registry = CollectorRegistry()
+    metrics = build_execution_metrics(registry)
+    adapter = _ok_adapter()
+    adapter.get_account_balance = AsyncMock(return_value=_account_balance("499"))
+    adapter.get_mark_price = AsyncMock(return_value=Decimal("700"))
+    handler, _, _, _ = _build(adapter=adapter, metrics=metrics)
+    await handler(_envelope(_request_payload(sizing=_SIZING_WIRE)))
+    adapter.place_market_order.assert_not_awaited()
+    assert (
+        registry.get_sample_value(
+            "signals_skipped_sizing_total",
+            {"bot_id": "alpha", "reason": "sub_lowest_tier"},
+        )
+        == 1.0
+    )
+
+
+async def test_sizing_get_account_balance_raise_b1_skips() -> None:
+    """B1: get_account_balance raises NetworkTimeout → log + skip, NO place,
+    signals_skipped_sizing{reason=fetch_failed} (mirror get_instrument_info)."""
+    registry = CollectorRegistry()
+    metrics = build_execution_metrics(registry)
+    adapter = _ok_adapter()
+    adapter.get_account_balance = AsyncMock(side_effect=NetworkTimeout("balance down"))
+    adapter.get_mark_price = AsyncMock(return_value=Decimal("700"))
+    handler, _, _, _ = _build(adapter=adapter, metrics=metrics)
+    await handler(_envelope(_request_payload(sizing=_SIZING_WIRE)))
+    adapter.place_market_order.assert_not_awaited()
+    assert (
+        registry.get_sample_value(
+            "signals_skipped_sizing_total",
+            {"bot_id": "alpha", "reason": "fetch_failed"},
+        )
+        == 1.0
+    )
+
+
+async def test_sizing_get_mark_price_raise_b1_skips() -> None:
+    """B1: get_mark_price raises RateLimitError → skip, NO place (both-sides L-017)."""
+    registry = CollectorRegistry()
+    metrics = build_execution_metrics(registry)
+    adapter = _ok_adapter()
+    adapter.get_account_balance = AsyncMock(return_value=_account_balance("1500"))
+    adapter.get_mark_price = AsyncMock(side_effect=RateLimitError("ticker 429"))
+    handler, _, _, _ = _build(adapter=adapter, metrics=metrics)
+    await handler(_envelope(_request_payload(sizing=_SIZING_WIRE)))
+    adapter.place_market_order.assert_not_awaited()
+    assert (
+        registry.get_sample_value(
+            "signals_skipped_sizing_total",
+            {"bot_id": "alpha", "reason": "fetch_failed"},
+        )
+        == 1.0
+    )
+
+
+async def test_sizing_none_uses_static_qty_path_unchanged() -> None:
+    """request.sizing is None (no sizing key) → working_qty == request.qty,
+    get_account_balance/get_mark_price NEVER called (byte-unchanged path).
+    persist/emit no-op via the autouse _patch_persist_and_emit fixture."""
+    adapter = _ok_adapter()
+    adapter.get_account_balance = AsyncMock()
+    adapter.get_mark_price = AsyncMock()
+    handler, _, _, _ = _build(adapter=adapter)
+    await handler(_envelope(_request_payload()))  # no sizing
+    adapter.place_market_order.assert_awaited_once_with("BTCUSDT", "buy", Decimal("0.001"))
+    adapter.get_account_balance.assert_not_awaited()
+    adapter.get_mark_price.assert_not_awaited()

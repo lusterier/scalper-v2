@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from prometheus_client import Gauge
+from prometheus_client import Counter, Gauge
 
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry
@@ -40,6 +40,7 @@ class Metrics:
     """
 
     virtual_balance: Gauge
+    signals_skipped_sizing: Counter
 
 
 def build_execution_metrics(registry: CollectorRegistry) -> Metrics:
@@ -47,12 +48,23 @@ def build_execution_metrics(registry: CollectorRegistry) -> Metrics:
 
     * T-531 ``virtual_balance{bot_id}`` — per-bot account equity snapshot
       (set to ``AccountBalance.total_equity`` by the equity-snapshot tick).
+    * T-527b2b ``signals_skipped_sizing_total{bot_id,reason}`` — §B.1 sizing
+      skipped a signal at the placement seam (``reason`` ∈ ``fetch_failed`` /
+      ``compute_error`` / ``sub_lowest_tier``; mirror the strategy-engine
+      ``signals_blocked_*`` T-526/T-524 silent-skip counter pattern).
     """
     return Metrics(
         virtual_balance=Gauge(
             "virtual_balance",
             "Per-bot account equity snapshot — total_equity (§15.3; T-531).",
             labelnames=("bot_id",),
+            registry=registry,
+        ),
+        signals_skipped_sizing=Counter(
+            "signals_skipped_sizing_total",
+            "§B.1 sizing skipped a signal at the placement seam, by reason "
+            "(fetch_failed / compute_error / sub_lowest_tier) (T-527b2b).",
+            labelnames=("bot_id", "reason"),
             registry=registry,
         ),
     )

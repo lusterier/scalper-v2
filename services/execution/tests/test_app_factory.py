@@ -358,6 +358,12 @@ def test_lifespan_threads_settings_execution_orders_dedup_capacity_to_make_per_b
     assert kwargs["dedup_capacity"] == settings.execution_orders_dedup_capacity  # type: ignore[attr-defined]
     assert kwargs["pool"] is mock_pool
     assert callable(kwargs["now_fn"])
+    # T-527b2b / WG#3 (§N5/L-015): the changed main.py:174 call-site threads
+    # the new sub_account + metrics kwargs into make_per_bot_handler.
+    from services.execution.app.metrics import Metrics
+
+    assert kwargs["sub_account"]  # _resolve_sub_account(adapter), threaded
+    assert isinstance(kwargs["metrics"], Metrics)  # exec_metrics threaded
 
 
 def test_lifespan_spawns_one_dispatcher_task_per_bot_named_dispatcher_botid(

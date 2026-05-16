@@ -41,6 +41,8 @@ from packages.bus import MessageEnvelope
 from packages.bus.errors import NotConnectedError, PublishError
 from packages.bus.payloads import (
     ShadowRejectedStartPayload,
+    SizingSpecForWire,
+    SizingTierWire,
     VariantSpec,
     subject_for_shadow_rejected_start,
 )
@@ -427,6 +429,20 @@ async def _publish_order_request(
             for v in bot_config.shadow.variants
         ]
         shadow_max_duration_hours = Decimal(str(bot_config.shadow.max_duration_hours))
+    # T-527b2b / OQ-6b: map BotConfig.sizing (SizingSection, packages.scoring)
+    # → SizingSpecForWire (packages.bus.payloads) — different types, identical
+    # structure (bus cannot import scoring — cycle; mirror the shadow→VariantSpec
+    # map above). None → no tier sizing → execution uses static execution.qty.
+    sizing_payload: SizingSpecForWire | None = None
+    if bot_config.sizing is not None:
+        sizing_payload = SizingSpecForWire(
+            tiers=[
+                SizingTierWire(balance_min=t.balance_min, size=t.size)
+                for t in bot_config.sizing.tiers
+            ],
+            score_multipliers=dict(bot_config.sizing.score_multipliers),
+            max_notional_per_symbol=dict(bot_config.sizing.max_notional_per_symbol),
+        )
     request = OrderRequest(
         bot_id=bot_id,
         signal_id=signal_id,
@@ -444,6 +460,7 @@ async def _publish_order_request(
         shadow_variants=shadow_variants_payload,
         shadow_max_duration_hours=shadow_max_duration_hours,
         score=score,
+        sizing=sizing_payload,
     )
     out_envelope = MessageEnvelope(
         correlation_id=CorrelationId(envelope.correlation_id),

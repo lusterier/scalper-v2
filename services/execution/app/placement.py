@@ -66,6 +66,8 @@ from packages.exchange.errors import (
     UnknownState,
 )
 from packages.exchange.quantize import quantize_qty
+from packages.scoring.types import SizingTier
+from packages.sizing import compute_qty_from_sizing
 
 from .lifecycle import run_position_monitor_for_trade
 from .placement_persist import (
@@ -92,6 +94,8 @@ if TYPE_CHECKING:
     from packages.core import BotId
     from packages.exchange.protocols import ExchangeClient
 
+    from .metrics import Metrics
+
 
 __all__ = ["FillPriceUnresolvedError", "make_per_bot_handler"]
 
@@ -111,6 +115,8 @@ class FillPriceUnresolvedError(RuntimeError):
 def make_per_bot_handler(
     *,
     bot_id: BotId,
+    sub_account: str,
+    metrics: Metrics,
     adapter: ExchangeClient,
     bus: BusProtocol,
     logger: BoundLogger,
@@ -153,6 +159,65 @@ def make_per_bot_handler(
                 subject_bot_id=bot_id,
                 payload_bot_id=request.bot_id,
             )
+        # T-527b2b / ADR-0013: §B.1 tier sizing compute seam (before the
+        # T-529 quantize). request.sizing is None → static request.qty path
+        # byte-unchanged (backward-compat). On a fetch RAISE (B1) / compute
+        # ValueError / sub-lowest-tier (compute None, OQ-4=A) → skip BEFORE
+        # place_market_order (log + signals_skipped_sizing counter; no order,
+        # no DLQ — sizing fetch is pre-trade, transient blip → defer signal;
+        # mirrors the get_instrument_info transient-failure posture below).
+        working_qty = request.qty
+        if request.sizing is not None:
+            try:
+                balance = await adapter.get_account_balance(sub_account)
+                mark_price = await adapter.get_mark_price(request.symbol)
+            except (AuthError, NetworkTimeout, RateLimitError) as exc:
+                logger.error(
+                    "execution.sizing_fetch_failed",
+                    bot_id=bot_id,
+                    symbol=request.symbol,
+                    error=str(exc),
+                )
+                metrics.signals_skipped_sizing.labels(
+                    bot_id=str(bot_id), reason="fetch_failed"
+                ).inc()
+                return
+            tiers = [
+                SizingTier(balance_min=t.balance_min, size=t.size) for t in request.sizing.tiers
+            ]
+            try:
+                computed_qty = compute_qty_from_sizing(
+                    total_equity=balance.total_equity,
+                    mark_price=mark_price,
+                    tiers=tiers,
+                    score=request.score,
+                    score_multipliers=request.sizing.score_multipliers,
+                    max_notional_per_symbol=request.sizing.max_notional_per_symbol,
+                    symbol=request.symbol,
+                )
+            except ValueError as exc:
+                logger.error(
+                    "execution.sizing_compute_failed",
+                    bot_id=bot_id,
+                    symbol=request.symbol,
+                    error=str(exc),
+                )
+                metrics.signals_skipped_sizing.labels(
+                    bot_id=str(bot_id), reason="compute_error"
+                ).inc()
+                return
+            if computed_qty is None:
+                logger.info(
+                    "execution.signal_skipped_sub_lowest_tier",
+                    bot_id=bot_id,
+                    symbol=request.symbol,
+                    total_equity=str(balance.total_equity),
+                )
+                metrics.signals_skipped_sizing.labels(
+                    bot_id=str(bot_id), reason="sub_lowest_tier"
+                ).inc()
+                return
+            working_qty = computed_qty
         # 3a. T-529 / H-036: pre-flight qty quantization + validation.
         # Replaces pre-T-529 BLOCKER #3 warn-only marker. Live = Bybit
         # GET /v5/market/instruments-info; paper = hardcoded fixture.
@@ -160,7 +225,7 @@ def make_per_bot_handler(
         # early (no Bybit round-trip; no NATS publish; no rate-limit token).
         try:
             instrument_info = await adapter.get_instrument_info(request.symbol)
-            quantized_qty = quantize_qty(request.qty, instrument_info)
+            quantized_qty = quantize_qty(working_qty, instrument_info)
         except QtyValidationError as exc:
             logger.error(
                 "execution.qty_validation_failed",

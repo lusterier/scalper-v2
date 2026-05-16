@@ -78,6 +78,43 @@ class VariantSpec(BaseModel):
     overrides: dict[str, Decimal | int]
 
 
+class SizingTierWire(BaseModel):
+    """One §B.1 ``sizing.tiers`` rung on the wire (T-527b2b).
+
+    Bus-owned wire mirror of ``packages.scoring.types.SizingTier`` —
+    ``packages.bus`` must NOT import ``packages.scoring`` (scoring already
+    imports bus → reverse = cycle), so the producer maps
+    ``SizingSection.tiers`` → ``SizingTierWire`` and the execution placement
+    seam rehydrates ``SizingTier`` from these (mirror the ``VariantSpec``
+    pattern T-511b2). ``Decimal`` fields round-trip via the envelope
+    (``model_dump(mode="json")`` → str → ``model_validate`` → ``Decimal``;
+    same convention as ``VariantSpec.overrides``).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    balance_min: Decimal
+    size: Decimal
+
+
+class SizingSpecForWire(BaseModel):
+    """§B.1 ``sizing:`` block on the ``OrderRequest`` wire (T-527b2b, OQ-6b).
+
+    Producer (strategy-engine) maps ``BotConfig.sizing: SizingSection`` →
+    this; execution-service placement seam consumes it (ADR-0013). Carries
+    only the compute inputs (tiers/score_multipliers/max_notional_per_symbol)
+    — ``tier_promotion``/``tier_demotion`` are operator OQ-2=A deferred and
+    not modeled (separate ``T-F5+``). ``extra="forbid"`` catches wire
+    corruption (the producer maps from an already-validated ``SizingSection``).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tiers: list[SizingTierWire]
+    score_multipliers: dict[str, Decimal]
+    max_notional_per_symbol: dict[str, Decimal]
+
+
 class ShadowStartPayload(BaseModel):
     """``shadow.start.<bot_id>`` envelope per BRIEF §13.3.
 
