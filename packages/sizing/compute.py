@@ -1,18 +1,29 @@
-"""§B.1 tier-ladder position-sizing math (T-527b2a).
+"""§B.1 position-sizing math (T-527b2a tier ladder + T-528a risk-per-SL).
 
-Caller-agnostic pure functions; no I/O, no caller (T-527b2b is the first
-consumer — wires these into the execution-service placement seam per
-ADR-0013). Consumes ``total_equity`` + ``mark_price`` + the §B.1
-``sizing:`` block components (tiers / score_multipliers /
-max_notional_per_symbol). Decimal arithmetic throughout per §5.3 / §N1 (no
-float casts). ``score`` is ``float`` (mirrors ``ScoringResult.total_score``)
-and is used ONLY for ``floor(score)`` → an int multiplier-key index — never
-in the money value path (notional + multipliers + division are Decimal).
+Caller-agnostic pure functions; no I/O, no caller (T-527b2b / T-528b are the
+consumers — wire these into the execution-service placement seam per
+ADR-0013). Two ``sizing.method`` paths share the cap + single-rounding-point
+discipline:
 
-Single-rounding-point: ``compute_qty_from_sizing`` returns the qty at full
-``Decimal`` context precision and does NOT round. The shipped T-529
+* **tier** (T-527b2a): ``total_equity`` → ``select_tier`` →
+  ``apply_score_multiplier`` → ``cap_notional`` → ``÷ mark_price`` via
+  :func:`compute_qty_from_sizing`.
+* **risk_per_sl** (T-528a): ``total_equity * risk_pct / sl_pct`` (the
+  notional that loses exactly ``risk_pct`` of equity if the SL is hit) →
+  ``cap_notional`` → ``÷ mark_price`` via :func:`compute_qty_from_risk`.
+  Operator OQ-3=A: risk-per-SL is a deterministic risk model and does NOT
+  apply ``score_multipliers`` (signal strength is gated upstream).
+
+Decimal arithmetic throughout per §5.3 / §N1 (no float casts). ``score`` is
+``float`` (mirrors ``ScoringResult.total_score``) and is used ONLY for
+``floor(score)`` → an int multiplier-key index — never in the money value
+path (notional + multipliers + division are Decimal).
+
+Single-rounding-point: the orchestrators return the qty at full ``Decimal``
+context precision and do NOT round. The shipped T-529
 ``packages.exchange.quantize.quantize_qty`` does the sole qty_step
-round-down downstream in T-527b2b; rounding here too would double-round.
+round-down downstream in T-527b2b / T-528b; rounding here too would
+double-round.
 
 Tier-promotion / tier-demotion (§B.1 alpha.yaml 3146-3149) are operator
 OQ-2=A deferred (separate ``T-F5+`` backlog) — NOT modeled here.
@@ -31,6 +42,7 @@ if TYPE_CHECKING:
 __all__ = [
     "apply_score_multiplier",
     "cap_notional",
+    "compute_qty_from_risk",
     "compute_qty_from_sizing",
     "select_tier",
 ]
@@ -164,5 +176,78 @@ def compute_qty_from_sizing(
         msg = f"mark_price must be positive for sizing; got {mark_price}"
         raise ValueError(msg)
     notional = apply_score_multiplier(tier.size, score, score_multipliers)
+    notional = cap_notional(notional, max_notional_per_symbol, symbol)
+    return notional / mark_price
+
+
+def compute_qty_from_risk(
+    *,
+    total_equity: Decimal,
+    mark_price: Decimal,
+    sl_pct: Decimal,
+    risk_pct: Decimal,
+    max_notional_per_symbol: dict[str, Decimal],
+    symbol: str,
+) -> Decimal | None:
+    """risk-per-SL §B.1 pipeline: equity*risk_pct/sl_pct → cap → qty (T-528a).
+
+    The ``risk_per_sl`` ``sizing.method`` alternative to the tier ladder
+    (operator OQ-2=A). Sizes the position so that hitting the stop-loss
+    loses exactly ``risk_pct`` of ``total_equity``: a linear-contract loss
+    at the SL is ``qty * (mark_price * sl_pct)``; set equal to
+    ``total_equity * risk_pct`` and solve ⇒
+    ``notional = qty * mark_price = total_equity * risk_pct / sl_pct``.
+    ``score_multipliers`` are NOT applied (OQ-3=A — deterministic risk
+    model; signal strength is already gated upstream in scoring). The
+    per-symbol ``cap_notional`` IS applied (safety rail, both methods).
+
+    Guard ordering mirrors :func:`compute_qty_from_sizing` (the skip
+    sentinel precedes the fail-loud raises): non-positive ``total_equity``
+    (≤ 0 — no capital to size against) → ``None``, the risk-per-SL
+    sub-capital skip sentinel (analogous to the tier path's sub-lowest-tier
+    ``None``; T-528b translates ``None`` into
+    skip-the-signal-before-``place_market_order``), checked BEFORE the
+    ``ValueError``s. A non-positive ``mark_price`` / ``sl_pct`` /
+    ``risk_pct`` (≤ 0) raises :class:`ValueError` (defensive fail-loud — an
+    upstream/exchange/config anomaly must never silently mis-size; mirrors
+    :func:`compute_qty_from_sizing`'s ``mark_price`` posture). ``sl_pct`` is
+    the genuine external input (``OrderRequest.sl_pct`` — a signal with no
+    usable SL); ``risk_pct`` is validator-guaranteed ``> 0`` by
+    ``SizingSection`` but re-checked here for caller-agnostic correctness.
+    T-528b maps the ``ValueError`` to the verbatim T-527b2b
+    ``except ValueError`` skip-before-place path (``reason=compute_error``).
+
+    Returns the qty at full ``Decimal`` context precision and does NOT
+    round — the shipped T-529 ``quantize_qty`` does the sole qty_step
+    round-down downstream in T-528b (single rounding point).
+
+    Hand-verified (math-validator Gate-4 fixture; §B.1 caps
+    ``{"default":3000,"BTCUSDT":5000}``):
+
+    - equity ``10000``, risk_pct ``0.01``, sl_pct ``0.02``, mark ``50000``,
+      ``"BTCUSDT"``: risk_amount ``100`` → notional ``100/0.02 = 5000`` →
+      cap BTCUSDT 5000 → ``5000`` → qty ``5000/50000 = Decimal("0.1")``.
+      Identity: loss-at-SL ``0.1*(50000*0.02=1000)=100`` = risk_amount.
+    - equity ``10000``, risk_pct ``0.02``, sl_pct ``0.01``, mark ``2000``,
+      ``"ETHUSDT"`` (→ default 3000): risk_amount ``200`` → notional
+      ``200/0.01 = 20000`` → cap default 3000 → ``3000`` (capped) → qty
+      ``3000/2000 = Decimal("1.5")``.
+    - equity ``Decimal("0")`` / ``Decimal("-5")`` → ``None`` (skip).
+    - mark ``Decimal("0")`` / sl_pct ``Decimal("0")`` / sl_pct
+      ``Decimal("-0.01")`` / risk_pct ``Decimal("0")`` → :class:`ValueError`.
+    """
+    if total_equity <= 0:
+        return None
+    if mark_price <= 0:
+        msg = f"mark_price must be positive for sizing; got {mark_price}"
+        raise ValueError(msg)
+    if sl_pct <= 0:
+        msg = f"sl_pct must be positive for risk-per-SL sizing; got {sl_pct}"
+        raise ValueError(msg)
+    if risk_pct <= 0:
+        msg = f"risk_pct must be positive for risk-per-SL sizing; got {risk_pct}"
+        raise ValueError(msg)
+    risk_amount = total_equity * risk_pct
+    notional = risk_amount / sl_pct
     notional = cap_notional(notional, max_notional_per_symbol, symbol)
     return notional / mark_price

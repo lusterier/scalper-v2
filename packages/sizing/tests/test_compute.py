@@ -15,6 +15,7 @@ from packages.scoring.types import SizingTier
 from packages.sizing import (
     apply_score_multiplier,
     cap_notional,
+    compute_qty_from_risk,
     compute_qty_from_sizing,
     select_tier,
 )
@@ -200,3 +201,127 @@ def test_compute_qty_cap_actually_clamps() -> None:
     )
     assert qty == Decimal("3000") / Decimal("60000")
     assert qty == Decimal("0.05")
+
+
+# --- compute_qty_from_risk (T-528a risk-per-SL orchestrator) ---------------
+# §N4 hand-authored from docs/plans/T-528a.md `## Hand verification` (NOT
+# implementation-against-itself). §B.1 caps {"default":3000,"BTCUSDT":5000}.
+
+
+def test_compute_qty_from_risk_btcusdt_under_cap() -> None:
+    # equity 10000, risk 1%, sl 2%, mark 50000, BTCUSDT.
+    # risk_amount=10000*0.01=100; notional=100/0.02=5000; cap BTCUSDT 5000 →
+    # min(5000,5000)=5000; qty=5000/50000=0.1.
+    qty = compute_qty_from_risk(
+        total_equity=Decimal("10000"),
+        mark_price=Decimal("50000"),
+        sl_pct=Decimal("0.02"),
+        risk_pct=Decimal("0.01"),
+        max_notional_per_symbol=_B1_CAPS,
+        symbol="BTCUSDT",
+    )
+    assert qty == Decimal("5000") / Decimal("50000")
+    assert qty == Decimal("0.1")
+    # Independent identity: linear-contract loss at SL == risked equity.
+    assert qty * (Decimal("50000") * Decimal("0.02")) == Decimal("10000") * Decimal("0.01")
+
+
+def test_compute_qty_from_risk_default_cap_clamps() -> None:
+    # equity 10000, risk 2%, sl 1%, mark 2000, ETHUSDT (→ default cap 3000).
+    # risk_amount=200; notional=200/0.01=20000; cap default 3000 →
+    # min(20000,3000)=3000 (clamped); qty=3000/2000=1.5.
+    qty = compute_qty_from_risk(
+        total_equity=Decimal("10000"),
+        mark_price=Decimal("2000"),
+        sl_pct=Decimal("0.01"),
+        risk_pct=Decimal("0.02"),
+        max_notional_per_symbol=_B1_CAPS,
+        symbol="ETHUSDT",
+    )
+    assert qty == Decimal("3000") / Decimal("2000")
+    assert qty == Decimal("1.5")
+
+
+def test_compute_qty_from_risk_division_full_precision_no_round() -> None:
+    # equity 1000, risk 0.0333, sl 0.03, mark 42500.75, ETHUSDT.
+    # risk_amount=1000*0.0333=33.3000; notional=33.3000/0.03=1110(.00);
+    # cap default 3000 → 1110 (under); qty=1110/42500.75 full Decimal, NO round.
+    qty = compute_qty_from_risk(
+        total_equity=Decimal("1000"),
+        mark_price=Decimal("42500.75"),
+        sl_pct=Decimal("0.03"),
+        risk_pct=Decimal("0.0333"),
+        max_notional_per_symbol=_B1_CAPS,
+        symbol="ETHUSDT",
+    )
+    expected = Decimal("1000") * Decimal("0.0333") / Decimal("0.03") / Decimal("42500.75")
+    assert qty == expected
+    assert isinstance(qty, Decimal)
+    assert Decimal("0.026") < qty < Decimal("0.027")  # sanity magnitude
+
+
+@pytest.mark.parametrize("equity", [Decimal("0"), Decimal("-5")])
+def test_compute_qty_from_risk_non_positive_equity_returns_none(equity: Decimal) -> None:
+    qty = compute_qty_from_risk(
+        total_equity=equity,
+        mark_price=Decimal("50000"),
+        sl_pct=Decimal("0.02"),
+        risk_pct=Decimal("0.01"),
+        max_notional_per_symbol=_B1_CAPS,
+        symbol="BTCUSDT",
+    )
+    assert qty is None
+
+
+def test_compute_qty_from_risk_equity_sentinel_precedes_raises() -> None:
+    # Guard ordering: total_equity<=0 → None even when mark_price AND sl_pct
+    # are also invalid (the skip sentinel precedes the fail-loud raises —
+    # mirror compute_qty_from_sizing's None-before-mark_price guard order).
+    qty = compute_qty_from_risk(
+        total_equity=Decimal("0"),
+        mark_price=Decimal("0"),
+        sl_pct=Decimal("0"),
+        risk_pct=Decimal("0"),
+        max_notional_per_symbol=_B1_CAPS,
+        symbol="BTCUSDT",
+    )
+    assert qty is None
+
+
+@pytest.mark.parametrize("bad", [Decimal("0"), Decimal("-1"), Decimal("-0.01")])
+def test_compute_qty_from_risk_non_positive_mark_price_raises(bad: Decimal) -> None:
+    with pytest.raises(ValueError, match="mark_price must be positive"):
+        compute_qty_from_risk(
+            total_equity=Decimal("10000"),
+            mark_price=bad,
+            sl_pct=Decimal("0.02"),
+            risk_pct=Decimal("0.01"),
+            max_notional_per_symbol=_B1_CAPS,
+            symbol="BTCUSDT",
+        )
+
+
+@pytest.mark.parametrize("bad", [Decimal("0"), Decimal("-0.01")])
+def test_compute_qty_from_risk_non_positive_sl_pct_raises(bad: Decimal) -> None:
+    with pytest.raises(ValueError, match="sl_pct must be positive"):
+        compute_qty_from_risk(
+            total_equity=Decimal("10000"),
+            mark_price=Decimal("50000"),
+            sl_pct=bad,
+            risk_pct=Decimal("0.01"),
+            max_notional_per_symbol=_B1_CAPS,
+            symbol="BTCUSDT",
+        )
+
+
+@pytest.mark.parametrize("bad", [Decimal("0"), Decimal("-0.01")])
+def test_compute_qty_from_risk_non_positive_risk_pct_raises(bad: Decimal) -> None:
+    with pytest.raises(ValueError, match="risk_pct must be positive"):
+        compute_qty_from_risk(
+            total_equity=Decimal("10000"),
+            mark_price=Decimal("50000"),
+            sl_pct=Decimal("0.02"),
+            risk_pct=bad,
+            max_notional_per_symbol=_B1_CAPS,
+            symbol="BTCUSDT",
+        )

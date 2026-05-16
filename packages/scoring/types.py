@@ -318,42 +318,77 @@ class SizingTier(BaseModel):
 
 
 class SizingSection(BaseModel):
-    """§B.1 ``sizing:`` block — per-bot tier-ladder position sizing (T-527a).
+    """§B.1 ``sizing:`` block — per-bot position sizing (T-527a + T-528a).
 
     Reifies the BRIEF-deferred §B.1 ``sizing:`` block (BRIEF §22 Appendix B,
-    alpha.yaml lines 3130-3145): a balance→tier ladder, score multipliers, and
-    per-symbol notional caps. T-527a is the **config foundation only** — no
-    consumer; the balance→tier→multiplier→cap→qty compute is T-527b.
+    alpha.yaml lines 3130-3145): per-symbol notional caps + one of two
+    ``method`` paths (operator OQ-2=A — additive discriminator, NOT a
+    discriminated-union refactor):
+
+    * ``method: "tier"`` (default — backward-compat: a bot with no
+      ``method:`` is unchanged from T-527a): a balance→tier ladder +
+      ``score_multipliers``. Compute is T-527b (shipped).
+    * ``method: "risk_per_sl"`` (T-528a): ``risk_pct`` of ``total_equity``
+      risked per trade — ``notional = total_equity * risk_pct / sl_pct``.
+      ``score_multipliers`` are NOT applied (operator OQ-3=A — deterministic
+      risk model; signal strength is already gated upstream). Compute is
+      T-528b.
+
+    ``tiers`` / ``score_multipliers`` carry ``default_factory`` ONLY so a
+    ``method: risk_per_sl`` block may omit them. The tier-path validation
+    strictness that field-requiredness gave before T-528a is fully RESTORED
+    in ``_structural_guards`` for ``method == "tier"`` (§N10 — a silently
+    ``[]`` / ``{}`` tier config would be a capital-safety regression). The
+    per-symbol cap (``max_notional_per_symbol`` with a ``"default"`` key)
+    is REQUIRED and applies to BOTH methods (safety rail).
 
     ``tier_promotion`` / ``tier_demotion`` (alpha.yaml lines 3146-3149) are
-    DELIBERATELY NOT modeled here — operator OQ-2=A deferred them to a separate
-    later task (under-specified stateful tier-adjustment layer). They stay
-    absorbed by ``BotConfig.extra="ignore"`` exactly as the whole ``sizing``
-    block is today, until that backlog task (mirror the ``BotConfig`` docstring
-    note that ``shadow`` was extra-absorbed pre-T-514). ``extra="forbid"`` here
-    means a stray ``tier_promotion:`` / typo raises at YAML load.
-
-    ``extra="forbid"`` rationale matches :class:`RiskSection` /
+    DELIBERATELY NOT modeled here — operator OQ-2=A (T-527) deferred them to
+    a separate later task (under-specified stateful tier-adjustment layer).
+    ``extra="forbid"`` here means a stray ``tier_promotion:`` / typo raises
+    at YAML load; rationale matches :class:`RiskSection` /
     :class:`ShadowConfig` — net-new feature rejects operator typos at load.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    tiers: list[SizingTier]
-    score_multipliers: dict[str, Decimal]
+    method: Literal["tier", "risk_per_sl"] = "tier"
+    tiers: list[SizingTier] = Field(default_factory=list)
+    score_multipliers: dict[str, Decimal] = Field(default_factory=dict)
+    risk_pct: Decimal | None = Field(default=None, gt=0)
     max_notional_per_symbol: dict[str, Decimal]
 
     @model_validator(mode="after")
     def _structural_guards(self) -> SizingSection:
-        if not self.tiers:
-            msg = "sizing.tiers must be non-empty (at least 1 balance tier)"
-            raise ValueError(msg)
-        mins = [t.balance_min for t in self.tiers]
-        if any(b <= a for a, b in pairwise(mins)):
-            msg = (
-                f"sizing.tiers must be strictly ascending by balance_min; "
-                f"got {[str(m) for m in mins]}"
-            )
+        if self.method == "tier":
+            # §N10: byte-preserve the shipped T-527a tier accept/reject
+            # surface. `tiers`/`score_multipliers` gained `default_factory`
+            # only so a `method: risk_per_sl` block may omit them; under
+            # `method: tier` the loud rejections that field-requiredness
+            # used to give MUST be restored here — a silently []/{} tier
+            # config is a capital-safety regression. Guard order
+            # (risk_pct → tiers → score_multipliers → ascending) keeps the
+            # shipped empty-tiers test raising the tiers message.
+            if self.risk_pct is not None:
+                msg = "sizing.risk_pct is only valid with method='risk_per_sl'"
+                raise ValueError(msg)
+            if not self.tiers:
+                msg = "sizing.tiers must be non-empty (at least 1 balance tier)"
+                raise ValueError(msg)
+            if not self.score_multipliers:
+                msg = "sizing.score_multipliers must be non-empty when method='tier'"
+                raise ValueError(msg)
+            mins = [t.balance_min for t in self.tiers]
+            if any(b <= a for a, b in pairwise(mins)):
+                msg = (
+                    f"sizing.tiers must be strictly ascending by balance_min; "
+                    f"got {[str(m) for m in mins]}"
+                )
+                raise ValueError(msg)
+        elif self.risk_pct is None:
+            # method == "risk_per_sl": Field(gt=0) rejects a provided
+            # non-positive risk_pct; this covers an absent/null one.
+            msg = "sizing.risk_pct must be > 0 when method='risk_per_sl'"
             raise ValueError(msg)
         if "default" not in self.max_notional_per_symbol:
             msg = (

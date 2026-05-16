@@ -1205,3 +1205,42 @@ def test_yaml_loader_sizing_rejects_deferred_tier_promotion() -> None:
     with_promo = _T514_BASE_YAML + _SIZING_YAML + "  tier_promotion:\n    min_trades: 10\n"
     with pytest.raises(ValidationError):
         load_bot_config_from_string(with_promo)
+
+
+# ---------------------------------------------------------------------------
+# T-528a ``sizing.method`` discriminator + risk-per-SL (§B.1; OQ-2=A)
+# ---------------------------------------------------------------------------
+
+_RISK_SIZING_YAML = (
+    "\nsizing:\n"
+    "  method: risk_per_sl\n"
+    "  risk_pct: 0.01\n"
+    "  max_notional_per_symbol:\n"
+    "    default: 3000\n"
+)
+
+
+def test_yaml_loader_sizing_method_defaults_to_tier() -> None:
+    """Absent `method:` → "tier" through the loader (backward-compat: the
+    shipped tier YAML is unchanged; risk_pct stays None)."""
+    cfg = load_bot_config_from_string(_T514_BASE_YAML + _SIZING_YAML)
+    assert cfg.sizing is not None
+    assert cfg.sizing.method == "tier"
+    assert cfg.sizing.risk_pct is None
+
+
+def test_yaml_loader_sizing_risk_per_sl_risk_pct_exact_decimal() -> None:
+    """WG2 §N1 pin: `method` is a non-coerced str passthrough (pydantic
+    validates the Literal); `risk_pct` MUST be `_to_decimal`-coerced — YAML
+    0.01 → exact Decimal("0.01"); without the coercion the non-strict
+    SizingSection would pydantic-coerce the float to
+    Decimal('0.0100000000000000002…') and corrupt the capital path."""
+    cfg = load_bot_config_from_string(_T514_BASE_YAML + _RISK_SIZING_YAML)
+    assert cfg.sizing is not None
+    assert cfg.sizing.method == "risk_per_sl"  # str passthrough, Literal-validated
+    assert cfg.sizing.risk_pct == Decimal("0.01")
+    assert str(cfg.sizing.risk_pct) == "0.01"  # no binary-float artefact
+    assert isinstance(cfg.sizing.risk_pct, Decimal)
+    # tiers/score_multipliers omitted under risk_per_sl (default_factory).
+    assert cfg.sizing.tiers == []
+    assert cfg.sizing.score_multipliers == {}

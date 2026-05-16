@@ -676,3 +676,78 @@ def test_sizing_section_rejects_deferred_tier_promotion_key() -> None:
             max_notional_per_symbol={"default": Decimal("3000")},
             tier_promotion={"min_trades": 10},  # type: ignore[call-arg]
         )
+
+
+# ---------------------------------------------------------------------------
+# SizingSection.method discriminator (T-528a — risk-per-SL; OQ-2=A)
+# ---------------------------------------------------------------------------
+
+
+def test_sizing_section_method_defaults_to_tier_backward_compat() -> None:
+    """Absent `method:` → "tier"; the shipped §B.1 tier block is unchanged."""
+    sec = _valid_sizing()  # no method= passed
+    assert sec.method == "tier"
+    assert sec.risk_pct is None
+
+
+def test_sizing_section_risk_per_sl_valid_omits_tiers_and_multipliers() -> None:
+    sec = SizingSection(
+        method="risk_per_sl",
+        risk_pct=Decimal("0.01"),
+        max_notional_per_symbol={"default": Decimal("3000")},
+    )
+    assert sec.method == "risk_per_sl"
+    assert sec.risk_pct == Decimal("0.01")
+    assert sec.tiers == []
+    assert sec.score_multipliers == {}
+
+
+def test_sizing_section_risk_per_sl_requires_risk_pct() -> None:
+    with pytest.raises(ValidationError, match="risk_pct must be > 0"):
+        SizingSection(
+            method="risk_per_sl",
+            max_notional_per_symbol={"default": Decimal("3000")},
+        )
+
+
+def test_sizing_section_risk_pct_field_rejects_non_positive() -> None:
+    """Field(gt=0): a provided risk_pct <= 0 is a pydantic ValidationError."""
+    with pytest.raises(ValidationError):
+        SizingSection(
+            method="risk_per_sl",
+            risk_pct=Decimal("0"),
+            max_notional_per_symbol={"default": Decimal("3000")},
+        )
+
+
+def test_sizing_section_tier_rejects_risk_pct() -> None:
+    with pytest.raises(ValidationError, match="risk_pct is only valid"):
+        SizingSection(
+            tiers=[SizingTier(balance_min=Decimal("500"), size=Decimal("700"))],
+            score_multipliers={"4": Decimal("1")},
+            risk_pct=Decimal("0.01"),
+            max_notional_per_symbol={"default": Decimal("3000")},
+        )
+
+
+def test_sizing_section_tier_missing_score_multipliers_still_rejected() -> None:
+    """§N10 WG1 regression pin: `default_factory` must NOT silently weaken
+    the shipped tier path — a `method:"tier"` (here: absent → tier) config
+    omitting `score_multipliers` MUST still raise (before T-528a this was a
+    pydantic field-required error; the method-conditional validator restores
+    the loud rejection)."""
+    with pytest.raises(ValidationError, match="score_multipliers must be non-empty"):
+        SizingSection(
+            tiers=[SizingTier(balance_min=Decimal("500"), size=Decimal("700"))],
+            max_notional_per_symbol={"default": Decimal("3000")},
+        )
+
+
+def test_sizing_section_risk_per_sl_still_requires_default_cap() -> None:
+    """The per-symbol cap is a safety rail for BOTH methods (baked)."""
+    with pytest.raises(ValidationError, match="default"):
+        SizingSection(
+            method="risk_per_sl",
+            risk_pct=Decimal("0.01"),
+            max_notional_per_symbol={"BTCUSDT": Decimal("5000")},
+        )

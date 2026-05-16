@@ -461,8 +461,14 @@ def _parse_sizing(spec: dict[str, Any] | None) -> SizingSection | None:
     block does not need. Decimal coercion via :func:`_to_decimal`
     (``Decimal(str(v))`` — no binary-float artefact, §5.13 / §N1) on every
     tier ``balance_min``/``size`` + each ``score_multipliers`` value + each
-    ``max_notional_per_symbol`` value; their KEYS stay ``str`` (not coerced);
-    unknown top-level ``sizing:`` keys flow through untouched → rejected.
+    ``max_notional_per_symbol`` value + the T-528a scalar ``risk_pct``
+    (REQUIRED — YAML parses ``risk_pct: 0.01`` as a Python ``float``;
+    :class:`SizingSection` is non-strict so an un-coerced float would be
+    pydantic-coerced via ``Decimal(0.01)`` = the binary-float artefact that
+    corrupts the ``total_equity*risk_pct/sl_pct`` capital path); their KEYS
+    stay ``str`` (not coerced). ``method`` is an INTENTIONAL non-coerced
+    ``str`` passthrough (pydantic validates the ``Literal``). Unknown
+    top-level ``sizing:`` keys flow through untouched → rejected.
     """
     if not spec:
         return None
@@ -484,6 +490,8 @@ def _parse_sizing(spec: dict[str, Any] | None) -> SizingSection | None:
         coerced["max_notional_per_symbol"] = {
             k: _to_decimal(v) for k, v in (coerced["max_notional_per_symbol"] or {}).items()
         }
+    if "risk_pct" in coerced:
+        coerced["risk_pct"] = _to_decimal(coerced["risk_pct"])
     return SizingSection(**coerced)
 
 
