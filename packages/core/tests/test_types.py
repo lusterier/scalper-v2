@@ -9,6 +9,7 @@ from packages.core.types import (
     ExchangeSource,
     IngestionStatus,
     ScoringDecision,
+    TradeLifecycleState,
     TradeStatus,
 )
 
@@ -22,3 +23,20 @@ def test_enums_have_full_member_sets() -> None:
     assert {s.value for s in TradeStatus} == {"open", "closed", "error"}
     assert {s.value for s in IngestionStatus} == {"validated", "duplicate", "invalid"}
     assert {s.value for s in ScoringDecision} == {"execute", "reject", "passthrough"}
+    # T-533a — 13-state TradeLifecycleState; StrEnum value == name.lower().
+    assert {s.value for s in TradeLifecycleState} == {
+        "signal_received",
+        "order_requested",
+        "order_placed",
+        "open",
+        "partially_closed",
+        "tp_hit",
+        "breakeven_set",
+        "trailing_active",
+        "closing",
+        "closed",
+        "failed",
+        "orphaned",
+        "reconciled",
+    }
+    assert all(s.value == s.name.lower() for s in TradeLifecycleState)

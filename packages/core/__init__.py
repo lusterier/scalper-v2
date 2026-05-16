@@ -29,6 +29,7 @@ from .types import (
     ScoringDecision,
     Symbol,
     TraceId,
+    TradeLifecycleState,
     TradeStatus,
 )
 
@@ -45,6 +46,7 @@ __all__ = [
     "ScoringDecision",
     "Symbol",
     "TraceId",
+    "TradeLifecycleState",
     "TradeStatus",
     "UnlabeledMethodError",
     "assert_all_methods_labeled",

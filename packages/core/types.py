@@ -24,6 +24,7 @@ __all__ = [
     "ShadowVariantTerminal",
     "Symbol",
     "TraceId",
+    "TradeLifecycleState",
     "TradeStatus",
 ]
 
@@ -152,6 +153,44 @@ class TradeStatus(StrEnum):
     OPEN = "open"
     CLOSED = "closed"
     ERROR = "error"
+
+
+class TradeLifecycleState(StrEnum):
+    """Canonical named trade-lifecycle FSM state (T-533 / ADR-0011).
+
+    Single observable state consolidating the legacy 4-column model
+    (``trades.status`` / ``trades.close_reason`` /
+    ``position_state.{tp_hit,sl_type,trailing_active}``). **Additive /
+    observability-only (T-533 OQ-1=A)** — the legacy columns remain
+    authoritative for all decision logic; nothing reads this. Stored as
+    plain ``TEXT`` (``trades.lifecycle_state``), no DB CHECK — value
+    additions are app-layer only, no migration (mirror
+    :class:`ShadowVariantTerminal` forward-compat pattern).
+
+    Backfill steady-state subset (migration 0020, from the legacy 4
+    columns): ``OPEN`` / ``PARTIALLY_CLOSED`` / ``BREAKEVEN_SET`` /
+    ``TRAILING_ACTIVE`` / ``CLOSED`` / ``RECONCILED`` / ``ORPHANED`` +
+    ``FAILED`` (from ``trades.status='error'`` — defensive /
+    enum-vocab-complete; no current writer, the T-221 orphan/partial-
+    failure intent). Transient states ``SIGNAL_RECEIVED`` /
+    ``ORDER_REQUESTED`` / ``ORDER_PLACED`` / ``CLOSING`` / ``TP_HIT`` are
+    **forward-only** — no legacy column records them; reachable only via
+    T-533b dual-write going forward.
+    """
+
+    SIGNAL_RECEIVED = "signal_received"
+    ORDER_REQUESTED = "order_requested"
+    ORDER_PLACED = "order_placed"
+    OPEN = "open"
+    PARTIALLY_CLOSED = "partially_closed"
+    TP_HIT = "tp_hit"
+    BREAKEVEN_SET = "breakeven_set"
+    TRAILING_ACTIVE = "trailing_active"
+    CLOSING = "closing"
+    CLOSED = "closed"
+    FAILED = "failed"
+    ORPHANED = "orphaned"
+    RECONCILED = "reconciled"
 
 
 class IngestionStatus(StrEnum):

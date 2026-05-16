@@ -82,6 +82,9 @@ _EXPECTED_TRADES_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("mae_pct", "double precision", "YES"),
     ("confidence_score", "double precision", "YES"),
     ("meta", "jsonb", "NO"),
+    # T-533a (migration 0020): additive observable lifecycle_state column,
+    # ordinal-last via op.add_column → element 22 of the trades shape.
+    ("lifecycle_state", "text", "YES"),
 )
 
 _EXPECTED_EXECUTIONS_COLUMNS: tuple[tuple[str, str, str], ...] = (
