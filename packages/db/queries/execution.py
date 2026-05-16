@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     import asyncpg
     from asyncpg.pool import PoolConnectionProxy
 
+    from packages.core import TradeLifecycleState
+
     type _DbExecutor = asyncpg.Connection[asyncpg.Record] | PoolConnectionProxy[asyncpg.Record]
 
 
@@ -61,6 +63,7 @@ __all__ = [
     "update_position_state_sl",
     "update_trade_close",
     "update_trade_fees_incremental",
+    "update_trade_lifecycle_state",
 ]
 
 
@@ -341,6 +344,44 @@ async def update_trade_close(
             close_order_id,
             trade_id,
         )
+
+
+async def update_trade_lifecycle_state(
+    conn: _DbExecutor,
+    *,
+    trade_id: int,
+    state: TradeLifecycleState,
+) -> None:
+    """UPDATE trades SET lifecycle_state WHERE id PK — H-018 PK-only invariant.
+
+    T-533b1 forward-write primitive for the observable ``lifecycle_state``
+    (T-533a additive column; T-533 OQ-1=A — the legacy 4-column state
+    [``status`` / ``close_reason`` / ``position_state`` flags] stays
+    authoritative for every read/decision; this is observability-only,
+    zero behavior change). T-533b2 wires this into every post-trades-row
+    state-transition site (direct enum literal) alongside the unchanged
+    legacy write; NO caller here (foundation leaf).
+
+    UNDECORATED: an idempotent-by-construction PK-``SET``-column UPDATE —
+    verbatim-mirror sibling :func:`update_trade_close` /
+    :func:`update_trade_fees_incremental` / :func:`update_position_state_sl`
+    (the repo convention: only INSERT / place-order non-idempotent writers
+    carry ``@non_idempotent``; §N3 "every external write classified" is
+    satisfied here by the PK-SET idempotency — re-running writes the
+    identical value, retry-safe). A marker-mirror test pins
+    ``is_idempotent`` and ``is_non_idempotent`` both ``False``.
+
+    L-021 audit: ``$1`` is direct column assignment (``SET lifecycle_state
+    = $1`` — TEXT column-direct) and ``$2`` is ``WHERE id = $2`` (bigint
+    PK column-direct equality) — both L-021-safe column-direct contexts;
+    no ``::type`` cast needed; no ``$N`` in arithmetic / CASE /
+    function-arg position.
+    """
+    await conn.execute(
+        "UPDATE trades SET lifecycle_state = $1 WHERE id = $2",
+        state.value,
+        trade_id,
+    )
 
 
 async def select_order_meta_by_id(

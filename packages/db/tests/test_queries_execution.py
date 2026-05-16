@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from packages.core import TradeLifecycleState, is_idempotent, is_non_idempotent
 from packages.db.queries.execution import (
     BotRow,
     PositionStateRow,
@@ -43,6 +44,7 @@ from packages.db.queries.execution import (
     update_position_state_sl,
     update_trade_close,
     update_trade_fees_incremental,
+    update_trade_lifecycle_state,
 )
 
 _FIXED_NOW = datetime(2026, 4, 30, 12, 0, 0, tzinfo=UTC)
@@ -950,3 +952,45 @@ async def test_select_recent_open_trade_exists_returns_false_when_no_row() -> No
         since=_FIXED_NOW,
     )
     assert result is False
+
+
+# --------------------------------------------------------------------------- #
+# T-533b1 — update_trade_lifecycle_state (forward-write primitive)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_value"),
+    [
+        (TradeLifecycleState.OPEN, "open"),
+        (TradeLifecycleState.RECONCILED, "reconciled"),
+        (TradeLifecycleState.FAILED, "failed"),
+    ],
+)
+async def test_update_trade_lifecycle_state_sql_and_binds(
+    state: TradeLifecycleState,
+    expected_value: str,
+) -> None:
+    """Exact SQL string (L-008/L-021 tripwire — column-direct $1/$2, no
+    ::cast) + bind order ``(state.value, trade_id)`` matching $1,$2;
+    binds ``state.value`` (lowercase StrEnum), NOT ``state``/``state.name``.
+    """
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    await update_trade_lifecycle_state(conn, trade_id=42, state=state)
+    args = conn.execute.await_args.args
+    assert args[0] == "UPDATE trades SET lifecycle_state = $1 WHERE id = $2"
+    assert args[1] == expected_value
+    assert args[2] == 42
+    assert "::" not in args[0]  # no typecast — column-direct $1/$2 (L-021)
+
+
+def test_update_trade_lifecycle_state_marker_undecorated() -> None:
+    """UNDECORATED idempotent-by-construction PK-SET UPDATE — mirror sibling
+    update_trade_close/update_position_state_sl (markers only on
+    INSERT/place-order writers; §N3 satisfied by PK-SET idempotency).
+    Mirror T-534b1 marker-mirror pin (inverse: there True for
+    @non_idempotent, here both False for undecorated).
+    """
+    assert is_idempotent(update_trade_lifecycle_state) is False
+    assert is_non_idempotent(update_trade_lifecycle_state) is False
