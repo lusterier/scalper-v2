@@ -1885,11 +1885,26 @@ class ExchangeClient(Protocol):
         self, sub_account: str
     ) -> Decimal: ...
 
+    @idempotent
+    async def get_account_balance(
+        self, sub_account: str
+    ) -> AccountBalance: ...                       # T-530 (F5)
+
+    @idempotent
+    async def get_mark_price(self, symbol: str) -> Decimal: ...   # T-527b1 (F5)
+
+    @idempotent
+    async def get_funding_fees_window(
+        self, sub_account: str, since: datetime
+    ) -> list[FundingFee]: ...                      # T-532a (F5)
+
     async def stream_executions(self) -> AsyncIterator[ExecutionEvent]: ...
     async def stream_positions(self) -> AsyncIterator[PositionEvent]: ...
 
     async def close(self) -> None: ...
 ```
+
+_(T-521 final-docs audit 2026-05-16: the 3 F5-added reads — `get_account_balance` (T-530), `get_mark_price` (T-527b1), `get_funding_fees_window` (T-532a) — are now listed, matching the shipped `packages/exchange/protocols.py` @idempotent definitions. Deliberate scope boundary, §0.8: `get_closed_pnl_window` (T-220a, **pre-F5**) is a known pre-existing §11 omission — NOT a F5-surfaced ambiguity, so NOT absorbed by T-521 [whose mandate is "BRIEF deltas if §B/§11/§12/§13 surfaced ambiguities during F5"]; a future doc-tidy may add it. The shipped `ExchangeClient` is the authority; CI's protocol-conformance + the §20 hazard-coverage meta-test pin the real surface.)_
 
 ### 11.2 BybitV5Adapter
 
@@ -2955,6 +2970,17 @@ H-033 numbering note: companion to H-030 (open-fill remaining_qty contract) + H-
 - **Correlation ID** — string tying a signal to all downstream events.
 - **Trace ID** — per-service-request identifier for debugging.
 - **ADR** — Architecture Decision Record (see §6.3).
+- **Backtest harness** — offline historical replay of a bot (signals + OHLC) through the real strategy→execution pipeline via `ReplayBus`; persists `backtest_runs` + `backtest_trades` + a `summary` aggregate (total/WR/P&L/PF/MDD). See §12.2.
+- **ReplayBus** — in-process NATS-compatible pub/sub used only by the backtest harness (no broker); drives the same consumers as live (§12.2; T-502).
+- **Intra-candle path** — the deterministic O→extreme→extreme→C tick sequence a 1m OHLC bar is expanded into for backtest/shadow SL/TP-cross detection (§12.2; T-505).
+- **Tier sizing** — balance→tier-ladder position sizing: `select_tier(total_equity)` → score-multiplier → notional cap → qty (`sizing.method: tier`, the default). See §B.1 / ADR-0013 / T-527.
+- **Risk-per-SL sizing** — `sizing.method: risk_per_sl`: `notional = total_equity*risk_pct/sl_pct` (size so an SL hit loses exactly `risk_pct` of equity), capped, ÷mark_price. See §B.1 / ADR-0013 / T-528.
+- **Equity snapshot** — periodic per-bot account-equity time-series row (`bot_equity_snapshots`, migration 0019) from `get_account_balance()`; monitoring, NOT P&L-truth (truth = the T-220 cumulative-delta audit, ADR-0006). See §15.3 / T-531.
+- **Funding-fee tracking** — periodic poll of perpetual-funding settlements (`get_funding_fees_window` → `funding_fees`, migration 0021) + a per-sub-account cumulative `trading_events` term, H-017-clean. See §20 H-017 / T-532.
+- **Kill-switch** — a persistent risk latch (`bot_kill_switch_state`, migration 0018) that stops a bot when a loss threshold is crossed; survives restart + re-evaluates on startup (H-027). See §20 H-027 / T-525.
+- **Concurrent-trades cap** — per-bot / per-exchange-mode-realm max-open-trades gate, derive-from-trades pre-scoring. See ADR-0011 / T-524.
+- **Daily-loss-limit / Max-drawdown-stop** — latched risk gates: cumulative same-UTC-day loss ≤ −limit (T-525a2) / lifetime-peak give-back ≥ drawdown_pct (T-525b) → bot stopped. See §20 H-027 / ADR-0011.
+- **Slippage model** — the `PaperExchange` fill-price perturbation model (`fixed_pct` / `proportional_to_qty` / `half_spread`) applied to paper/backtest fills (§12.1; T-213a).
 
 ---
 
@@ -3120,6 +3146,11 @@ scoring:
         type: recent_loss_on_symbol
         window_hours: 4
 
+    # DEFERRED — the `opposite_side_open` scoring condition is NOT yet
+    # implemented (no evaluator in packages/scoring/conditions/). See §20
+    # H-005 / the T-F5+ backlog ticket. This rule is the intended design
+    # (kept for forward reference); a bot using it today would fail at
+    # config load until the condition ships (T-519 audit 2026-05-16).
     - name: block_opposite_position
       weight: -999.0                 # effectively blocks via threshold
       required: true
@@ -3128,6 +3159,13 @@ scoring:
         bot: self
 
 sizing:
+  # T-527a/T-528a (F5): `method` discriminator + `risk_pct`. Shipped
+  # SizingSection (packages/scoring/types.py) — `method:
+  # Literal["tier","risk_per_sl"] = "tier"` (backward-compat default;
+  # absent `method:` ⇒ "tier") + `risk_pct: Decimal | None` (>0,
+  # required iff method=risk_per_sl). `extra="forbid"` — an unmodelled
+  # key fails config load.
+  method: tier                       # T-527: balance→tier ladder (default)
   tiers:
     - { balance_min: 500, size: 700 }
     - { balance_min: 1000, size: 1400 }
@@ -3143,10 +3181,19 @@ sizing:
   max_notional_per_symbol:
     default: 3000
     BTCUSDT: 5000
-  tier_promotion:
-    min_trades: 10
-  tier_demotion:
-    drawdown_pct: 5.0
+  # --- T-528 risk-per-SL alternative (uncomment to use; mutually
+  # exclusive with the tier ladder above) ---
+  # method: risk_per_sl              # notional = total_equity*risk_pct/sl_pct
+  # risk_pct: 0.01                   # 1% of total_equity risked per trade
+  # DEFERRED — `tier_promotion` / `tier_demotion` are NOT modelled by the
+  # shipped SizingSection (operator OQ-2=A at T-527; `extra="forbid"`
+  # REJECTS them at config load). Kept for forward reference; tracked by
+  # the T-F5+ backlog ticket (stateful tier-adjustment layer). Do NOT
+  # include these keys in a live bot config until that ticket ships.
+  # tier_promotion:
+  #   min_trades: 10
+  # tier_demotion:
+  #   drawdown_pct: 5.0
 
 shadow:
   enabled: true
@@ -3217,6 +3264,11 @@ features:
     params_schema: plugins.features.oi_squeeze:ParamsSchema
 
 rules:
+  # DEFERRED — entry_point `packages.scoring.rules.opposite_side:
+  # OppositeSideOpenRule` is NOT yet implemented (T-519 audit 2026-05-16
+  # code-verified non-existent; no packages/scoring/rules/opposite_side.py).
+  # See §20 H-005 / the T-F5+ backlog ticket. Kept for forward reference;
+  # registering this entry today would fail at registry load.
   - name: opposite_side_open
     entry_point: packages.scoring.rules.opposite_side:OppositeSideOpenRule
   - name: recent_loss_on_symbol
