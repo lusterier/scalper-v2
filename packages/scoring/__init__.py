@@ -22,6 +22,7 @@ from .types import (
     ScoringResult,
     ScoringRule,
     SignalsSection,
+    SizingSection,
 )
 from .yaml_loader import load_bot_config, load_bot_config_from_string, parse_condition
 
@@ -41,6 +42,7 @@ __all__ = [
     "ScoringResult",
     "ScoringRule",
     "SignalsSection",
+    "SizingSection",
     "evaluate",
     "load_bot_config",
     "load_bot_config_from_string",

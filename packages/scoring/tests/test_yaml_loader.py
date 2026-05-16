@@ -414,14 +414,18 @@ scoring:
 
 
 def test_b1_remaining_unmodeled_extras_ignored_via_extra_ignore(tmp_path: Path) -> None:
-    """§B.1 unmodeled top-level keys (display_name/created_at/status/trading.primary_interval/
-    sizing) parse without error — T-308 WG#5 + T-310a defense-in-depth.
+    """§B.1 unmodeled top-level keys (display_name/created_at/status/
+    trading.primary_interval) parse without error — T-308 WG#5 + T-310a
+    defense-in-depth.
 
     T-310a lands ``exchange:``/``signals:``/``execution:`` as first-class BotConfig fields;
     T-514 promotes ``shadow:`` to a modeled :class:`ShadowConfig` field — `shadow.enabled=true`
     now requires non-empty `variants` per ShadowConfig validator. This test uses
     `shadow.enabled: false` to exercise BotConfig parsing path with shadow modeled but
-    not requiring variants.
+    not requiring variants. T-527a promotes ``sizing:`` to a modeled
+    :class:`SizingSection` field (so it is no longer an unmodeled-extra here —
+    a present ``sizing:`` block is now validated; covered by the dedicated
+    T-527a sizing tests below).
     """
     yaml_text = """\
 bot_id: alpha
@@ -431,9 +435,6 @@ status: active
 trading:
   universe: [BTCUSDT, ETHUSDT]
   primary_interval: 15m
-sizing:
-  tiers:
-    - { balance_min: 500, size: 700 }
 shadow:
   enabled: false
 scoring:
@@ -1129,3 +1130,78 @@ def test_yaml_loader_max_drawdown_missing_defaults_zero_decimal() -> None:
     yaml_txt = _T514_BASE_YAML + "\nrisk:\n  cooldown_after_loss_minutes: 5\n"
     cfg = load_bot_config_from_string(yaml_txt)
     assert cfg.risk.max_drawdown_pct == _Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# T-527a ``sizing:`` block extraction (§B.1 config foundation)
+# ---------------------------------------------------------------------------
+
+_SIZING_YAML = (
+    "\nsizing:\n"
+    "  tiers:\n"
+    "  - {balance_min: 500, size: 700}\n"
+    "  - {balance_min: 1000, size: 1400}\n"
+    "  score_multipliers:\n"
+    '    "4": 0.1\n'
+    '    "9": 1.5\n'
+    "  max_notional_per_symbol:\n"
+    "    default: 3000\n"
+    "    BTCUSDT: 5000\n"
+)
+
+
+def test_yaml_loader_missing_sizing_block_yields_none() -> None:
+    """Backward-compat: YAML without sizing: block → bot.sizing is None (static qty path)."""
+    cfg = load_bot_config_from_string(_T514_BASE_YAML)
+    assert cfg.sizing is None
+    # No regression on the static qty path.
+    assert cfg.execution.qty == Decimal("0.001")
+
+
+def test_yaml_loader_empty_sizing_block_yields_none() -> None:
+    """`sizing:` present but empty (None spec) → None (mirror _parse_shadow)."""
+    cfg = load_bot_config_from_string(_T514_BASE_YAML + "\nsizing:\n")
+    assert cfg.sizing is None
+
+
+def test_yaml_loader_sizing_block_extracted_with_exact_decimals() -> None:
+    """`sizing:` parses through; float YAML → exact Decimal via Decimal(str(v))
+    (no binary-float artefact, §5.13/§N1 — mirror the qty:0.001 WG#4 pin); keys stay str."""
+    cfg = load_bot_config_from_string(_T514_BASE_YAML + _SIZING_YAML)
+    assert cfg.sizing is not None
+    assert [(t.balance_min, t.size) for t in cfg.sizing.tiers] == [
+        (Decimal("500"), Decimal("700")),
+        (Decimal("1000"), Decimal("1400")),
+    ]
+    # Float-artefact pin: YAML 0.1 → exact Decimal("0.1") via Decimal(str(v));
+    # a binary-float artefact would stringify as 0.10000000000000000555…
+    assert cfg.sizing.score_multipliers["4"] == Decimal("0.1")
+    assert str(cfg.sizing.score_multipliers["4"]) == "0.1"
+    assert isinstance(cfg.sizing.score_multipliers["4"], Decimal)
+    # Keys stay str (NOT coerced).
+    assert set(cfg.sizing.score_multipliers) == {"4", "9"}
+    assert cfg.sizing.max_notional_per_symbol["default"] == Decimal("3000")
+    assert cfg.sizing.max_notional_per_symbol["BTCUSDT"] == Decimal("5000")
+
+
+def test_yaml_loader_sizing_block_rejects_typo_key() -> None:
+    """`extra='forbid'` on SizingSection catches operator typos at YAML load."""
+    typo = _T514_BASE_YAML + (
+        "\nsizing:\n"
+        "  tiers:\n"
+        "  - {balance_min: 500, size: 700}\n"
+        '  score_multipliers: {"4": 1.0}\n'
+        "  max_notional_per_symbol: {default: 3000}\n"
+        "  tierss:\n"
+        "  - {balance_min: 9000, size: 1}\n"
+    )
+    with pytest.raises(ValidationError):
+        load_bot_config_from_string(typo)
+
+
+def test_yaml_loader_sizing_rejects_deferred_tier_promotion() -> None:
+    """OQ-2=A: a YAML `sizing.tier_promotion:` is rejected by SizingSection
+    extra='forbid' (pins the deferral at the loader path, not silently dropped)."""
+    with_promo = _T514_BASE_YAML + _SIZING_YAML + "  tier_promotion:\n    min_trades: 10\n"
+    with pytest.raises(ValidationError):
+        load_bot_config_from_string(with_promo)

@@ -265,3 +265,52 @@ def test_order_request_carries_shadow_variants_round_trip() -> None:
     assert rebuilt.shadow_variants[0].name == "aggressive"
     assert rebuilt.shadow_variants[0].overrides["be_trigger"] == Decimal("0.003")
     assert rebuilt.shadow_max_duration_hours == Decimal("4.0")
+
+
+# ---------------------------------------------------------------------------
+# T-527a — OrderRequest.score additive field (carried producer→wire for T-527b)
+# ---------------------------------------------------------------------------
+
+
+def _base_order_kwargs() -> dict[str, object]:
+    return {
+        "bot_id": "alpha",
+        "signal_id": 42,
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "qty": Decimal("0.001"),
+        "leverage": 10,
+        "sl_pct": Decimal("0.005"),
+        "tp_pct": Decimal("0.015"),
+        "tp_qty_pct": Decimal("0.5"),
+        "be_trigger": Decimal("0.003"),
+        "be_sl_level": Decimal("0.001"),
+        "trail_pct": Decimal("0.002"),
+        "exchange_mode": "live",
+    }
+
+
+def test_order_request_default_score_is_none() -> None:
+    """Bare ctor without score → score is None; schema_version stays '1.0' (additive)."""
+    request = OrderRequest(**_base_order_kwargs())  # type: ignore[arg-type]
+    assert request.score is None
+    assert request.schema_version == "1.0"
+
+
+def test_order_request_score_round_trips() -> None:
+    """Explicit float score survives model_dump(mode='json') → model_validate."""
+    request = OrderRequest(**_base_order_kwargs(), score=6.5)  # type: ignore[arg-type]
+    rebuilt = OrderRequest.model_validate(request.model_dump(mode="json"))
+    assert rebuilt.score == 6.5
+    assert isinstance(rebuilt.score, float)
+
+
+def test_order_request_backward_compat_payload_without_score() -> None:
+    """WG#4: an OrderRequest payload dict OMITTING `score` (old producer) still
+    validates → score is None, schema_version '1.0' (no extra='forbid')."""
+    legacy_payload = _base_order_kwargs()
+    legacy_payload["qty"] = "0.001"  # JSON-wire form (str Decimal)
+    assert "score" not in legacy_payload
+    rebuilt = OrderRequest.model_validate(legacy_payload)
+    assert rebuilt.score is None
+    assert rebuilt.schema_version == "1.0"

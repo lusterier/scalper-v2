@@ -263,6 +263,27 @@ async def test_decision_execute_publishes_order_request_with_full_field_mapping(
     assert request.exchange_mode == "paper"
 
 
+async def test_order_request_threads_score_and_leaves_qty_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-527a (WG#4 / L-017 both-sides): the published OrderRequest carries
+    score == ScoringResult.total_score AND qty is byte-unchanged
+    (bot_config.execution.qty) — score threaded, ZERO behavior change."""
+    signal = _signal(action="LONG")
+    handler, caps = _build_handler(
+        evaluate_result=_scoring_result(decision="execute", total_score=6.5),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(signal))
+    caps["bus"].publish.assert_awaited_once()
+    _subject, env = caps["bus"].publish.await_args.args
+    request = OrderRequest.model_validate(env.payload)
+    # Score threaded producer→wire (T-527a; consumed only by T-527b).
+    assert request.score == 6.5
+    # qty selection byte-unchanged — still bot_config.execution.qty.
+    assert request.qty == Decimal("0.001")
+
+
 async def test_decision_passthrough_publishes_order_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -58,6 +58,8 @@ from .types import (
     ShadowConfig,
     ShadowVariant,
     SignalsSection,
+    SizingSection,
+    SizingTier,
 )
 
 if TYPE_CHECKING:
@@ -432,6 +434,59 @@ def _parse_risk(spec: dict[str, Any] | None) -> RiskSection:
     return RiskSection(**coerced)
 
 
+def _parse_sizing(spec: dict[str, Any] | None) -> SizingSection | None:
+    """Parse ``sizing:`` YAML block per BRIEF §B.1; return ``None`` if absent.
+
+    Absent / empty dict → ``None`` (backward-compat: a bot with no ``sizing:``
+    block → ``BotConfig.sizing=None`` → T-527b leaves the static
+    ``execution.qty`` path byte-unchanged; T-527a has no consumer). A PRESENT
+    block is an explicit operator intent to tier-size and must be well-formed
+    (the :class:`SizingSection` / :class:`SizingTier` Pydantic validators
+    enforce structure: non-empty + strictly-ascending tiers + ``default`` cap
+    key + digit-string multiplier keys; missing required field → loud
+    pydantic error, NOT a silent fall-back to static qty).
+
+    **Plan-vs-reality (T-536/T-533a tooling-correction class, L-018)**: the
+    T-527a plan said "mirror :func:`_parse_shadow`". `_parse_shadow` reads
+    keys explicitly and never ``**spec``-splats, so an unknown ``shadow:``
+    key is *silently dropped* (latent gap there). For ``sizing`` that is a
+    capital-safety hazard: the operator OQ-2=A-DEFERRED ``tier_promotion`` /
+    ``tier_demotion`` (§B.1 alpha.yaml 3146-3149), or any typo, must be
+    *loudly rejected* at YAML load — silently ignoring a ``tier_promotion:``
+    the operator wrote (believing promotion is configured) is exactly the
+    failure WG#2's "extra='forbid' rejects them at YAML load" guards against.
+    So this mirrors :func:`_parse_risk`'s ``RiskSection(**coerced)`` splat
+    instead (preserve every key → :class:`SizingSection` ``extra="forbid"``
+    catches unknowns), adapted for the nested coercion the flat ``risk:``
+    block does not need. Decimal coercion via :func:`_to_decimal`
+    (``Decimal(str(v))`` — no binary-float artefact, §5.13 / §N1) on every
+    tier ``balance_min``/``size`` + each ``score_multipliers`` value + each
+    ``max_notional_per_symbol`` value; their KEYS stay ``str`` (not coerced);
+    unknown top-level ``sizing:`` keys flow through untouched → rejected.
+    """
+    if not spec:
+        return None
+    coerced: dict[str, Any] = dict(spec)  # preserve unknowns → extra="forbid" (OQ-2=A / typos)
+    if "tiers" in coerced:
+        coerced["tiers"] = [
+            SizingTier(
+                balance_min=_to_decimal(t.get("balance_min")),
+                size=_to_decimal(t.get("size")),
+            )
+            for t in (coerced["tiers"] or [])
+            if isinstance(t, dict)
+        ]
+    if "score_multipliers" in coerced:
+        coerced["score_multipliers"] = {
+            k: _to_decimal(v) for k, v in (coerced["score_multipliers"] or {}).items()
+        }
+    if "max_notional_per_symbol" in coerced:
+        coerced["max_notional_per_symbol"] = {
+            k: _to_decimal(v) for k, v in (coerced["max_notional_per_symbol"] or {}).items()
+        }
+    return SizingSection(**coerced)
+
+
 def load_bot_config_from_string(
     yaml_text: str,
     *,
@@ -476,6 +531,7 @@ def load_bot_config_from_string(
         scoring=scoring,
         shadow=_parse_shadow(data.get("shadow")),
         risk=_parse_risk(data.get("risk")),
+        sizing=_parse_sizing(data.get("sizing")),
     )
 
 

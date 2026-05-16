@@ -78,10 +78,10 @@ class OrderRequest(BaseModel):
     """§8.4 line 1319 ``orders.requests.<bot_id>`` payload, frozen.
 
     ``schema_version`` stays ``"1.0"`` despite T-511b2 additive
-    ``shadow_variants`` + ``shadow_max_duration_hours`` fields — defaults
-    are present, no ``extra="forbid"`` on this model so old payloads still
-    validate. Future breaking changes (rename / type narrow / required
-    field) bump to ``"2.0"``.
+    ``shadow_variants`` + ``shadow_max_duration_hours`` fields and the T-527a
+    additive ``score`` field — defaults are present, no ``extra="forbid"`` on
+    this model so old payloads still validate. Future breaking changes
+    (rename / type narrow / required field) bump to ``"2.0"``.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -109,6 +109,13 @@ class OrderRequest(BaseModel):
     # max_duration_hours from VariantSpec.overrides remains the active
     # ceiling source at shadow_worker.py:171.
     shadow_max_duration_hours: Decimal | None = None
+    # T-527a: scoring score threaded from strategy-engine producer (reads
+    # ScoringResult.total_score) for T-527b §B.1 score_multipliers sizing.
+    # float (dimensionless scoring metric, mirrors ScoringConfig.trigger_
+    # threshold: float — §5.13 Decimal is money/price/qty only, not the score).
+    # None default + no extra="forbid" → old payloads validate (schema_version
+    # stays "1.0"). Carried producer→wire in T-527a; UNCONSUMED until T-527b.
+    score: float | None = None
 
 
 class OrderEventBase(BaseModel):

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal  # runtime: RiskSection.daily_loss_limit_usd=Decimal("0") (T-525a1)
+from itertools import pairwise
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -39,6 +40,8 @@ __all__ = [
     "ShadowConfig",
     "ShadowVariant",
     "SignalsSection",
+    "SizingSection",
+    "SizingTier",
 ]
 
 
@@ -187,14 +190,17 @@ class ExecutionSection(BaseModel):
     2934-2944) does NOT have ``qty:`` in the ``execution:`` block; brief
     §B.1 ships a separate ``sizing:`` block (lines 3006-3025) with tier-
     based balance sizing. T-310a deliberately simplifies to per-bot fixed
-    ``qty: Decimal``; F4+ task replaces with risk-based sizing reading
-    ``sizing.*`` block (currently absorbed by ``BotConfig.extra="ignore"``).
+    ``qty: Decimal``; T-527 reifies the §B.1 ``sizing:`` block as
+    :class:`SizingSection` (T-527a config foundation; T-527b computes ``qty``
+    from it). ``qty`` stays the static fallback when a bot has no ``sizing:``
+    block (``BotConfig.sizing is None``).
     """
 
     model_config = ConfigDict(frozen=True, strict=True)
 
-    # T-310a OQ-4 Path A 2026-05-02: per-bot fixed qty v1; §B.1 sizing:
-    # block (lines 3006-3025) deferred to F4+.
+    # T-310a OQ-4 Path A 2026-05-02: per-bot fixed qty v1. §B.1 sizing:
+    # block reified by T-527 (SizingSection); qty = static fallback when
+    # BotConfig.sizing is None.
     qty: Decimal
     leverage: int
     sl_pct: Decimal
@@ -297,6 +303,74 @@ class ShadowConfig(BaseModel):
         return self
 
 
+class SizingTier(BaseModel):
+    """One rung of the §B.1 ``sizing.tiers`` balance ladder (T-527a).
+
+    ``balance_min`` / ``size`` are both **USD notional** (operator OQ-3=A —
+    T-527b computes ``qty = size ÷ reference_price``). §B.1 example
+    ``{ balance_min: 500, size: 700 }`` (BRIEF §22 alpha.yaml lines 3132-3135).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    balance_min: Decimal = Field(..., ge=0)
+    size: Decimal = Field(..., ge=0)
+
+
+class SizingSection(BaseModel):
+    """§B.1 ``sizing:`` block — per-bot tier-ladder position sizing (T-527a).
+
+    Reifies the BRIEF-deferred §B.1 ``sizing:`` block (BRIEF §22 Appendix B,
+    alpha.yaml lines 3130-3145): a balance→tier ladder, score multipliers, and
+    per-symbol notional caps. T-527a is the **config foundation only** — no
+    consumer; the balance→tier→multiplier→cap→qty compute is T-527b.
+
+    ``tier_promotion`` / ``tier_demotion`` (alpha.yaml lines 3146-3149) are
+    DELIBERATELY NOT modeled here — operator OQ-2=A deferred them to a separate
+    later task (under-specified stateful tier-adjustment layer). They stay
+    absorbed by ``BotConfig.extra="ignore"`` exactly as the whole ``sizing``
+    block is today, until that backlog task (mirror the ``BotConfig`` docstring
+    note that ``shadow`` was extra-absorbed pre-T-514). ``extra="forbid"`` here
+    means a stray ``tier_promotion:`` / typo raises at YAML load.
+
+    ``extra="forbid"`` rationale matches :class:`RiskSection` /
+    :class:`ShadowConfig` — net-new feature rejects operator typos at load.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tiers: list[SizingTier]
+    score_multipliers: dict[str, Decimal]
+    max_notional_per_symbol: dict[str, Decimal]
+
+    @model_validator(mode="after")
+    def _structural_guards(self) -> SizingSection:
+        if not self.tiers:
+            msg = "sizing.tiers must be non-empty (at least 1 balance tier)"
+            raise ValueError(msg)
+        mins = [t.balance_min for t in self.tiers]
+        if any(b <= a for a, b in pairwise(mins)):
+            msg = (
+                f"sizing.tiers must be strictly ascending by balance_min; "
+                f"got {[str(m) for m in mins]}"
+            )
+            raise ValueError(msg)
+        if "default" not in self.max_notional_per_symbol:
+            msg = (
+                f"sizing.max_notional_per_symbol must contain a 'default' key; "
+                f"got keys {sorted(self.max_notional_per_symbol)}"
+            )
+            raise ValueError(msg)
+        non_digit = sorted(k for k in self.score_multipliers if not k.isdigit())
+        if non_digit:
+            msg = (
+                f"sizing.score_multipliers keys must be digit-strings "
+                f"(score buckets, e.g. '4'..'9'); got non-digit keys {non_digit}"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class RiskSection(BaseModel):
     """§B.1 ``risk:`` block — per-bot risk-management knobs (T-526 + T-524).
 
@@ -353,9 +427,12 @@ class BotConfig(BaseModel):
     ``extra="ignore"`` is defense-in-depth per T-308 WG#5 + T-310a: the
     yaml_loader extracts specific kwargs (no ``**data`` splat into ``BotConfig(...)``),
     so unmodeled top-level keys (``display_name``, ``created_at``, ``status``,
-    ``trading.primary_interval``, ``sizing``) never reach the ctor in the
-    loader path. (``shadow`` was on this list pre-T-514; T-514 promotes it to
-    a fully-modeled :class:`ShadowConfig` field per BRIEF §13.2.)
+    ``trading.primary_interval``) never reach the ctor in the loader path.
+    (``shadow`` was on this list pre-T-514; T-514 promotes it to a fully-
+    modeled :class:`ShadowConfig` field per BRIEF §13.2. ``sizing`` was on
+    this list pre-T-527a; T-527a promotes it to a :class:`SizingSection`
+    field — except ``sizing.tier_promotion``/``tier_demotion`` which remain
+    extra-absorbed, OQ-2=A deferred to a later task.)
     ``extra="ignore"`` defends against alternative caller paths (e.g.
     analytics-api inspector) that might construct BotConfig via ``**raw_dict``.
     Not a workaround — a hardening layer.
@@ -372,6 +449,12 @@ class BotConfig(BaseModel):
     scoring: ScoringConfig
     shadow: ShadowConfig | None = None
     risk: RiskSection = Field(default_factory=RiskSection)
+    # T-527a: §B.1 sizing block. Optional-sentinel (mirror `shadow`, NOT
+    # `risk`'s default_factory): None = no tier sizing → T-527b leaves the
+    # static `execution.qty` path byte-unchanged (a defaulted empty-tiers
+    # section is invalid by SizingSection's non-empty validator anyway). T-528
+    # later adds a `sizing.method` discriminator; T-527 is the `tiers` method.
+    sizing: SizingSection | None = None
 
     @field_validator("bot_id")
     @classmethod

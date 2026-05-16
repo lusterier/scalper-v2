@@ -346,6 +346,7 @@ def make_signal_handler(
                 bot_config=bot_config,
                 signal=signal,
                 signal_id=signal_id,
+                score=result.total_score,
                 envelope=envelope,
                 bus=bus,
                 audit_logger=audit_logger,
@@ -397,12 +398,18 @@ async def _publish_order_request(
     bot_config: BotConfig,
     signal: SignalValidated,
     signal_id: int,
+    score: float,
     envelope: MessageEnvelope,
     bus: BusProtocol,
     audit_logger: BoundLogger,
     system_logger: BoundLogger,
 ) -> None:
-    """Build OrderRequest from BotConfig.execution + signal; publish to orders.requests.<bot_id>."""
+    """Build OrderRequest from BotConfig.execution + signal; publish to orders.requests.<bot_id>.
+
+    T-527a: threads the scoring ``score`` (``ScoringResult.total_score``) onto
+    OrderRequest for T-527b §B.1 sizing; UNCONSUMED in T-527a (``qty`` is still
+    ``bot_config.execution.qty`` — zero behavior change).
+    """
     side = _ACTION_TO_SIDE[signal.action]
     # T-511b2 / ADR-0010: populate shadow runtime config when bot_config.shadow
     # is enabled. Maps ShadowVariant (packages.scoring.types) → VariantSpec
@@ -436,6 +443,7 @@ async def _publish_order_request(
         exchange_mode=bot_config.exchange.mode,
         shadow_variants=shadow_variants_payload,
         shadow_max_duration_hours=shadow_max_duration_hours,
+        score=score,
     )
     out_envelope = MessageEnvelope(
         correlation_id=CorrelationId(envelope.correlation_id),

@@ -21,7 +21,9 @@ from packages.scoring import (
     ScoringResult,
     ScoringRule,
     SignalsSection,
+    SizingSection,
 )
+from packages.scoring.types import SizingTier
 
 _DEFAULT_EXCHANGE = ExchangeSection(
     mode="paper",
@@ -569,3 +571,108 @@ def test_risk_section_all_four_task_knobs_coexist() -> None:
     assert rs.max_drawdown_pct == Decimal("0.30")
     with pytest.raises(ValidationError):
         RiskSection(max_drawdown_ptc=Decimal("0.2"))  # type: ignore[call-arg]  # typo: ptc≠pct
+
+
+# ---------------------------------------------------------------------------
+# SizingSection / SizingTier (T-527a — §B.1 sizing config foundation)
+# ---------------------------------------------------------------------------
+
+
+def _valid_sizing() -> SizingSection:
+    """Representative §B.1 alpha.yaml sizing block (BRIEF §22 lines 3130-3145)."""
+    return SizingSection(
+        tiers=[
+            SizingTier(balance_min=Decimal("500"), size=Decimal("700")),
+            SizingTier(balance_min=Decimal("1000"), size=Decimal("1400")),
+            SizingTier(balance_min=Decimal("2000"), size=Decimal("2100")),
+        ],
+        score_multipliers={"4": Decimal("0.75"), "5": Decimal("1.0"), "9": Decimal("1.5")},
+        max_notional_per_symbol={"default": Decimal("3000"), "BTCUSDT": Decimal("5000")},
+    )
+
+
+def test_sizing_section_valid_construction() -> None:
+    sec = _valid_sizing()
+    assert len(sec.tiers) == 3
+    assert sec.tiers[0].balance_min == Decimal("500")
+    assert sec.score_multipliers["9"] == Decimal("1.5")
+    assert sec.max_notional_per_symbol["default"] == Decimal("3000")
+
+
+def test_sizing_models_are_frozen() -> None:
+    """SizingTier + SizingSection reject mutation (§5.3 immutability)."""
+    sec = _valid_sizing()
+    with pytest.raises(ValidationError):
+        setattr(sec.tiers[0], "balance_min", Decimal("1"))
+    with pytest.raises(ValidationError):
+        setattr(sec, "score_multipliers", {})
+
+
+def test_sizing_tier_rejects_negative() -> None:
+    """SizingTier balance_min/size are Field(ge=0)."""
+    with pytest.raises(ValidationError):
+        SizingTier(balance_min=Decimal("-1"), size=Decimal("700"))
+    with pytest.raises(ValidationError):
+        SizingTier(balance_min=Decimal("500"), size=Decimal("-1"))
+
+
+def test_sizing_section_rejects_empty_tiers() -> None:
+    with pytest.raises(ValidationError, match="non-empty"):
+        SizingSection(
+            tiers=[],
+            score_multipliers={"4": Decimal("1")},
+            max_notional_per_symbol={"default": Decimal("3000")},
+        )
+
+
+def test_sizing_section_rejects_non_ascending_tiers() -> None:
+    """balance_min must be strictly ascending (well-defined lowest tier / scan)."""
+    with pytest.raises(ValidationError, match="strictly ascending"):
+        SizingSection(
+            tiers=[
+                SizingTier(balance_min=Decimal("1000"), size=Decimal("1400")),
+                SizingTier(balance_min=Decimal("500"), size=Decimal("700")),
+            ],
+            score_multipliers={"4": Decimal("1")},
+            max_notional_per_symbol={"default": Decimal("3000")},
+        )
+    # equal balance_min is also non-strict → rejected
+    with pytest.raises(ValidationError, match="strictly ascending"):
+        SizingSection(
+            tiers=[
+                SizingTier(balance_min=Decimal("500"), size=Decimal("700")),
+                SizingTier(balance_min=Decimal("500"), size=Decimal("800")),
+            ],
+            score_multipliers={"4": Decimal("1")},
+            max_notional_per_symbol={"default": Decimal("3000")},
+        )
+
+
+def test_sizing_section_rejects_missing_default_cap() -> None:
+    with pytest.raises(ValidationError, match="default"):
+        SizingSection(
+            tiers=[SizingTier(balance_min=Decimal("500"), size=Decimal("700"))],
+            score_multipliers={"4": Decimal("1")},
+            max_notional_per_symbol={"BTCUSDT": Decimal("5000")},
+        )
+
+
+def test_sizing_section_rejects_non_digit_multiplier_key() -> None:
+    with pytest.raises(ValidationError, match="digit-string"):
+        SizingSection(
+            tiers=[SizingTier(balance_min=Decimal("500"), size=Decimal("700"))],
+            score_multipliers={"high": Decimal("1.5")},
+            max_notional_per_symbol={"default": Decimal("3000")},
+        )
+
+
+def test_sizing_section_rejects_deferred_tier_promotion_key() -> None:
+    """OQ-2=A: tier_promotion/tier_demotion deliberately NOT modeled →
+    extra='forbid' rejects a stray block (pins the deferral at the schema)."""
+    with pytest.raises(ValidationError):
+        SizingSection(
+            tiers=[SizingTier(balance_min=Decimal("500"), size=Decimal("700"))],
+            score_multipliers={"4": Decimal("1")},
+            max_notional_per_symbol={"default": Decimal("3000")},
+            tier_promotion={"min_trades": 10},  # type: ignore[call-arg]
+        )
