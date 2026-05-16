@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     # T-531 — equity snapshot tick (§15.3 virtual_balance; §N9/L-001; ADR-0007 D7).
     execution_equity_snapshot_interval_seconds: int = 300
 
+    # T-534b2 — SL watchdog tick (H-028; §N9/L-001; ADR-0007 D7; ADR-0011 SL/TP cluster).
+    execution_sl_watchdog_tick_interval_seconds: int = 300
+    execution_sl_watchdog_missing_threshold_ticks: int = 3
+
     # T-221 — post-restart reconciliation race-window (H-026 spec literal 60s).
     execution_reconcile_race_window_seconds: int = 60
 

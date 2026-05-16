@@ -729,9 +729,10 @@ def test_daily_report_runs_at_configured_utc_time(
     monkeypatch: object,
 ) -> None:
     """H-021 verbatim test name (per ADR-0007 D6) — scheduler.add_job invoked
-    twice (id='pnl_audit' T-220b + id='equity_snapshot' T-531), each
-    trigger='interval', seconds=its Settings interval, misfire_grace_time=120,
-    and NO timezone= kwarg (UTC enforced at scheduler ctor only per ADR-0007 D2).
+    thrice (id='pnl_audit' T-220b + id='equity_snapshot' T-531 + id='sl_watchdog'
+    T-534b2), each trigger='interval', seconds=its Settings interval,
+    misfire_grace_time=120, and NO timezone= kwarg (UTC enforced at scheduler
+    ctor only per ADR-0007 D2).
     """
     from unittest.mock import AsyncMock as _AsyncMock
     from unittest.mock import MagicMock as _MagicMock
@@ -778,11 +779,12 @@ def test_daily_report_runs_at_configured_utc_time(
     app = create_app(settings=settings)  # type: ignore[arg-type]
     with TestClient(app):
         pass
-    # T-531 added a 2nd scheduled job — filter by id (L-015 generalized to
-    # unit test: this assertion was `== 1` + `[0]` pre-T-531).
-    assert len(captured_add_job_kwargs) == 2
+    # T-531 added a 2nd scheduled job + T-534b2 a 3rd — filter by id (L-015
+    # generalized to unit test: this was `== 1` + `[0]` pre-T-531, `== 2`
+    # pre-T-534b2).
+    assert len(captured_add_job_kwargs) == 3
     by_id = {k["id"]: k for k in captured_add_job_kwargs}
-    assert set(by_id) == {"pnl_audit", "equity_snapshot"}
+    assert set(by_id) == {"pnl_audit", "equity_snapshot", "sl_watchdog"}
 
     audit_kwargs = by_id["pnl_audit"]
     assert audit_kwargs["trigger"] == "interval"
@@ -796,6 +798,12 @@ def test_daily_report_runs_at_configured_utc_time(
     assert equity_kwargs["seconds"] == settings.execution_equity_snapshot_interval_seconds  # type: ignore[attr-defined]
     assert equity_kwargs["misfire_grace_time"] == 120
     assert "timezone" not in equity_kwargs
+
+    sl_watchdog_kwargs = by_id["sl_watchdog"]
+    assert sl_watchdog_kwargs["trigger"] == "interval"
+    assert sl_watchdog_kwargs["seconds"] == settings.execution_sl_watchdog_tick_interval_seconds  # type: ignore[attr-defined]
+    assert sl_watchdog_kwargs["misfire_grace_time"] == 120
+    assert "timezone" not in sl_watchdog_kwargs
 
 
 def test_lifespan_shutdown_calls_scheduler_shutdown_wait_true_before_adapter_close(

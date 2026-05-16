@@ -105,6 +105,7 @@ from .shadow_rejected_replay import resume_active_observations_on_startup
 from .shadow_rejected_worker import ShadowRejectedWorker
 from .shadow_replay import resume_active_variants_on_startup
 from .shadow_worker import ShadowWorker
+from .sl_watchdog import run_sl_watchdog_tick
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -386,6 +387,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             id="equity_snapshot",
             misfire_grace_time=120,
         )
+
+        # T-534b2 — SL watchdog (H-028). In-memory consecutive (bot,symbol)
+        # miss-counter is lifespan-owned (§N6 — no global; DI into the
+        # closure, on app.state for test introspection mirror exec_metrics).
+        sl_miss_counters: dict[tuple[str, str], int] = {}
+
+        async def _sl_watchdog_job() -> None:
+            sl_watchdog_logger = logger.bind(component="sl_watchdog")
+            await run_sl_watchdog_tick(
+                pool=pool,
+                # adapter_pool.adapters is already dict[BotId, ExchangeClient]
+                # (pool.py:102) → no L-023 cast / no `# type: ignore` needed
+                # here (contrast _equity_snapshot_job, whose
+                # sub_account_to_adapter: dict[str, object] forced the cast).
+                adapters=adapter_pool.adapters,
+                paper_bot_ids=adapter_pool.paper_bot_ids,
+                bus=bus,
+                sl_miss_counters=sl_miss_counters,
+                missing_threshold_ticks=settings.execution_sl_watchdog_missing_threshold_ticks,
+                bound_logger=sl_watchdog_logger,
+                now_fn=lambda: datetime.now(UTC),
+            )
+
+        scheduler.add_job(
+            _sl_watchdog_job,
+            trigger="interval",
+            seconds=settings.execution_sl_watchdog_tick_interval_seconds,
+            id="sl_watchdog",
+            misfire_grace_time=120,
+        )
         scheduler.start()
 
         # 8. State attach.
@@ -400,6 +431,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.closed_pnl_locks = closed_pnl_locks
         app.state.scheduler = scheduler
         app.state.exec_metrics = exec_metrics
+        app.state.sl_miss_counters = sl_miss_counters
         app.state.shadow_worker = shadow_worker
         app.state.shadow_rejected_worker = shadow_rejected_worker
 
