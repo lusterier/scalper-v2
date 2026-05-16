@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     execution_sl_watchdog_tick_interval_seconds: int = 300
     execution_sl_watchdog_missing_threshold_ticks: int = 3
 
+    # T-536 — trailing SL audit tick (drift detection; §N9/L-001; ADR-0007 D7).
+    execution_trail_audit_tick_interval_seconds: int = 300
+    execution_trail_audit_drift_tolerance_pct: Decimal = Decimal("0.001")
+
     # T-221 — post-restart reconciliation race-window (H-026 spec literal 60s).
     execution_reconcile_race_window_seconds: int = 60
 

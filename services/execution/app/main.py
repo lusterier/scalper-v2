@@ -106,6 +106,7 @@ from .shadow_rejected_worker import ShadowRejectedWorker
 from .shadow_replay import resume_active_variants_on_startup
 from .shadow_worker import ShadowWorker
 from .sl_watchdog import run_sl_watchdog_tick
+from .trail_audit import run_trail_audit_tick
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -415,6 +416,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             trigger="interval",
             seconds=settings.execution_sl_watchdog_tick_interval_seconds,
             id="sl_watchdog",
+            misfire_grace_time=120,
+        )
+
+        # T-536 — trailing SL audit (drift detection). Stateless emit-only
+        # (no counter, no bus, no app.state — contrast _sl_watchdog_job);
+        # adapter_pool.adapters already dict[BotId, ExchangeClient] → no cast.
+        async def _trail_audit_job() -> None:
+            trail_audit_logger = logger.bind(component="trail_audit")
+            await run_trail_audit_tick(
+                pool=pool,
+                adapters=adapter_pool.adapters,
+                paper_bot_ids=adapter_pool.paper_bot_ids,
+                drift_tolerance_pct=settings.execution_trail_audit_drift_tolerance_pct,
+                bound_logger=trail_audit_logger,
+                now_fn=lambda: datetime.now(UTC),
+            )
+
+        scheduler.add_job(
+            _trail_audit_job,
+            trigger="interval",
+            seconds=settings.execution_trail_audit_tick_interval_seconds,
+            id="trail_audit",
             misfire_grace_time=120,
         )
         scheduler.start()
