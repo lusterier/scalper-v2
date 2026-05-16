@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from packages.bus import MessageEnvelope
 from packages.bus.schemas.orders import OrderRequest
-from packages.core import BotId, is_idempotent, is_non_idempotent
+from packages.core import BotId, TradeLifecycleState, is_idempotent, is_non_idempotent
 from packages.db.queries.execution import PositionStateRow
 from packages.exchange.errors import UnknownState
 from packages.exchange.types import OrderPlaceResult
@@ -402,6 +402,12 @@ async def test_emergency_close_persists_open_orders_status_emergency_closed_per_
         "services.execution.app.placement_persist.insert_trading_event",
         _capture_insert_trading_event,
     )
+    # T-533b2 sites #2/#3: guard the bare-MagicMock conn (real helper would
+    # await conn.execute). Sequence asserted in the dedicated test below.
+    monkeypatch.setattr(
+        "services.execution.app.placement_persist.update_trade_lifecycle_state",
+        AsyncMock(return_value=None),
+    )
 
     pool = MagicMock()
     conn = MagicMock()
@@ -442,6 +448,74 @@ async def test_emergency_close_persists_open_orders_status_emergency_closed_per_
     assert update_trade_close_calls[0]["close_reason"] == "emergency"
     assert update_trade_close_calls[0]["realized_pnl"] == Decimal("0")
     assert update_trade_close_calls[0]["fees_paid"] == Decimal("0")
+
+
+async def test_emergency_close_writes_lifecycle_state_open_then_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-533b2 sites #2+#3: emergency_close births OPEN then closes CLOSED
+    (uniform insert_trade→OPEN, update_trade_close→CLOSED; same trade_id)."""
+    lifecycle_calls: list[dict[str, Any]] = []
+
+    async def _capture_insert_order(*args: Any, **kwargs: Any) -> int:
+        return 1
+
+    async def _capture_insert_trade(*args: Any, **kwargs: Any) -> int:
+        return 99
+
+    async def _noop(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def _capture_lifecycle(*args: Any, **kwargs: Any) -> None:
+        lifecycle_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "services.execution.app.placement_persist.insert_order", _capture_insert_order
+    )
+    monkeypatch.setattr(
+        "services.execution.app.placement_persist.insert_trade", _capture_insert_trade
+    )
+    monkeypatch.setattr("services.execution.app.placement_persist.update_trade_close", _noop)
+    monkeypatch.setattr("services.execution.app.placement_persist.insert_trading_event", _noop)
+    monkeypatch.setattr(
+        "services.execution.app.placement_persist.update_trade_lifecycle_state",
+        _capture_lifecycle,
+    )
+
+    pool = MagicMock()
+    conn = MagicMock()
+
+    @asynccontextmanager
+    async def _acquire() -> Any:
+        yield conn
+
+    pool.acquire = _acquire
+
+    @asynccontextmanager
+    async def _transaction() -> Any:
+        yield None
+
+    conn.transaction = _transaction
+
+    await emergency_close(
+        adapter=_ok_close_adapter(),
+        bus=_ok_bus(),
+        pool=pool,
+        bound_logger=MagicMock(),
+        bot_id=BotId("alpha"),
+        request=_request(side="buy"),
+        envelope=_envelope(),
+        place_result=_place_result(),
+        fill_price=Decimal("45000.50"),
+        qty=Decimal("0.001"),
+        now_fn=lambda: _FIXED_NOW,
+    )
+    # Site #2 (insert_trade→OPEN) then site #3 (update_trade_close→CLOSED),
+    # both on the freshly-born trade_id=99, in order.
+    assert [(c["trade_id"], c["state"]) for c in lifecycle_calls] == [
+        (99, TradeLifecycleState.OPEN),
+        (99, TradeLifecycleState.CLOSED),
+    ]
 
 
 async def test_emergency_close_logs_persist_failed_on_db_error() -> None:
@@ -491,12 +565,14 @@ def _patch_inserts(
     open_order_id: int = 101,
     trade_id: int = 202,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Patch all 4 INSERT helpers; return per-helper kwargs capture lists."""
+    """Patch the 4 INSERT helpers + update_trade_lifecycle_state (T-533b2
+    site #1); return per-helper kwargs capture lists."""
     captured: dict[str, list[dict[str, Any]]] = {
         "insert_order": [],
         "insert_trade": [],
         "insert_position_state": [],
         "insert_trading_event": [],
+        "update_trade_lifecycle_state": [],
     }
 
     async def _capture_insert_order(*args: Any, **kwargs: Any) -> int:
@@ -513,6 +589,9 @@ def _patch_inserts(
     async def _capture_insert_trading_event(*args: Any, **kwargs: Any) -> None:
         captured["insert_trading_event"].append(kwargs)
 
+    async def _capture_update_trade_lifecycle_state(*args: Any, **kwargs: Any) -> None:
+        captured["update_trade_lifecycle_state"].append(kwargs)
+
     monkeypatch.setattr(
         "services.execution.app.placement_persist.insert_order",
         _capture_insert_order,
@@ -528,6 +607,10 @@ def _patch_inserts(
     monkeypatch.setattr(
         "services.execution.app.placement_persist.insert_trading_event",
         _capture_insert_trading_event,
+    )
+    monkeypatch.setattr(
+        "services.execution.app.placement_persist.update_trade_lifecycle_state",
+        _capture_update_trade_lifecycle_state,
     )
     return captured
 
@@ -567,6 +650,17 @@ async def test_persist_placement_tx_inserts_order_trade_position_state_and_two_e
     assert len(captured["insert_trading_event"]) == 2
     event_types = [c["event_type"] for c in captured["insert_trading_event"]]
     assert event_types == ["order_placed", "sl_moved"]
+
+
+async def test_persist_placement_tx_writes_lifecycle_state_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-533b2 site #1: trades row born → update_trade_lifecycle_state(OPEN)."""
+    captured = _patch_inserts(monkeypatch, trade_id=202)
+    await _call_persist_tx()
+    assert len(captured["update_trade_lifecycle_state"]) == 1
+    assert captured["update_trade_lifecycle_state"][0]["state"] == TradeLifecycleState.OPEN
+    assert captured["update_trade_lifecycle_state"][0]["trade_id"] == 202
 
 
 async def test_persist_placement_tx_open_order_uses_status_filled_per_brief_enum(
@@ -845,6 +939,8 @@ def _patch_tracked_queries(
         "update_trade_close": AsyncMock(return_value=None),
         "delete_position_state": AsyncMock(return_value=None),
         "insert_trading_event": AsyncMock(return_value=None),
+        # T-533b2 site #4: patched no-op so MagicMock conn is not hit.
+        "update_trade_lifecycle_state": AsyncMock(return_value=None),
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(pp, name, mock)
@@ -906,6 +1002,27 @@ async def test_tracked_close_happy_path_flatten_tx_audit_emit(
     assert env.correlation_id == "sl-watchdog-alpha-BTCUSDT"
     log_keys = [c.args[0] for c in logger.warning.call_args_list]
     assert "sl_watchdog.emergency_close_pnl_pending_audit_reconcile" in log_keys
+
+
+async def test_tracked_close_writes_lifecycle_state_closed(
+    monkeypatch: Any,
+) -> None:
+    """T-533b2 site #4: tracked-position emergency-close →
+    update_trade_lifecycle_state(CLOSED) on ps_row.trade_id, same tx."""
+    q = _patch_tracked_queries(monkeypatch, open_oid=7)
+    pool = _tracked_pool()
+    await emergency_close_tracked_position(
+        adapter=_ok_close_adapter(),
+        bus=_ok_bus(),
+        pool=pool,
+        bound_logger=MagicMock(),
+        bot_id=BotId("alpha"),
+        ps_row=_ps_row(side="buy"),
+        now_fn=lambda: _FIXED_NOW,
+    )
+    lc_kw = q["update_trade_lifecycle_state"].await_args.kwargs
+    assert lc_kw["trade_id"] == 42  # ps_row.trade_id
+    assert lc_kw["state"] == TradeLifecycleState.CLOSED
 
 
 async def test_tracked_close_unknown_state_returns_before_db_and_emit(

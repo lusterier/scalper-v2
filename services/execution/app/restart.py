@@ -22,6 +22,7 @@ from packages.db.queries.execution import (
     select_position_states_for_bots,
     select_recent_open_trade_exists,
     update_trade_close,
+    update_trade_lifecycle_state,
 )
 
 from .lifecycle import run_position_monitor_for_trade
@@ -136,6 +137,9 @@ async def _close_orphan_db(
     now_fn: Callable[[], datetime],
 ) -> None:
     """H-020 step 3 + Path A: resolve close_order_id from open_order_id; tx-wrap update+delete."""
+    # local — runtime enum literal (packages.core annotation-only above)
+    from packages.core import TradeLifecycleState
+
     open_oid = await select_open_order_id_by_trade_id(conn, row.trade_id)
     if open_oid is None:
         bound_logger.error(
@@ -155,6 +159,13 @@ async def _close_orphan_db(
             closed_at=now_fn(),
             close_reason="reconcile_gone",
             close_order_id=open_oid,
+        )
+        # T-533b2 site #9: orphan-DB close — _close_orphan_db is the SOLE
+        # reconcile_gone call-site → RECONCILED (disjoint from site #8
+        # CLOSED; structural discriminator = which call-site, fixed literal
+        # per site). Additive; legacy update_trade_close unchanged; same tx.
+        await update_trade_lifecycle_state(
+            conn, trade_id=row.trade_id, state=TradeLifecycleState.RECONCILED
         )
         await delete_position_state(conn, bot_id=bot_id, symbol=row.symbol)
     bound_logger.warning(

@@ -30,6 +30,7 @@ from packages.db.queries.execution import (
     select_open_order_id_by_trade_id,
     select_order_meta_by_id,
     update_trade_close,
+    update_trade_lifecycle_state,
 )
 
 if TYPE_CHECKING:
@@ -113,7 +114,7 @@ async def reconcile_close(
         msg = f"orders row id={close_order_id} not found"
         raise RuntimeError(msg)
     correlation_id_str, close_exchange_order_id = order_meta
-    from packages.core import CorrelationId
+    from packages.core import CorrelationId, TradeLifecycleState
 
     correlation_id = CorrelationId(correlation_id_str)
 
@@ -139,6 +140,11 @@ async def reconcile_close(
         close_reason=close_reason,
         close_order_id=close_order_id,
     )
+    # T-533b2 site #8: dispatcher close-flow → CLOSED (close_reason ∈
+    # manual/sl/trail/unknown via _EXEC_TYPE_TO_CLOSE_REASON — never
+    # reconcile_gone, so disjoint from site #9 RECONCILED). Additive;
+    # legacy update_trade_close unchanged.
+    await update_trade_lifecycle_state(conn, trade_id=trade_id, state=TradeLifecycleState.CLOSED)
     await delete_position_state(conn, bot_id=bot_id, symbol=symbol)
 
     bound_logger.info(

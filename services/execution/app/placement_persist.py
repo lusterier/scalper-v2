@@ -52,6 +52,7 @@ from packages.db.queries.execution import (
     insert_trading_event,
     select_open_order_id_by_trade_id,
     update_trade_close,
+    update_trade_lifecycle_state,
 )
 from packages.exchange.errors import UnknownState
 
@@ -201,6 +202,9 @@ async def emergency_close(
     ``quantized_qty`` from placement.py pre-flight block). All DB-persisted
     columns + Bybit reduce_only call use ``qty``, NOT raw ``request.qty``.
     """
+    # local — runtime enum literal (packages.core annotation-only above)
+    from packages.core import TradeLifecycleState
+
     close_at = now_fn()
     close_exchange_order_id: str
     try:
@@ -289,6 +293,12 @@ async def emergency_close(
                 notional_usd=notional,
                 opened_at=placed_at,
             )
+            # T-533b2 site #2: emergency-close births the trades row OPEN
+            # (uniform insert_trade→OPEN; site #3 below writes CLOSED — final
+            # observable CLOSED. Additive; legacy writes byte-unchanged).
+            await update_trade_lifecycle_state(
+                conn, trade_id=trade_id, state=TradeLifecycleState.OPEN
+            )
             await update_trade_close(
                 conn,
                 trade_id=trade_id,
@@ -298,6 +308,11 @@ async def emergency_close(
                 closed_at=close_at,
                 close_reason="emergency",
                 close_order_id=close_order_id,
+            )
+            # T-533b2 site #3: emergency-close closes it (uniform
+            # update_trade_close→CLOSED).
+            await update_trade_lifecycle_state(
+                conn, trade_id=trade_id, state=TradeLifecycleState.CLOSED
             )
             order_placed_payload = order_placed_payload.model_copy(
                 update={"order_id": open_order_id}
@@ -402,7 +417,10 @@ async def emergency_close_tracked_position(
     H-012 (closed-P&L source-of-truth = T-220 cumulative-delta audit;
     verbatim-mirror :func:`emergency_close`, NOT a real compute).
     """
-    from packages.core import CorrelationId  # local — runtime construct (annotation-only above)
+    from packages.core import (  # local — runtime construct (annotation-only above)
+        CorrelationId,
+        TradeLifecycleState,
+    )
 
     close_at = now_fn()
     correlation_id = CorrelationId(f"sl-watchdog-{bot_id}-{ps_row.symbol}")
@@ -456,6 +474,13 @@ async def emergency_close_tracked_position(
                     closed_at=close_at,
                     close_reason="emergency",
                     close_order_id=open_oid,
+                )
+                # T-533b2 site #4: tracked-position emergency-close →
+                # CLOSED (uniform update_trade_close→CLOSED; same tx).
+                await update_trade_lifecycle_state(
+                    conn,
+                    trade_id=ps_row.trade_id,
+                    state=TradeLifecycleState.CLOSED,
                 )
                 await delete_position_state(
                     conn,
@@ -543,6 +568,9 @@ async def persist_placement_tx(
     the actual placed qty per AC#16 6-site substitution. Caller passes
     ``quantized_qty`` from placement.py pre-flight block.
     """
+    # local — runtime enum literal (packages.core annotation-only above)
+    from packages.core import TradeLifecycleState
+
     open_order_id = await insert_order(
         conn,
         bot_id=str(bot_id),
@@ -579,6 +607,9 @@ async def persist_placement_tx(
         opened_at=place_result.placed_at,
         meta=fsm_params_meta,
     )
+    # T-533b2 site #1: trades row born OPEN (additive-observable; legacy
+    # insert_trade above byte-unchanged & authoritative — T-533 OQ-1=A).
+    await update_trade_lifecycle_state(conn, trade_id=trade_id, state=TradeLifecycleState.OPEN)
     await insert_position_state(
         conn,
         bot_id=str(bot_id),

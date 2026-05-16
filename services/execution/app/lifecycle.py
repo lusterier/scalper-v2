@@ -62,6 +62,7 @@ from packages.db.queries.execution import (
     select_trade_fsm_params,
     update_position_state_monitor_tick,
     update_position_state_sl,
+    update_trade_lifecycle_state,
 )
 from packages.exchange.errors import (
     AuthError,
@@ -116,6 +117,9 @@ async def run_position_monitor_for_trade(
     task is cancelled. See module docstring for stale-price + cancellation
     semantics.
     """
+    # local — runtime enum literal (packages.core annotation-only above)
+    from packages.core import TradeLifecycleState
+
     side_factor = Decimal("1") if side == "buy" else Decimal("-1")
     stale_count = 0
     while True:
@@ -232,6 +236,13 @@ async def run_position_monitor_for_trade(
                         sl_type="be",
                         updated_at=now_fn(),
                     )
+                    # T-533b2 site #5: BE-trigger SL move → BREAKEVEN_SET
+                    # (additive; legacy update_position_state_sl unchanged).
+                    await update_trade_lifecycle_state(
+                        conn,
+                        trade_id=trade_id,
+                        state=TradeLifecycleState.BREAKEVEN_SET,
+                    )
 
             elif ps.sl_type == "trail" and ps.best_price is not None and new_best != ps.best_price:
                 new_trail_sl = _compute_trail_sl_price(side, new_best, fsm_params["trail_pct"])
@@ -263,6 +274,13 @@ async def run_position_monitor_for_trade(
                         sl_price=new_trail_sl,
                         sl_type="trail",
                         updated_at=now_fn(),
+                    )
+                    # T-533b2 site #6: trail SL move → TRAILING_ACTIVE
+                    # (additive; legacy update_position_state_sl unchanged).
+                    await update_trade_lifecycle_state(
+                        conn,
+                        trade_id=trade_id,
+                        state=TradeLifecycleState.TRAILING_ACTIVE,
                     )
 
 

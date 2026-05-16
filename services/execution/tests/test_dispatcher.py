@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from packages.bus.dedup import DedupingConsumer
-from packages.core import BotId
+from packages.core import BotId, TradeLifecycleState
 from packages.db.queries.execution import PositionStateRow, TradeLookupRow
 from packages.exchange.types import ExecutionEvent
 from services.execution.app import dispatcher as dispatcher_mod
@@ -192,6 +192,9 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         # 1 = success path. Tests for the halt-on-mismatch path override to 0.
         "update_position_state_after_fill": AsyncMock(return_value=1),
         "update_trade_fees_incremental": AsyncMock(return_value=None),
+        # T-533b2 site #7: patched no-op so MagicMock conn is not hit;
+        # asserted by the site-#7 branch-discrimination tests below.
+        "update_trade_lifecycle_state": AsyncMock(return_value=None),
         "reconcile_close": AsyncMock(
             return_value=(fake_payload, CorrelationId("cid-default"), "ord-1")
         ),
@@ -525,6 +528,51 @@ async def test_process_sl_inferred_when_remaining_zeroes_with_sl_type_protective
     await dispatcher.consume(event)
     insert_call = patched_queries["insert_execution"].call_args
     assert insert_call.kwargs["exec_type"] == "sl"
+
+
+# ---------------------------------------------------------------------------
+# T-533b2 site #7 — additive elif on the pre-existing remaining_qty==0
+# close-trigger: non-open fill that did NOT zero remaining_qty → the elif
+# fires PARTIALLY_CLOSED; remaining_qty==0 → the if fires (reconcile_close
+# → CLOSED), elif does NOT fire. Pins structural mutual-exclusion (WG#3).
+# ---------------------------------------------------------------------------
+
+
+async def test_process_partial_fill_remaining_nonzero_writes_lifecycle_partially_closed(
+    patched_queries: dict[str, Any],
+) -> None:
+    """Site #7 (a): non-open fill, ps_after.remaining_qty > 0 → elif fires →
+    update_trade_lifecycle_state(PARTIALLY_CLOSED); reconcile_close NOT called."""
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(remaining_qty=Decimal("10"), sl_type="protective"),  # derivation
+        _ps_row(remaining_qty=Decimal("5"), sl_type="trail"),  # ps_after: still open
+    ]
+    dispatcher, _ = _build()
+    event = _execution_event_v(side="sell", qty=Decimal("5"))
+    await dispatcher.consume(event)
+    assert patched_queries["insert_execution"].call_args.kwargs["exec_type"] == "partial_tp"
+    lc_call = patched_queries["update_trade_lifecycle_state"].call_args
+    assert lc_call.kwargs["state"] == TradeLifecycleState.PARTIALLY_CLOSED
+    assert lc_call.kwargs["trade_id"] == 1  # Path B trade_id from _ps_row default
+    patched_queries["reconcile_close"].assert_not_called()
+
+
+async def test_process_close_fill_remaining_zero_takes_reconcile_path_not_partial(
+    patched_queries: dict[str, Any],
+) -> None:
+    """Site #7 (b): non-open fill, ps_after.remaining_qty == 0 → the pre-existing
+    if fires (reconcile_close → site #8 CLOSED); the elif does NOT fire (no
+    PARTIALLY_CLOSED write from dispatcher). Structural mutual-exclusion."""
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(remaining_qty=Decimal("5"), sl_type="trail"),
+        _ps_row(remaining_qty=Decimal("0"), sl_type="trail"),  # close trigger
+    ]
+    dispatcher, _ = _build()
+    event = _execution_event_v(side="sell", qty=Decimal("5"))
+    await dispatcher.consume(event)
+    assert patched_queries["insert_execution"].call_args.kwargs["exec_type"] == "trail"
+    patched_queries["reconcile_close"].assert_called_once()
+    patched_queries["update_trade_lifecycle_state"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------

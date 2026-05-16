@@ -39,6 +39,7 @@ from packages.db.queries.execution import (
     select_trade_by_open_order_id,
     update_position_state_after_fill,
     update_trade_fees_incremental,
+    update_trade_lifecycle_state,
 )
 
 from .reconcile import emit_post_commit_close_event, reconcile_close
@@ -124,6 +125,9 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
         the tx; AFTER tx commits, ``emit_post_commit_close_event`` publishes the
         event wrapped in :class:`MessageEnvelope` per Q2 publish-after-persist.
         """
+        # local — runtime enum literal (packages.core annotation-only above)
+        from packages.core import TradeLifecycleState
+
         close_event_payload: OrderClosed | None = None
         close_event_correlation_id: CorrelationId | None = None
         async with self._pool.acquire() as conn, conn.transaction():
@@ -297,6 +301,24 @@ class ExecutionDispatcher(DedupingConsumer["ExecutionEvent"]):
                 )
                 close_event_payload = payload
                 close_event_correlation_id = corr_id
+            elif exec_type != "open" and ps_after is not None:
+                # T-533b2 site #7: a non-open fill that did NOT zero
+                # remaining_qty (the pre-existing close-trigger `if` above
+                # consumed remaining_qty==0) ⇒ partial fill, position still
+                # open → PARTIALLY_CLOSED. Additive arm on the host's
+                # pre-existing structural branch; the legacy partial-fill
+                # mutation (update_position_state_after_fill, :234) already
+                # ran upstream. Structurally mutually-exclusive with the
+                # close path (which routes to CLOSED via reconcile_close →
+                # T-533b2 site #8). T-533 OQ-1=A additive-observable.
+                if trade_id is None:
+                    msg = "internal invariant: trade_id None at partial-fill lifecycle write"
+                    raise RuntimeError(msg)
+                await update_trade_lifecycle_state(
+                    conn,
+                    trade_id=trade_id,
+                    state=TradeLifecycleState.PARTIALLY_CLOSED,
+                )
 
         # AFTER tx commits — emit OrderClosed wrapped in MessageEnvelope per Q2
         # publish-after-persist (T-216b2 vzor; mirror placement.py:324-331).

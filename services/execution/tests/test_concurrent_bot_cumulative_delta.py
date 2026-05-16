@@ -52,6 +52,9 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "select_order_meta_by_id": AsyncMock(return_value=("cid-default", "ord-exch-1")),
         "update_trade_close": _capture_update,
         "delete_position_state": AsyncMock(return_value=None),
+        # T-533b2 site #8: patched no-op so MagicMock conn is not hit
+        # (these tests assert P&L apportionment / lock scope, not lifecycle).
+        "update_trade_lifecycle_state": AsyncMock(return_value=None),
         "captured_updates": captured_updates,
     }
     for name in (
@@ -59,6 +62,7 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "select_order_meta_by_id",
         "update_trade_close",
         "delete_position_state",
+        "update_trade_lifecycle_state",
     ):
         monkeypatch.setattr(reconcile_mod, name, mocks[name])
     return mocks

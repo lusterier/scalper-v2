@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from packages.bus.schemas.orders import OrderClosed
-from packages.core import CorrelationId
+from packages.core import CorrelationId, TradeLifecycleState
 from services.execution.app import reconcile as reconcile_mod
 from services.execution.app.reconcile import (
     emit_post_commit_close_event,
@@ -48,6 +48,8 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "select_order_meta_by_id": AsyncMock(return_value=("cid-default", "ord-exch-1")),
         "update_trade_close": AsyncMock(return_value=None),
         "delete_position_state": AsyncMock(return_value=None),
+        # T-533b2 site #8: patched no-op so MagicMock conn is not hit.
+        "update_trade_lifecycle_state": AsyncMock(return_value=None),
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(reconcile_mod, name, mock)
@@ -104,6 +106,17 @@ async def test_cumulative_delta_ignores_order_ids(
     update_call = patched_queries["update_trade_close"].call_args
     assert update_call.kwargs["realized_pnl"] == Decimal("25.50")
     assert payload.realized_pnl == Decimal("25.50")
+
+
+async def test_reconcile_close_writes_lifecycle_state_closed(
+    patched_queries: dict[str, Any],
+) -> None:
+    """T-533b2 site #8: dispatcher close-flow → update_trade_lifecycle_state(CLOSED)."""
+    kwargs, _ = _build_kwargs()
+    await reconcile_close(**kwargs)
+    lc_call = patched_queries["update_trade_lifecycle_state"].call_args
+    assert lc_call.kwargs["state"] == TradeLifecycleState.CLOSED
+    assert lc_call.kwargs["trade_id"] == 1
 
 
 async def test_close_with_identical_prior_trade_same_symbol(
@@ -193,6 +206,9 @@ async def test_reconcile_close_acquires_lock_around_snapshot_pair() -> None:
             reconcile_mod, "select_order_meta_by_id", AsyncMock(return_value=("cid", "ord-1"))
         ),
         patch.object(reconcile_mod, "update_trade_close", AsyncMock()),
+        # T-533b2 site #8: guard the bare-MagicMock conn (this test does not
+        # use the patched_queries fixture); asserts lock scope only.
+        patch.object(reconcile_mod, "update_trade_lifecycle_state", AsyncMock()),
         patch.object(reconcile_mod, "delete_position_state", AsyncMock()),
     ):
         await reconcile_close(**kwargs)

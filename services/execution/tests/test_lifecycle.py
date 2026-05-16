@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from packages.core import BotId
+from packages.core import BotId, TradeLifecycleState
 from packages.db.queries.execution import PositionStateRow
 from packages.exchange.errors import (
     AuthError,
@@ -111,6 +111,9 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             }
         ),
         "update_position_state_sl": AsyncMock(return_value=None),
+        # T-533b2 sites #5/#6: patched no-op so MagicMock conn is not hit;
+        # asserted by the lifecycle-state tests below.
+        "update_trade_lifecycle_state": AsyncMock(return_value=None),
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(lifecycle_mod, name, mock)
@@ -510,6 +513,27 @@ async def test_run_position_monitor_be_trigger_writes_sl_type_be_post_set_tradin
     assert sl_call.kwargs["sl_price"] == Decimal("100.300")
 
 
+async def test_run_position_monitor_be_trigger_writes_lifecycle_state_breakeven_set(
+    patched_queries: dict[str, Any],
+    fast_sleep: AsyncMock,
+) -> None:
+    """T-533b2 site #5: BE-trigger SL move → update_trade_lifecycle_state(BREAKEVEN_SET)."""
+    bus = MagicMock()
+    bus.kv_get = AsyncMock(return_value=(b"100.5", 1))
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(side="buy", entry_price=Decimal("100"), sl_type="protective"),
+        None,
+    ]
+    adapter = MagicMock()
+    adapter.set_trading_stop = AsyncMock()
+    pool = _build_pool()
+    args = _build_args(pool=pool, bus=bus, side="buy", entry_price=Decimal("100"), adapter=adapter)
+    await run_position_monitor_for_trade(**args)
+    lc_call = patched_queries["update_trade_lifecycle_state"].call_args
+    assert lc_call.kwargs["state"] == TradeLifecycleState.BREAKEVEN_SET
+    assert lc_call.kwargs["trade_id"] == args["trade_id"]
+
+
 async def test_run_position_monitor_be_trigger_idempotent_after_first_fire(
     patched_queries: dict[str, Any],
     fast_sleep: AsyncMock,
@@ -582,6 +606,32 @@ async def test_run_position_monitor_trail_update_invokes_set_trading_stop_on_bes
     adapter.set_trading_stop.assert_awaited_once()
     call_kwargs = adapter.set_trading_stop.call_args.kwargs
     assert call_kwargs["sl_price"] == Decimal("114.425")  # 115 * 0.995
+
+
+async def test_run_position_monitor_trail_update_writes_lifecycle_state_trailing_active(
+    patched_queries: dict[str, Any],
+    fast_sleep: AsyncMock,
+) -> None:
+    """T-533b2 site #6: trail SL move → update_trade_lifecycle_state(TRAILING_ACTIVE)."""
+    bus = MagicMock()
+    bus.kv_get = AsyncMock(return_value=(b"115", 1))
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(
+            side="buy",
+            entry_price=Decimal("100"),
+            sl_type="trail",
+            best_price=Decimal("110"),
+        ),
+        None,
+    ]
+    adapter = MagicMock()
+    adapter.set_trading_stop = AsyncMock()
+    pool = _build_pool()
+    args = _build_args(pool=pool, bus=bus, side="buy", entry_price=Decimal("100"), adapter=adapter)
+    await run_position_monitor_for_trade(**args)
+    lc_call = patched_queries["update_trade_lifecycle_state"].call_args
+    assert lc_call.kwargs["state"] == TradeLifecycleState.TRAILING_ACTIVE
+    assert lc_call.kwargs["trade_id"] == args["trade_id"]
 
 
 async def test_run_position_monitor_trail_update_invokes_set_trading_stop_with_explicit_full_mode(

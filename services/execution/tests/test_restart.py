@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from packages.core import TradeLifecycleState
 from packages.db.queries.execution import PositionStateRow
 from packages.exchange.types import Position
 from services.execution.app import restart as restart_mod
@@ -116,6 +117,8 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "select_recent_open_trade_exists": AsyncMock(return_value=False),
         "update_trade_close": AsyncMock(return_value=None),
         "delete_position_state": AsyncMock(return_value=None),
+        # T-533b2 site #9: patched no-op so _FakeConn is not hit.
+        "update_trade_lifecycle_state": AsyncMock(return_value=None),
         "run_position_monitor_for_trade": MagicMock(return_value=MagicMock()),
         "spawned_tasks": spawned_tasks,
     }
@@ -125,6 +128,7 @@ def patched_queries(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "select_recent_open_trade_exists",
         "update_trade_close",
         "delete_position_state",
+        "update_trade_lifecycle_state",
         "run_position_monitor_for_trade",
     ):
         monkeypatch.setattr(restart_mod, name, mocks[name])
@@ -269,6 +273,24 @@ async def test_orphan_db_closes_with_reconcile_gone_reason(
     assert update_kwargs["fees_paid"] is None
     delete_kwargs = patched_queries["delete_position_state"].call_args.kwargs
     assert delete_kwargs == {"bot_id": "alpha", "symbol": "BTCUSDT"}
+
+
+async def test_orphan_db_writes_lifecycle_state_reconciled(
+    patched_queries: dict[str, Any],
+) -> None:
+    """T-533b2 site #9: _close_orphan_db is the sole reconcile_gone call-site
+    → update_trade_lifecycle_state(RECONCILED) on row.trade_id, same tx."""
+    patched_queries["select_position_states_for_bots"].return_value = [
+        _ps_row(symbol="BTCUSDT", trade_id=42)
+    ]
+    patched_queries["select_open_order_id_by_trade_id"].return_value = 99
+    adapter = _make_adapter([])
+
+    await reconcile_on_startup(**_kwargs(adapters={"alpha": adapter}))
+
+    lc_kwargs = patched_queries["update_trade_lifecycle_state"].call_args.kwargs
+    assert lc_kwargs["trade_id"] == 42
+    assert lc_kwargs["state"] == TradeLifecycleState.RECONCILED
 
 
 async def test_orphan_exchange_market_closes_outside_race_window(
