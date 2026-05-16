@@ -26,9 +26,13 @@ drift avoidance.
 * post-persist publish miss (dual)    → audit.log + system.log:
     ``orders_request_publish_failed``, ``signals_rejected_publish_failed``
 
-H-005 (opposite-signal guard) is implemented as a scoring rule per BRIEF
-§9.4:1555 (``opposite_side_open`` condition type — scoring catalog extension,
-not consumer concern). H-008 (signal TTL) bound by step 3a verbatim.
+H-005 (opposite-signal guard) is DEFERRED — designed as the
+``opposite_side_open`` scoring condition (BRIEF §9.4:1555, a scoring-catalog
+extension, NOT a consumer concern) but NOT yet implemented (no evaluator in
+``packages/scoring/conditions/``, no execution-side equivalent). T-519
+audit 2026-05-16 confirmed the gap; operator-acknowledged residual-risk
+carve-out tracked by a T-F5+ backlog ticket (see §20 H-005). H-008 (signal
+TTL) bound by step 3a verbatim.
 """
 
 from __future__ import annotations

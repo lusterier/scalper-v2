@@ -1562,7 +1562,7 @@ class Feature(Protocol):
 - Integration: full signal → scoring → order-request publish loop on testcontainers.
 - Integration: concurrent signals don't corrupt own-position view.
 
-**Known hazards addressed:** H-005 (opposite-signal guard implemented in scoring as a rule), H-008 (signal TTL and expiry).
+**Known hazards addressed:** H-005 (opposite-signal guard — DEFERRED in v2, NOT yet implemented; see §20 H-005 / the T-F5+ backlog, T-519 audit 2026-05-16), H-008 (signal TTL and expiry).
 
 ### 9.5 execution-service
 
@@ -2644,9 +2644,9 @@ These are production-earned lessons from v1. The new system must address each by
 
 **Context.** Live position LONG BTCUSDT; SHORT signal arrives. v1 blocked.
 
-**Policy.** Implemented as a scoring rule (`block_opposite_position_open`) which can be enabled or disabled per bot. Default: blocked. Rule evaluates current position state from own-bot view.
+**Policy.** DEFERRED in v2 — designed as a scoring rule (`opposite_side_open` condition, per-bot enable/disable, default blocked) but NOT yet implemented (services/strategy_engine/app/consumer.py:30 explicitly defers it to a not-yet-existing scoring-catalog extension; no condition evaluator in packages/scoring/conditions/, no execution-side equivalent). T-519 audit 2026-05-16 confirmed the genuine gap; operator-acknowledged residual-risk carve-out for the paper-feature-complete MVP.
 
-**Test.** `test_opposite_side_signal_is_rejected_by_guard_rule`.
+**Test.** DEFERRED — no test (the scoring rule does not exist). T-519 audit 2026-05-16: operator-acknowledged carve-out; tracked by the T-F5+ backlog ticket "opposite_side_open scoring condition + H-005 test". E4 is reported 35/36 with H-005 explicitly DEFERRED (not silently uncovered). The §20 hazard-coverage meta-test whitelists H-005 as known-DEFERRED so CI neither false-greens nor fails forever.
 
 ### H-006 — Webhook rate limit
 
@@ -2654,7 +2654,7 @@ These are production-earned lessons from v1. The new system must address each by
 
 **Policy.** Sliding-window rate limit 20 req/60s per IP in signal-gateway. Configurable.
 
-**Test.** `test_webhook_rate_limit_rejects_above_threshold`.
+**Test.** `test_over_limit_rejected` — T-519 audit 2026-05-16: §20 originally cited the v1-brief intended name test_webhook_rate_limit_rejects_above_threshold (not collected); F0..F4 shipped the sliding-window over-limit-reject pin as services/signal_gateway/tests/test_rate_limit.py::test_over_limit_rejected (corrected to the actually-collected test).
 
 ### H-007 — WS reconnect with exponential backoff
 
@@ -2678,7 +2678,7 @@ These are production-earned lessons from v1. The new system must address each by
 
 **Policy.** `packages.bus` base class `DedupingConsumer` with configurable key extractor and ring size 10k. Execution-service dedups by `execId`.
 
-**Test.** `test_duplicate_exec_event_is_ignored`.
+**Test.** `test_execution_dispatcher_dedup_ring_drops_duplicate_exchange_exec_id` — T-519 audit 2026-05-16: §20 originally cited the v1-brief intended name test_duplicate_exec_event_is_ignored (not collected); F0..F4 shipped the execId dedup-ring pin as services/execution/tests/test_dispatcher.py::test_execution_dispatcher_dedup_ring_drops_duplicate_exchange_exec_id (its docstring is the explicit H-009 verbatim pin).
 
 ### H-010 — Fan-out before dedup
 
@@ -2686,7 +2686,7 @@ These are production-earned lessons from v1. The new system must address each by
 
 **Policy.** In v2, fan-out happens via NATS. `signals.raw` captures everything; `signals.validated` is deduplicated. Consumers choose their subject.
 
-**Test.** `test_signal_fanout_preserves_raw_before_dedup`.
+**Test.** `test_invalid_json_returns_400` — T-519 audit 2026-05-16: §20 originally cited the v1-brief intended name test_signal_fanout_preserves_raw_before_dedup (not collected); F0..F4 pins the raw-captures-everything-before-validation invariant via services/signal_gateway/tests/test_webhook.py::test_invalid_json_returns_400 (unparseable JSON → 400, signals.raw STILL published, no validated — asserts subjects == ["signals.raw"]; corrected to the actually-collected test).
 
 ### H-011 — 2s sleep before closed-pnl query
 
@@ -2726,7 +2726,7 @@ These are production-earned lessons from v1. The new system must address each by
 
 **Policy.** Adapters accept and return qty as `Decimal` (string-serialized). Qty strings from exchange are preserved for close.
 
-**Test.** `test_orphan_close_uses_exchange_qty_string_not_float`.
+**Test.** `test_place_market_order_serializes_qty_as_decimal_string_not_float` + `test_get_positions_preserves_qty_string_through_decimal_round_trip` — T-519 audit 2026-05-16: §20 originally cited the v1-brief intended name test_orphan_close_uses_exchange_qty_string_not_float (not collected); F0..F4 pins the Policy (adapters accept/return qty as Decimal string-serialized; exchange qty strings preserved) via these two packages/exchange/bybit_v5/tests/test_adapter.py tests (their docstrings are the explicit H-015 W#5/round-trip pins; corrected to the actually-collected tests).
 
 ### H-016 — Shadow task cleanup
 
@@ -2750,7 +2750,7 @@ These are production-earned lessons from v1. The new system must address each by
 
 **Policy.** All trade updates by `WHERE id = ?`. Enforced by code review; `packages/db/queries/trades.py` expose only PK-keyed updates.
 
-**Test.** `test_close_trade_updates_exactly_one_row_by_pk`.
+**Test.** `test_update_trade_close_uses_where_id_pk_only_per_H_018` — T-519 audit 2026-05-16: §20 originally cited the v1-brief intended name test_close_trade_updates_exactly_one_row_by_pk (not collected); F0..F4 shipped the PK-only-WHERE pin as packages/db/tests/test_queries_execution.py::test_update_trade_close_uses_where_id_pk_only_per_H_018 (its name + docstring + assert "WHERE id = $7" / "WHERE clause has ONLY id" are the explicit H-018 invariant pin).
 
 ### H-019 — Score fail-open is logged, never silent
 
@@ -2805,7 +2805,7 @@ All with audit log entries.
 
 **Policy.** `exec_type` is assigned based on matching `execId → order_id` in our DB. Order-link fields from exchange are informational, not authoritative.
 
-**Test.** `test_sl_fill_after_partial_tp_labeled_sl_not_tp`.
+**Test.** `test_post_tp_close_fill_labeled_per_db_sl_type_not_exchange_orderlink` — T-519 audit 2026-05-16: §20 originally cited the v1-brief intended name test_sl_fill_after_partial_tp_labeled_sl_not_tp (not collected). The v1 "labeled sl not tp" semantic was SUPERSEDED by ADR-0005 (v2: partial_tp promotes sl_type='trail', so the next opposite-side full-close fill labels 'trail', NOT 'sl'); the H-024 invariant ("exec_type from our DB execId→order_id match; exchange order-link is informational, not authoritative") is pinned by services/execution/tests/test_dispatcher.py::test_post_tp_close_fill_labeled_per_db_sl_type_not_exchange_orderlink (its docstring is the explicit "H-024 v2 binding (ADR-0005)" pin; corrected to the actually-collected test + the v2 semantic).
 
 ### H-025 — Cross-bot IP rate limit coordination
 
