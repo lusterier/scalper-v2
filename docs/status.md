@@ -2166,3 +2166,18 @@ Per BRIEF estimate F4 = 2-3 týždne. With per-task plan-reviewer Gate 1 cycles 
 - [x] No uncommitted changes
 
 Tomorrow: start fresh session with **"Session start"** preamble per CLAUDE.md, pick up T-400 plan-doc draft.
+
+---
+
+## 2026-05-17 session end (demo-bot bring-up + F6 hardening batch)
+
+**Phase F6: 8/8 numbered done (T-542..T-549a). All pushed (`...d5d3769`); origin==local; only uncommitted = the parked `.claude/settings.json`.**
+
+Done this session: stack stabilised (DB pw / manual migrations / alerting httpx+template / grafana+prometheus LAN / nginx `/api` + vite proxy); demo bot staged (Bybit demo acct, kept `status='paused'`, safe). F6: **T-546** (stale T-215 comments), **T-547** (regression hotfix — 1750021 deleted test fixtures), **T-548** (rate_limiter NATS KV key `:`→`.`), **T-549a** (demo = valid 4th `exchange_mode` + 5 risk-gate real-table routing fix). NEW lessons **L-029..L-033**.
+
+**Next session — T-549b (unblocked; blocked-by T-549a ✅ DONE).** Owns: `pool.py` demo→`https://api-demo.bybit.com` REST/WS routing + `_construct_bybit_adapter` demo branch + `build_adapter_pool:316` demo membership + `_check_live_mode_safeguard` demo bypass (OQ2) + docstring:21-29; `configs/bots/demo.yaml` `mode: live`→`demo`; NEW ADR (demo distinct endpoint, supersedes pool.py demo=live-URL); BRIEF §B.1/:1334/:268/:3096/:2280; **`ops.md` MANDATORY-trigger discharge — BLOCKING acceptance item per the T-549a plan (3 sub-conditions)**. Full Gate-1..4.
+
+**Watch-outs / deferred:**
+- Demo arming chain so far: Bloker A `BOT_CONFIRM_LIVE` wiring (`8c6e7e7`) → Bloker C T-548 KV → T-549a foundation. Last live attempt: `retCode=10003 API key is invalid` vs live `api.bybit.com` (expected — demo keys ≠ live endpoint). **Operator action before any post-T-549b retry:** confirm `BOT_DEMO_BYBIT_API_KEY/SECRET` are Bybit *demo-trading* keys. demo bot stays `status='paused'` until T-549b done + retry clean.
+- `.claude/settings.json` — operator-parked permission-loosening (broad `Bash(*)`, dropped `.env`/`sudo`/`rm -rf` deny). Operator A/B/C decision pending. **Do NOT `git restore`** (deliberate WIP); selective-stage around it (the per-task staging discipline used all session).
+- Pattern: every first real exercise of the never-run live path surfaced a latent bug (alerting httpx → T-547 fixtures → T-548 KV → 10003). Expect another layer after T-549b; verify end-to-end, not just "healthy".
