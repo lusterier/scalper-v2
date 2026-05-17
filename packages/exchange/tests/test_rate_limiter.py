@@ -21,7 +21,11 @@ import pytest
 
 from packages.bus.errors import PublishError
 from packages.core import is_idempotent, is_non_idempotent
-from packages.exchange.rate_limiter import SharedRateLimiter
+from packages.exchange.rate_limiter import (
+    _IP_GLOBAL_KEY,
+    _PAUSE_KEY,
+    SharedRateLimiter,
+)
 
 
 def _make_bus_mock() -> MagicMock:
@@ -93,17 +97,17 @@ async def test_acquire_decrements_token_in_local_bucket_and_ip_global() -> None:
     # Two writes: sub-account bucket + IP-global.
     assert bus.kv_put.await_count == 2
     write_keys = [call.args[1] for call in bus.kv_put.await_args_list]
-    assert write_keys == ["bybit:sub-a:orders", "bybit:ip:global"]
+    assert write_keys == ["bybit.sub-a.orders", "bybit.ip.global"]
 
 
 @pytest.mark.asyncio
 async def test_acquire_uses_correct_bucket_key_per_endpoint_group() -> None:
-    """positions endpoint group keys ``bybit:<sub>:positions``, not orders."""
+    """positions endpoint group keys ``bybit.<sub>.positions``, not orders."""
     bus = _make_bus_mock()
     limiter = _make_limiter(bus=bus)
     await limiter.acquire("sub-b", "positions")
     write_keys = [call.args[1] for call in bus.kv_put.await_args_list]
-    assert write_keys == ["bybit:sub-b:positions", "bybit:ip:global"]
+    assert write_keys == ["bybit.sub-b.positions", "bybit.ip.global"]
 
 
 @pytest.mark.asyncio
@@ -114,9 +118,9 @@ async def test_acquire_separates_sub_accounts() -> None:
     await limiter.acquire("sub-a", "orders")
     await limiter.acquire("sub-b", "orders")
     sub_keys = [
-        call.args[1] for call in bus.kv_put.await_args_list if call.args[1].startswith("bybit:sub-")
+        call.args[1] for call in bus.kv_put.await_args_list if call.args[1].startswith("bybit.sub-")
     ]
-    assert sub_keys == ["bybit:sub-a:orders", "bybit:sub-b:orders"]
+    assert sub_keys == ["bybit.sub-a.orders", "bybit.sub-b.orders"]
 
 
 # --- Lazy refill formula (Hand verification §F.1) --------------------------
@@ -265,7 +269,7 @@ async def test_signal_upstream_rate_limit_writes_pause_flag_with_correct_expiry(
     bus.kv_put.assert_awaited_once()
     bucket, key, value = bus.kv_put.await_args.args
     assert bucket == "rate_limits"
-    assert key == "bybit:ip:pause"
+    assert key == "bybit.ip.pause"
     expected = (now + timedelta(milliseconds=500)).isoformat().encode("utf-8")
     assert value == expected
 
@@ -355,3 +359,20 @@ async def test_acquire_falls_back_to_fresh_bucket_on_corrupted_kv_value(
         r for r in caplog.records if r.message == "rate_limiter.malformed_bucket_state"
     ]
     assert len(malformed_records) >= 1
+
+
+def test_rate_limiter_kv_keys_are_valid_nats_kv_keys() -> None:
+    """T-548 regression pin: every rate-limiter NATS KV key must pass the
+    real nats-py gate ``nats.js.kv._is_key_valid`` (the exact fn get()/put()
+    invoke). The pre-T-548 colon-separated convention raises InvalidKeyError
+    on nats-py 2.14.0 (``VALID_KEY_RE = ^[-/_=.a-zA-Z0-9]+$``; ``:`` not in
+    class) — latent because only a live Bybit adapter exercises the
+    kv_get/kv_put path (ci-fast mocks the bus; integration tests skipped).
+    Pure import, no NATS_TEST_URL / round-trip — pins the corrected
+    ``.``-separated convention so the bug cannot silently recur."""
+    import nats.js.kv
+
+    sub_account, endpoint_group = "sub-demo", "orders"
+    sample_sub_key = f"bybit.{sub_account}.{endpoint_group}"  # mirrors rate_limiter.py acquire()
+    for key in (_PAUSE_KEY, _IP_GLOBAL_KEY, sample_sub_key):
+        assert nats.js.kv._is_key_valid(key) is True, f"invalid NATS KV key: {key!r}"

@@ -130,10 +130,10 @@ async def test_kv_get_returns_value_and_revision_for_existing_key(
     entry.revision = 7
     nats_kv_mocks.kv.get = AsyncMock(return_value=entry)
     await client.connect()
-    result = await client.kv_get("rate_limits", "bybit:sub-a:orders")
+    result = await client.kv_get("rate_limits", "bybit.sub-a.orders")
     assert result == (b"payload", 7)
     nats_kv_mocks.js.key_value.assert_awaited_with("rate_limits")
-    nats_kv_mocks.kv.get.assert_awaited_once_with("bybit:sub-a:orders")
+    nats_kv_mocks.kv.get.assert_awaited_once_with("bybit.sub-a.orders")
 
 
 @pytest.mark.asyncio

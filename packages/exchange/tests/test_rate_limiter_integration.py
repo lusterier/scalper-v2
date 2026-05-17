@@ -93,7 +93,7 @@ async def test_one_bot_rate_limit_triggers_shared_pause_flag(
     → B observes pause flag via _wait_if_paused() and sleeps until expires_at.
     Cross-bot coordination invariant pinned end-to-end.
     """
-    await _clear_kv_keys(nats_client, "bybit:ip:pause", "bybit:bot-b:orders", "bybit:ip:global")
+    await _clear_kv_keys(nats_client, "bybit.ip.pause", "bybit.bot-b.orders", "bybit.ip.global")
     pause_ms = 200
     now = datetime.now(UTC)
     limiter_a = SharedRateLimiter(
@@ -126,14 +126,14 @@ async def test_two_concurrent_acquire_calls_serialize_via_cas(
 
     Both tasks call acquire() concurrently; one wins CAS, other retries.
     """
-    await _clear_kv_keys(nats_client, "bybit:sub-cas:orders", "bybit:ip:global", "bybit:ip:pause")
+    await _clear_kv_keys(nats_client, "bybit.sub-cas.orders", "bybit.ip.global", "bybit.ip.pause")
     limiter = _make_limiter(nats_client)
     await asyncio.gather(
         limiter.acquire("sub-cas", "orders"),
         limiter.acquire("sub-cas", "orders"),
     )
     # After both acquires, the bucket has 18 tokens (20 - 2).
-    result = await nats_client.kv_get("rate_limits", "bybit:sub-cas:orders")
+    result = await nats_client.kv_get("rate_limits", "bybit.sub-cas.orders")
     assert result is not None
     state = json.loads(result[0].decode("utf-8"))
     # 2 tokens debited from full capacity 20 = 18 (give or take refill).
@@ -150,13 +150,13 @@ async def test_pause_flag_is_visible_across_limiter_instances(
     flow); Bot B's acquire() observes it. Pins observation invariant
     independent of triggering side.
     """
-    await _clear_kv_keys(nats_client, "bybit:ip:pause", "bybit:bot-vis:orders", "bybit:ip:global")
+    await _clear_kv_keys(nats_client, "bybit.ip.pause", "bybit.bot-vis.orders", "bybit.ip.global")
     now = datetime.now(UTC)
     expires_at = now + timedelta(milliseconds=200)
     # Direct KV write — bypasses limiter API, tests visibility only.
     await nats_client.kv_put(
         "rate_limits",
-        "bybit:ip:pause",
+        "bybit.ip.pause",
         expires_at.isoformat().encode("utf-8"),
     )
     limiter_b = _make_limiter(nats_client, now=now)
@@ -171,7 +171,7 @@ async def test_acquire_after_signal_blocks_until_pause_expires(
     nats_client: NatsClient,
 ) -> None:
     """End-to-end coordinated-pause behavior (full API flow)."""
-    await _clear_kv_keys(nats_client, "bybit:ip:pause", "bybit:bot-e2e:orders", "bybit:ip:global")
+    await _clear_kv_keys(nats_client, "bybit.ip.pause", "bybit.bot-e2e.orders", "bybit.ip.global")
     pause_ms = 150
     now = datetime.now(UTC)
     limiter = SharedRateLimiter(

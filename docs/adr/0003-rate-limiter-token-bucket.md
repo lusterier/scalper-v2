@@ -9,7 +9,7 @@ Deciders: operator, Claude Code
 §11.4 specifies a shared rate limiter for live exchange adapters:
 
 > - Token bucket in NATS KV `rate_limits`.
-> - Keys: `bybit:<sub_account>:orders`, `bybit:<sub_account>:positions`, `bybit:ip:global`.
+> - Keys: `bybit.<sub_account>.orders`, `bybit.<sub_account>.positions`, `bybit.ip.global`.
 > - Each call debits one token; refills per Bybit documented limits.
 > - Coordinated backoff: on `RateLimitError`, all adapters on the same IP receive a 500ms pause flag published to KV.
 
@@ -32,10 +32,23 @@ Decisions are taken in plan-doc form per operator instruction 2026-04-29 ("Použ
 The shared rate limiter is implemented as a NATS KV token-bucket coordinator with the following design:
 
 1. **Three bucket families** keyed by sub-account and endpoint group, plus one IP-global bucket:
-   - `bybit:<sub_account>:orders` — refill 10 req/s, capacity 20 tokens.
-   - `bybit:<sub_account>:positions` — refill 10 req/s, capacity 20 tokens.
-   - `bybit:ip:global` — refill 120 req/s, capacity 240 tokens.
-2. **Coordinated-pause flag** at KV key `bybit:ip:pause`, value = ISO-8601 expiry timestamp; duration 500ms (per §11.4 verbatim, env-tunable).
+   - `bybit.<sub_account>.orders` — refill 10 req/s, capacity 20 tokens.
+   - `bybit.<sub_account>.positions` — refill 10 req/s, capacity 20 tokens.
+   - `bybit.ip.global` — refill 120 req/s, capacity 240 tokens.
+2. **Coordinated-pause flag** at KV key `bybit.ip.pause`, value = ISO-8601 expiry timestamp; duration 500ms (per §11.4 verbatim, env-tunable).
+
+> **T-548 spec-defect correction (2026-05-17):** the original `:`-separated
+> key examples (Decision #1/#2 here, the §11.4 quote in Context above, and
+> BRIEF §11.4) were **never valid** for the project's pinned `nats-py`
+> client — `nats.js.kv._is_key_valid` enforces
+> `VALID_KEY_RE = ^[-/_=.a-zA-Z0-9]+$` (`:` rejected → `InvalidKeyError` on
+> every `kv_get`/`kv_put`; latent until a live Bybit adapter first
+> exercised the path, surfaced during demo-bot arming). Keys are now
+> `.`-separated (`bybit.<sub_account>.orders`, `bybit.ip.global`,
+> `bybit.ip.pause`, `bybit.<sub_account>.positions`). The token-bucket
+> **design is unchanged** (bucket families, CAS read-modify-write,
+> fail-open, coordinated-pause semantics). No new ADR — a defect
+> correction pre-governed by ADR-0015 decision-C (F6 task T-548).
 3. **Optimistic read-modify-write with revision check** for token-debit operations; retry-once-on-conflict, fail-open after 3 conflicts.
 4. **All bucket parameters are Settings env vars** (refill rate, capacity, pause duration) per §N9.
 5. **Limiter handle DI'd via BybitV5Adapter constructor**; one shared `SharedRateLimiter` instance per adapter pool composition root; PaperExchange does not consume the limiter (no upstream limit).
@@ -44,7 +57,7 @@ The shared rate limiter is implemented as a NATS KV token-bucket coordinator wit
 ## Rationale
 
 - **Three buckets per sub-account vs single global bucket** (OQ-1 default A): Bybit V5 enforces independent budgets per endpoint group. A single bucket would either be tuned to the slowest group (wasting headroom on faster ones) or risk RateLimitError on a fast group when a slow one has saturated. Three buckets match what the upstream actually enforces; the cost is 3 KV keys per sub-account vs 1, which is negligible at sub-10-bot scale.
-- **`bybit:ip:global` cross-cutting bucket**: Bybit's per-IP limit applies independently of sub-account. A single global IP bucket lets multiple sub-accounts on the same host stop saturating each other before the per-sub-account budget runs out.
+- **`bybit.ip.global` cross-cutting bucket**: Bybit's per-IP limit applies independently of sub-account. A single global IP bucket lets multiple sub-accounts on the same host stop saturating each other before the per-sub-account budget runs out.
 - **500ms coordinated pause** (OQ-2 default A): brief verbatim. Empirically Bybit's `Retry-After` header is rarely populated; a fixed conservative pause is simpler and the env var (`RATE_LIMIT_PAUSE_MS=500`) lets the operator tune in production without code change. Adaptive `Retry-After` parsing is F5+ complexity.
 - **Optimistic concurrency with retry-once + fail-open** (OQ-3 default A): NATS KV `update(key, value, revision)` is the atomic primitive; revision-mismatch on concurrent update is a known mode under burst. Retry-once-on-conflict is sufficient for sub-10-bot scale (probability of triple-collision ≈ 0). Fail-open after 3 conflicts is consistent with the brief's example ADR-0012 spirit ("if NATS fails, rate limiting fails open"); the upstream Bybit per-IP enforcer is the load-bearing safety net.
 - **All params as Settings env vars** (OQ-4 default A): §N9 invariant. Per-bucket capacity + refill rate as `RATE_LIMIT_ORDERS_RATE=10` / `RATE_LIMIT_ORDERS_CAPACITY=20` / `RATE_LIMIT_POSITIONS_RATE=10` / `RATE_LIMIT_POSITIONS_CAPACITY=20` / `RATE_LIMIT_IP_GLOBAL_RATE=120` / `RATE_LIMIT_IP_GLOBAL_CAPACITY=240` / `RATE_LIMIT_PAUSE_MS=500`. Defaults match Bybit docs but tunable for testnet (lower) or future vendor changes.

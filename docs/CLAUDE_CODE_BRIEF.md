@@ -1934,9 +1934,19 @@ Upper layer (`execution-service`) maps these to decisions: retry, abort, reconci
 ### 11.4 Shared rate limiter
 
 - Token bucket in NATS KV `rate_limits`.
-- Keys: `bybit:<sub_account>:orders`, `bybit:<sub_account>:positions`, `bybit:ip:global`.
+- Keys: `bybit.<sub_account>.orders`, `bybit.<sub_account>.positions`, `bybit.ip.global`.
 - Each call debits one token; refills per Bybit documented limits.
-- Coordinated backoff: on `RateLimitError`, all adapters on the same IP receive a 500ms pause flag published to KV.
+- Coordinated backoff: on `RateLimitError`, all adapters on the same IP receive a 500ms pause flag published to KV (`bybit.ip.pause`).
+
+> **T-548 spec-defect correction (2026-05-17):** the Keys bullet originally
+> showed `:`-separated keys (`bybit:<sub_account>:orders`, …). Those are
+> **never valid** for the project's pinned `nats-py` client —
+> `nats.js.kv._is_key_valid` enforces `VALID_KEY_RE = ^[-/_=.a-zA-Z0-9]+$`
+> (`:` rejected → `InvalidKeyError` on every `kv_get`/`kv_put`; latent until
+> a live Bybit adapter first exercised the path). Corrected to
+> `.`-separated above. The rate-limiter **design is unchanged** (see
+> ADR-0003). Defect correction, no new ADR — pre-governed by ADR-0015
+> decision-C (F6 task T-548).
 
 ### 11.5 PaperExchange
 

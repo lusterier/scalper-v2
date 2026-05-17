@@ -8,9 +8,9 @@ PaperExchange does NOT consume the limiter (no upstream rate limit).
 
 Design per ADR-0003 (commit ``dcf98bd``):
 
-1. Three bucket families: ``bybit:<sub_account>:orders``,
-   ``bybit:<sub_account>:positions``, ``bybit:ip:global``.
-2. 500ms coordinated-pause-flag at ``bybit:ip:pause`` — written by
+1. Three bucket families: ``bybit.<sub_account>.orders``,
+   ``bybit.<sub_account>.positions``, ``bybit.ip.global``.
+2. 500ms coordinated-pause-flag at ``bybit.ip.pause`` — written by
    :meth:`signal_upstream_rate_limit` (caller-driven from T-208 on Bybit
    429); read by :meth:`_wait_if_paused` at the head of every
    :meth:`acquire`.
@@ -59,8 +59,12 @@ EndpointGroup = Literal[
 ]  # T-529: "market" for /v5/market/* endpoints
 
 _BUCKET = "rate_limits"
-_PAUSE_KEY = "bybit:ip:pause"
-_IP_GLOBAL_KEY = "bybit:ip:global"
+# T-548: NATS KV keys are `.`-separated, NOT `:`. nats-py's
+# nats.js.kv._is_key_valid (VALID_KEY_RE = ^[-/_=.a-zA-Z0-9]+$) rejects
+# `:` → InvalidKeyError on every kv_get/kv_put (latent: only a live
+# Bybit adapter exercises this path). ADR-0003 / BRIEF §11.4 footnoted.
+_PAUSE_KEY = "bybit.ip.pause"
+_IP_GLOBAL_KEY = "bybit.ip.global"
 _MAX_CAS_RETRIES = 3
 
 logger = logging.getLogger(__name__)
@@ -112,13 +116,13 @@ class SharedRateLimiter:
         sub-account succeeded, the sub-account debit is NOT rolled back.
         """
         await self._wait_if_paused()
-        sub_key = f"bybit:{sub_account}:{endpoint_group}"
+        sub_key = f"bybit.{sub_account}.{endpoint_group}"
         await self._refill_and_debit(sub_key, endpoint_group)
         await self._refill_and_debit(_IP_GLOBAL_KEY, "_ip_global")
 
     @idempotent
     async def signal_upstream_rate_limit(self) -> None:
-        """Write the ``bybit:ip:pause`` flag (caller-driven from T-208 on Bybit 429).
+        """Write the ``bybit.ip.pause`` flag (caller-driven from T-208 on Bybit 429).
 
         OQ-4 default A: limiter does NOT detect 429 internally; T-208
         catches it at the HTTP layer and calls this. ``expires_at = now +
@@ -135,7 +139,7 @@ class SharedRateLimiter:
     async def _wait_if_paused(self) -> None:
         """Decision #10 — pause-flag check before any debit.
 
-        Reads ``bybit:ip:pause`` from KV; if present and ``now < expires_at``,
+        Reads ``bybit.ip.pause`` from KV; if present and ``now < expires_at``,
         sleeps until expiry. Malformed value (corrupt ISO-8601) is logged
         and skipped — fail-safe: treat malformed as no-pause.
         """
