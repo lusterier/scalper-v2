@@ -145,6 +145,13 @@ risk:
 #   # Pre method: risk_per_sl:
 #   # risk_pct: "0.01"   # rizikuj 1% equity na trade
 
+# Signal acceptance (voliteľné – ak chýba, akceptujú sa všetky zdroje)
+# source_filter: allowlist zdrojov signálu (SignalValidated.source).
+#   null / chýba = akceptuj všetky; signál zo zdroja mimo zoznamu sa ticho
+#   preskočí (signal_outside_source_filter v trading.log – žiadny order/scoring).
+# signals:
+#   source_filter: ["tv_prod"]   # napr. len signály z tohto TradingView zdroja
+
 # Scoring – konfiguruj podľa potrieb bota
 scoring:
   mode: active           # active | passthrough

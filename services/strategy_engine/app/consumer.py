@@ -150,6 +150,25 @@ def make_signal_handler(
             )
             return
 
+        # 3b' source filter (T-545) — SignalsSection.source_filter, dead since
+        # T-310a (schema field never read at runtime). Mirrors the 3b symbol
+        # filter: trading.log info + return BEFORE the CLOSE block /
+        # scoring_evaluations / orders.requests / signals.rejected; no Prom
+        # counter (3a/3b silent-skip class has none). source_filter is None ⇒
+        # accept all sources (backward-compat).
+        if (
+            bot_config.signals.source_filter is not None
+            and signal.source not in bot_config.signals.source_filter
+        ):
+            trading_logger.info(
+                "signal_outside_source_filter",
+                bot_id=bot_id,
+                idempotency_key=signal.idempotency_key,
+                source=signal.source,
+                source_filter=bot_config.signals.source_filter,
+            )
+            return
+
         # CLOSE action handling (v1 limitation per §0.8 — own-bot position
         # lookup deferred to F4+; T-310b only handles LONG/SHORT new entries).
         if signal.action == "CLOSE":

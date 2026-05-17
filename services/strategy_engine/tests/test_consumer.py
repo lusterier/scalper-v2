@@ -72,9 +72,10 @@ def _signal(
     action: str = "LONG",
     expires_at: datetime | None = None,
     idempotency_key: str = "key-1",
+    source: str = "webhook",
 ) -> SignalValidated:
     return SignalValidated(
-        source="webhook",
+        source=source,
         idempotency_key=idempotency_key,
         received_at=_FIXED_NOW - timedelta(seconds=10),
         symbol=symbol,
@@ -233,6 +234,73 @@ async def test_signal_outside_universe_is_dropped(
     caps["bus"].publish.assert_not_called()
     caps["trading"].info.assert_called_once()
     assert caps["trading"].info.call_args.args[0] == "signal_outside_universe"
+
+
+# region: §9.4 step 3b' — source filter (T-545) ----------------------------
+
+
+async def test_source_filter_none_accepts_all_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """source_filter=None (default) → no filtering; signal proceeds to scoring/publish."""
+    bc = _bot_config()
+    assert bc.signals.source_filter is None  # default — backward-compat: accept all
+    handler, caps = _build_handler(
+        bot_config=bc,
+        evaluate_result=_scoring_result(decision="execute"),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal(source="anything")))
+    caps["bus"].publish.assert_awaited_once()  # proceeded past the filter
+
+
+async def test_source_filter_blocks_disallowed_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """signal.source not in bot_config.signals.source_filter → log + return (silent-skip,
+    mirrors 3b signal_outside_universe: no pool / no publish / no scoring_evaluations)."""
+    bc = _bot_config().model_copy(
+        update={"signals": SignalsSection(source_filter=["tv_prod"])},
+    )
+    handler, caps = _build_handler(bot_config=bc, monkeypatch=monkeypatch)
+    await handler(_envelope(_signal(source="webhook")))  # "webhook" not in ["tv_prod"]
+    caps["pool"].acquire.assert_not_called()
+    caps["bus"].publish.assert_not_called()
+    caps["trading"].info.assert_called_once()
+    assert caps["trading"].info.call_args.args[0] == "signal_outside_source_filter"
+
+
+async def test_source_filter_allows_listed_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """signal.source in source_filter → proceeds (no silent-skip)."""
+    bc = _bot_config().model_copy(
+        update={"signals": SignalsSection(source_filter=["tv_prod"])},
+    )
+    handler, caps = _build_handler(
+        bot_config=bc,
+        evaluate_result=_scoring_result(decision="execute"),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal(source="tv_prod")))
+    caps["bus"].publish.assert_awaited_once()  # proceeded past the filter
+
+
+async def test_source_filter_runs_before_close_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-545 ordering pin: disallowed source + action=CLOSE → signal_outside_source_filter
+    (NOT consumer.close_action_unsupported_v1) — proves the source filter precedes the
+    CLOSE-action block, not after it."""
+    bc = _bot_config().model_copy(
+        update={"signals": SignalsSection(source_filter=["tv_prod"])},
+    )
+    handler, caps = _build_handler(bot_config=bc, monkeypatch=monkeypatch)
+    await handler(_envelope(_signal(source="webhook", action="CLOSE")))
+    caps["pool"].acquire.assert_not_called()
+    caps["bus"].publish.assert_not_called()
+    caps["trading"].info.assert_called_once()
+    assert caps["trading"].info.call_args.args[0] == "signal_outside_source_filter"
 
 
 # region: §9.4 step 3e/3g — execute/passthrough → OrderRequest --------------
