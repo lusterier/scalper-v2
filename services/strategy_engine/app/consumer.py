@@ -26,13 +26,15 @@ drift avoidance.
 * post-persist publish miss (dual)    → audit.log + system.log:
     ``orders_request_publish_failed``, ``signals_rejected_publish_failed``
 
-H-005 (opposite-signal guard) is DEFERRED — designed as the
-``opposite_side_open`` scoring condition (BRIEF §9.4:1555, a scoring-catalog
-extension, NOT a consumer concern) but NOT yet implemented (no evaluator in
-``packages/scoring/conditions/``, no execution-side equivalent). T-519
-audit 2026-05-16 confirmed the gap; operator-acknowledged residual-risk
-carve-out tracked by a T-F5+ backlog ticket (see §20 H-005). H-008 (signal
-TTL) bound by step 3a verbatim.
+H-005 (opposite-signal guard) is implemented (T-542 / ADR-0016) as the
+pre-scoring ``check_opposite_side`` gate inserted between the CLOSE-action
+block and the T-526 cooldown gate: if the bot has an open position for
+``(bot_id, symbol)`` on the side opposite the signal's mapped side, the
+signal is silently skipped (``signal_blocked_opposite_side`` + Prom
+counter). Per-bot ``RiskSection.block_opposite_side`` (default ``True`` =
+blocked per BRIEF §20). ADR-0016 chose the consumer-gate architecture over
+the BRIEF-design-of-record ``opposite_side_open`` scoring condition. H-008
+(signal TTL) bound by step 3a verbatim.
 """
 
 from __future__ import annotations
@@ -67,6 +69,7 @@ from .concurrent_caps_gate import check_concurrent_caps
 from .cooldown_gate import check_cooldown
 from .drawdown_gate import check_max_drawdown
 from .loss_limit_gate import check_daily_loss_limit
+from .opposite_side_gate import check_opposite_side
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -178,6 +181,36 @@ def make_signal_handler(
                 idempotency_key=signal.idempotency_key,
                 symbol=signal.symbol,
             )
+            return
+
+        # T-542 pre-scoring opposite-side gate (H-005 / ADR-0016). Runs AFTER
+        # the CLOSE block (CLOSE returned above ⇒ signal.action ∈ {LONG,SHORT}
+        # ⇒ _ACTION_TO_SIDE is total) and BEFORE the T-526 cooldown gate. Same
+        # 3b→3c silent-skip pattern as cooldown: trading.log info + Prom counter
+        # inc + return BEFORE scoring_evaluations / orders.requests /
+        # signals.rejected. Short-circuits before DB hit when block_opposite_side
+        # is False. signal_side reuses the shipped _ACTION_TO_SIDE mapping.
+        opposite_side = await check_opposite_side(
+            pool=pool,
+            bot_id=bot_id,
+            exchange_mode=bot_config.exchange.mode,
+            symbol=signal.symbol,
+            signal_side=_ACTION_TO_SIDE[signal.action],
+            risk_config=bot_config.risk,
+        )
+        if opposite_side.active:
+            trading_logger.info(
+                "signal_blocked_opposite_side",
+                bot_id=bot_id,
+                idempotency_key=signal.idempotency_key,
+                symbol=signal.symbol,
+                open_side=opposite_side.open_side,
+                signal_side=opposite_side.signal_side,
+            )
+            metrics.signals_blocked_opposite_side.labels(
+                bot_id=str(bot_id),
+                reason=opposite_side.reason or "unknown",
+            ).inc()
             return
 
         # T-526 pre-scoring cooldown gate (between 3b symbol filter + 3c signal_id

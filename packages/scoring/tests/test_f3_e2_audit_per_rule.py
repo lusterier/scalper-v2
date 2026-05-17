@@ -109,6 +109,12 @@ async def test_scoring_evaluations_records_one_rule_result_entry_per_scoring_rul
             _REPO_ROOT / "configs" / "bots" / f"{bot_name}.yaml",
             plugin_registry=plugin_registry,
         )
+        # T-542: neutralise the orthogonal H-005 opposite-side gate (default
+        # True in real bot YAML) — scoring/audit E2E test, not opposite-side;
+        # same isolation as all-zero cooldown/caps. Gate path: test_opposite_side_gate.
+        bot_config = bot_config.model_copy(
+            update={"risk": bot_config.risk.model_copy(update={"block_opposite_side": False})}
+        )
         handler = make_signal_handler(
             bot_id=bot_config.bot_id,  # type: ignore[arg-type]
             bot_config=bot_config,
@@ -140,6 +146,12 @@ async def test_scoring_evaluations_feature_snapshot_non_empty_after_resolver_cal
     bot_config = load_bot_config(
         _REPO_ROOT / "configs" / "bots" / "alpha.yaml",
         plugin_registry=plugin_registry,
+    )
+    # T-542: neutralise the orthogonal H-005 opposite-side gate (default True
+    # in real bot YAML) — scoring/audit E2E test; same isolation as all-zero
+    # cooldown/caps. Gate's own path: test_opposite_side_gate.
+    bot_config = bot_config.model_copy(
+        update={"risk": bot_config.risk.model_copy(update={"block_opposite_side": False})}
     )
 
     captured_kwargs: list[dict[str, Any]] = []

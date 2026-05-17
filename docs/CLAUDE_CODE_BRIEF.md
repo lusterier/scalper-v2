@@ -1562,7 +1562,7 @@ class Feature(Protocol):
 - Integration: full signal → scoring → order-request publish loop on testcontainers.
 - Integration: concurrent signals don't corrupt own-position view.
 
-**Known hazards addressed:** H-005 (opposite-signal guard — DEFERRED in v2, NOT yet implemented; see §20 H-005 / the T-F5+ backlog, T-519 audit 2026-05-16), H-008 (signal TTL and expiry).
+**Known hazards addressed:** H-005 (opposite-signal guard — the `risk.block_opposite_side` consumer pre-scoring gate, T-542 / ADR-0016), H-008 (signal TTL and expiry).
 
 ### 9.5 execution-service
 
@@ -2628,7 +2628,7 @@ secrets:
 - F6+ opportunistic backlog (8 polish items carried over from F5+; see `TASKS.md` `### F6+ opportunistic`).
 
 **Exit criteria:**
-- H-005 resolved — `opposite_side_open` guard implemented + tested; §20 H-005 no longer DEFERRED; E4 36/36.
+- H-005 resolved — `risk.block_opposite_side` consumer gate implemented + tested (T-542 / ADR-0016); §20 H-005 no longer DEFERRED; E4 36/36.
 - D9 fixed — analytics-api logs the correct `SERVICE_NAME`.
 - `strategy-engine-smoke` compose service shipped.
 - *(Optional)* a full local F5_E2 deployment smoke green end-to-end.
@@ -2677,9 +2677,9 @@ These are production-earned lessons from v1. The new system must address each by
 
 **Context.** Live position LONG BTCUSDT; SHORT signal arrives. v1 blocked.
 
-**Policy.** DEFERRED in v2 — designed as a scoring rule (`opposite_side_open` condition, per-bot enable/disable, default blocked) but NOT yet implemented (services/strategy_engine/app/consumer.py:30 explicitly defers it to a not-yet-existing scoring-catalog extension; no condition evaluator in packages/scoring/conditions/, no execution-side equivalent). T-519 audit 2026-05-16 confirmed the genuine gap; operator-acknowledged residual-risk carve-out for the paper-feature-complete MVP.
+**Policy.** Implemented in v2 (T-542 / ADR-0016) as the `risk.block_opposite_side` consumer **pre-scoring gate**: when the bot holds an open position for `(bot_id, symbol)` on the side opposite the incoming signal's mapped side, the signal is silently skipped before scoring (mirror the T-526 cooldown gate; `signal_blocked_opposite_side` trading-log + `signals_blocked_opposite_side_total` counter). Per-bot enable/disable via `RiskSection.block_opposite_side` (default `True` = blocked, per the original policy intent). ADR-0016 chose the consumer-gate architecture over the originally-designed `opposite_side_open` scoring condition (all seven shipped F5 pre-scoring guards are consumer gates; a scoring condition would need nonexistent position-state context-plumbing).
 
-**Test.** DEFERRED — no test (the scoring rule does not exist). T-519 audit 2026-05-16: operator-acknowledged carve-out; tracked by the T-F5+ backlog ticket "opposite_side_open scoring condition + H-005 test". E4 is reported 35/36 with H-005 explicitly DEFERRED (not silently uncovered). The §20 hazard-coverage meta-test whitelists H-005 as known-DEFERRED so CI neither false-greens nor fails forever.
+**Test.** `test_blocks_opposite_open_side` — `services/strategy_engine/tests/test_opposite_side_gate.py` pins the open-LONG + opposite-SHORT block (plus the sell-open/LONG mirror, the same-side pyramid allows, the no-position allows, the disabled short-circuit asserting no DB hit, and the consumer CLOSE-ordering wiring pin). T-542 resolved the genuine gap the T-519 audit (2026-05-16) confirmed; E4 is 36/36 (no §20 hazard DEFERRED).
 
 ### H-006 — Webhook rate limit
 
@@ -3164,17 +3164,11 @@ scoring:
         type: recent_loss_on_symbol
         window_hours: 4
 
-    # DEFERRED — the `opposite_side_open` scoring condition is NOT yet
-    # implemented (no evaluator in packages/scoring/conditions/). See §20
-    # H-005 / the T-F5+ backlog ticket. This rule is the intended design
-    # (kept for forward reference); a bot using it today would fail at
-    # config load until the condition ships (T-519 audit 2026-05-16).
-    - name: block_opposite_position
-      weight: -999.0                 # effectively blocks via threshold
-      required: true
-      condition:
-        type: opposite_side_open
-        bot: self
+    # H-005 opposite-side guard is enforced by the `risk.block_opposite_side`
+    # consumer pre-scoring gate (T-542 / ADR-0016) — NOT a scoring rule.
+    # ADR-0016 retired the originally-designed `opposite_side_open` scoring
+    # condition (all F5 pre-scoring guards are consumer gates; a scoring
+    # condition would need nonexistent position-state context-plumbing).
 
 sizing:
   # T-527a/T-528a (F5): `method` discriminator + `risk_pct`. Shipped
@@ -3282,13 +3276,10 @@ features:
     params_schema: plugins.features.oi_squeeze:ParamsSchema
 
 rules:
-  # DEFERRED — entry_point `packages.scoring.rules.opposite_side:
-  # OppositeSideOpenRule` is NOT yet implemented (T-519 audit 2026-05-16
-  # code-verified non-existent; no packages/scoring/rules/opposite_side.py).
-  # See §20 H-005 / the T-F5+ backlog ticket. Kept for forward reference;
-  # registering this entry today would fail at registry load.
-  - name: opposite_side_open
-    entry_point: packages.scoring.rules.opposite_side:OppositeSideOpenRule
+  # H-005 opposite-side guard is the `risk.block_opposite_side` consumer
+  # pre-scoring gate (T-542 / ADR-0016) — NOT a scoring-rule plugin.
+  # ADR-0016 retired the originally-designed `opposite_side_open`
+  # rule / entry_point (no packages/scoring/rules/opposite_side.py).
   - name: recent_loss_on_symbol
     entry_point: packages.scoring.rules.recent_loss:RecentLossRule
 ```

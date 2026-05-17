@@ -24,6 +24,7 @@ from packages.scoring import (
     BotConfig,
     ExchangeSection,
     ExecutionSection,
+    RiskSection,
     RuleResult,
     ScoringConfig,
     ScoringResult,
@@ -51,6 +52,12 @@ def _bot_config() -> BotConfig:
             api_secret_env="S",
         ),
         signals=SignalsSection(),
+        # T-542: neutralise the H-005 opposite-side gate for tests that do not
+        # exercise it (same isolation pattern as the all-zero cooldown/caps
+        # risk knobs — the default RiskSection() has block_opposite_side=True,
+        # which would otherwise add a per-signal pool.acquire before every
+        # downstream gate). Opposite-side-specific tests stub check_opposite_side.
+        risk=RiskSection(block_opposite_side=False),
         execution=ExecutionSection(
             qty=Decimal("0.001"),
             leverage=20,
@@ -762,6 +769,127 @@ async def test_decision_reject_db_error_resolves_zero_virtual_entry(
     assert len(sr_calls) == 1
     payload = ShadowRejectedStartPayload.model_validate(sr_calls[0].args[1].payload)
     assert payload.virtual_entry_price == Decimal("0")
+
+
+# region: T-542 opposite-side gate (H-005) ---------------------------------
+
+
+async def test_signal_blocked_by_opposite_side_skips_db_and_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-542: opposite_side active → signal_blocked_opposite_side log + Prom
+    counter inc + NO scoring_evaluations write + NO orders.requests /
+    signals.rejected publish + NO step-3c signal_id lookup. Dual-side pin.
+    """
+    from services.strategy_engine.app.opposite_side_gate import OppositeSideDecision
+
+    active = OppositeSideDecision(
+        active=True,
+        reason="opposite_side_open",
+        open_side="buy",
+        signal_side="sell",
+    )
+
+    async def _stub_check_opposite_side(**_kwargs: Any) -> OppositeSideDecision:
+        return active
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.check_opposite_side",
+        _stub_check_opposite_side,
+    )
+
+    async def _select_signal_id_must_not_run(*_args: Any, **_kwargs: Any) -> int:
+        raise AssertionError("step 3c reached despite opposite_side active")
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.select_signal_id_by_idempotency_key",
+        _select_signal_id_must_not_run,
+    )
+
+    metrics = MagicMock()
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=AssertionError("pool.acquire must not run"))
+    bus = _mock_bus()
+    captured_trading = MagicMock()
+
+    handler = make_signal_handler(
+        bot_id="alpha",  # type: ignore[arg-type]
+        bot_config=_bot_config(),
+        resolver=MagicMock(),
+        pool=pool,
+        bus=bus,
+        trading_logger=captured_trading,
+        system_logger=MagicMock(),
+        audit_logger=MagicMock(),
+        now_fn=lambda: _FIXED_NOW,
+        max_signal_age_seconds=600,
+        metrics=metrics,
+    )
+    await handler(_envelope(_signal(action="SHORT")))
+
+    captured_trading.info.assert_called_once()
+    call = captured_trading.info.call_args
+    assert call.args[0] == "signal_blocked_opposite_side"
+    kwargs = call.kwargs
+    assert kwargs["bot_id"] == "alpha"
+    assert kwargs["idempotency_key"] == "key-1"
+    assert kwargs["symbol"] == "BTCUSDT"
+    assert kwargs["open_side"] == "buy"
+    assert kwargs["signal_side"] == "sell"
+
+    metrics.signals_blocked_opposite_side.labels.assert_called_once_with(
+        bot_id="alpha", reason="opposite_side_open"
+    )
+    metrics.signals_blocked_opposite_side.labels.return_value.inc.assert_called_once_with()
+
+    bus.publish.assert_not_awaited()
+    pool.acquire.assert_not_called()
+
+
+async def test_opposite_side_inactive_passes_through_to_step_3c(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """opposite_side inactive → consumer proceeds to step 3c..3h normally."""
+    from services.strategy_engine.app.opposite_side_gate import OppositeSideDecision
+
+    async def _stub_check_opposite_side(**_kwargs: Any) -> OppositeSideDecision:
+        return OppositeSideDecision(active=False, reason=None, open_side=None, signal_side="buy")
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.check_opposite_side",
+        _stub_check_opposite_side,
+    )
+
+    handler, caps = _build_handler(
+        evaluate_result=_scoring_result(decision="execute"),
+        monkeypatch=monkeypatch,
+    )
+    await handler(_envelope(_signal()))
+    caps["bus"].publish.assert_awaited()
+
+
+async def test_opposite_side_gate_runs_after_close_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLOSE-ordering pin: a CLOSE signal reaches the CLOSE block and returns
+    BEFORE the opposite-side gate — check_opposite_side must NOT be called
+    (proves insertion is structurally after the CLOSE block)."""
+
+    async def _check_opposite_side_must_not_run(**_kwargs: Any) -> None:
+        raise AssertionError("opposite-side gate reached before the CLOSE block")
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.consumer.check_opposite_side",
+        _check_opposite_side_must_not_run,
+    )
+
+    handler, caps = _build_handler(monkeypatch=monkeypatch)
+    await handler(_envelope(_signal(action="CLOSE")))
+
+    caps["pool"].acquire.assert_not_called()
+    caps["bus"].publish.assert_not_called()
+    caps["trading"].info.assert_called_once()
+    assert caps["trading"].info.call_args.args[0] == "consumer.close_action_unsupported_v1"
 
 
 # region: T-526 pre-scoring cooldown gate -----------------------------------

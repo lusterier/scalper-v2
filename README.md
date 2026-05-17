@@ -9,9 +9,9 @@ SQLite-based single-bot scalper (rewrite, not a migration).
 variants, and the ADR-0011 pre-live operational hardening cluster
 (T-524..T-536) are all shipped; §20 hazard test-coverage audited (E4). The
 F5 E1/E2 operator smoke runbooks (below) + the T-522 E1..E6 sign-off close
-out the phase. One capital control is explicitly DEFERRED with operator
-sign-off: the H-005 opposite-side guard (`opposite_side_open` scoring
-condition) — see §20 H-005 and the T-F5+ backlog.
+out the phase. The one capital control DEFERRED at F5 sign-off — the H-005
+opposite-side guard — was resolved post-MVP in F6/T-542 as the
+`risk.block_opposite_side` consumer pre-scoring gate (ADR-0016); see §20 H-005.
 
 > [`docs/CLAUDE_CODE_BRIEF.md`](docs/CLAUDE_CODE_BRIEF.md) is the **source of
 > truth** for all architecture, coding, and process rules. This README is an
@@ -113,8 +113,9 @@ Full lifecycle, troubleshooting, toolchain:
 The ADR-0011 pre-live operational hardening cluster (T-524..T-536) is
 shipped. Every §20 hazard has an associated passing test, enforced
 permanently by [`tests/test_hazard_catalog_coverage.py`](tests/test_hazard_catalog_coverage.py)
-(the F5 E4 audit guard; T-519). E4 status: 35/36 hazards test-pinned;
-H-005 (opposite-side guard) DEFERRED with operator sign-off
+(the F5 E4 audit guard; T-519). E4 status: **36/36** hazards test-pinned —
+H-005 (opposite-side guard) resolved post-MVP in F6/T-542 (was 35/36 +
+H-005 DEFERRED at F5 sign-off)
 ([`docs/audit/hazard-test-coverage.md`](docs/audit/hazard-test-coverage.md)).
 
 ## License

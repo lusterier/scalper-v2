@@ -430,6 +430,16 @@ class RiskSection(BaseModel):
       kill-switch (``bot_kill_switch_state``). ``Decimal`` per §5.13 (USD
       money). T-525a1 declares the knob; the SUM/threshold arithmetic is
       T-525a2 (this field is declaration-only here — no math).
+    * **Opposite-side guard (T-542 / ADR-0016, H-005)**:
+      ``block_opposite_side`` — ``bool``, **default ``True`` (blocked)** per
+      the BRIEF §20 H-005 "per-bot enable/disable, default blocked" policy.
+      When ``True`` and the bot already has an open position for
+      ``(bot_id, symbol)`` whose side is opposite the incoming signal's
+      mapped side, the T-542 pre-scoring opposite-side gate silently skips
+      the signal. ``False`` opts out (short-circuits the gate before any DB
+      hit). Boolean, not the ``0``-disabled int convention — a directional
+      block has no magnitude. Declaration-only here; enforced by
+      :mod:`services.strategy_engine.app.opposite_side_gate`.
 
     Mirror :class:`ShadowConfig` ``extra="forbid"`` rationale: net-new feature
     catches operator typos at YAML load.
@@ -451,6 +461,10 @@ class RiskSection(BaseModel):
     # 0 = disabled; no le bound (give-back can exceed 1.0 when current<0<peak).
     # Enforced by the T-525b drawdown gate; declaration-only here.
     max_drawdown_pct: Decimal = Field(default=Decimal("0"), ge=0)
+    # T-542 H-005 opposite-side guard (ADR-0016). bool, default True =
+    # blocked (BRIEF §20 "default blocked"); False short-circuits the gate
+    # before the DB hit. Enforced by opposite_side_gate; declaration-only.
+    block_opposite_side: bool = Field(default=True)
 
 
 class BotConfig(BaseModel):

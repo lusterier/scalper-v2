@@ -121,7 +121,7 @@ execution:
   trail_pct: "0.005"
   fee_rate: "0.00055"
 
-# Risk management – všetky hodnoty 0 = vypnuté
+# Risk management – numerické hodnoty 0 = vypnuté
 risk:
   cooldown_after_loss_minutes: 0
   cooldown_after_streak_n_losses: 0
@@ -130,6 +130,11 @@ risk:
   max_open_trades_global: 0
   daily_loss_limit_usd: "0"
   max_drawdown_pct: "0"
+  # H-005 opposite-side guard (T-542): bool, default true = blokuje nový vstup
+  # ak má bot otvorenú pozíciu na opačnej strane pre rovnaký symbol (signál
+  # sa ticho preskočí pred scoringom – signal_blocked_opposite_side). NIE je
+  # 0=vypnuté konvencia; nastav false ak chceš guard vypnúť pre tohto bota.
+  block_opposite_side: true
 
 # Position sizing (voliteľné – ak chýba, použije sa execution.qty)
 # Odkomentuj a nakonfiguruj ak chceš balance-driven sizing:

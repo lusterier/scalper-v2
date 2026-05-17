@@ -66,14 +66,14 @@ _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _BARE_FN_RE = re.compile(r"^test_[A-Za-z0-9_]+$")
 _PATH_RE = re.compile(r"^[\w./\-]+\.py(::[\w]+(::test_[A-Za-z0-9_]+)?|::test_[A-Za-z0-9_]+)?$")
 
-# Operator-acknowledged DEFERRED carve-outs (T-519 audit 2026-05-16): a §20
-# hazard whose control is genuinely not yet implemented, deferred to a T-F5+
-# backlog ticket with explicit operator sign-off (residual-risk accepted for
-# the paper-feature-complete MVP). H-005 (opposite_side_open scoring rule —
-# not in packages/scoring/conditions/, no execution-side equivalent). The set
-# is the tight whitelist: a NEW deferral not here, OR a known-deferred entry
-# that loses its DEFERRED marker, is a finding (cannot silently widen/regress).
-_KNOWN_DEFERRED: frozenset[int] = frozenset({5})
+# Operator-acknowledged DEFERRED carve-outs: a §20 hazard whose control is
+# genuinely not yet implemented, deferred with explicit operator sign-off.
+# **Empty since T-542 (2026-05-17): H-005 was the sole entry and is now
+# resolved** (the `risk.block_opposite_side` consumer gate, ADR-0016; §20
+# H-005 Policy/Test rewritten, E4 36/36). The set is the tight whitelist:
+# ANY DEFERRED §20 entry is now a finding (cannot silently widen/regress) —
+# a future operator-acknowledged deferral must re-add its H-number here.
+_KNOWN_DEFERRED: frozenset[int] = frozenset()
 
 
 def _section_20_text(brief: str) -> str:
@@ -324,38 +324,50 @@ def test_unresolved_citation_is_a_finding() -> None:
     assert findings == ["H-002: func `test_with_node` unresolved"]
 
 
+# Synthetic parser fixture — H-901/H-902 are NOT real hazards (no collision
+# with the now-live real H-005/H-006). T-542 decoupled this parser self-test
+# from the production `_KNOWN_DEFERRED` constant (which is now empty) so the
+# detection+gating ALGORITHM is verified independently of the live whitelist.
+# The `DEFERRED` + `T-F5+` tokens are load-bearing (`_deferred_hazards` keys
+# on them) and intentionally retained in the synthetic literal.
 _FIX_DEFERRED = """## 20. Known Hazards Catalog
 
 ### H-001 — normal
 **Test.** `test_a`.
 
-### H-005 — opposite-side (deferred)
-**Test.** DEFERRED — no test (the scoring rule does not exist). Tracked by
+### H-901 — synthetic acknowledged (deferred)
+**Test.** DEFERRED — no test (synthetic fixture). Tracked by
 the T-F5+ backlog ticket. Whitelisted as known-DEFERRED.
 
-### H-006 — rogue deferral (NOT in _KNOWN_DEFERRED)
+### H-902 — synthetic rogue (NOT acknowledged)
 **Test.** DEFERRED — punted to a T-F5+ ticket without operator sign-off.
 
 ## 21. Glossary
 """
 
+# Local synthetic whitelist for the parser self-test ONLY — deliberately
+# independent of the production `_KNOWN_DEFERRED` (T-542 decouple): the
+# algorithm test must stay green whether or not the live whitelist is empty.
+_SYNTHETIC_ACK: frozenset[int] = frozenset({901})
+
 
 def test_deferred_carveout_detected_and_tightly_gated() -> None:
     section = _section_20_text(_FIX_DEFERRED)
     deferred = _deferred_hazards(section)
-    assert deferred == {5, 6}  # both DEFERRED+T-F5+ entries detected
+    assert deferred == {901, 902}  # both DEFERRED+T-F5+ entries detected
     cites = _extract_citations(section)
-    assert cites[5] == []  # no backtick test citations (DEFERRED)
-    assert cites[6] == []
-    # The gating logic: H-005 ∈ _KNOWN_DEFERRED → accepted carve-out;
-    # H-006 DEFERRED but ∉ _KNOWN_DEFERRED → finding (cannot silently widen).
+    assert cites[901] == []  # no backtick test citations (DEFERRED)
+    assert cites[902] == []
+    # The gating logic against the LOCAL synthetic whitelist: H-901 ∈
+    # _SYNTHETIC_ACK → accepted carve-out; H-902 DEFERRED but ∉ → finding
+    # (cannot silently widen). Zero reference to the production constant.
     findings: list[str] = []
     for hnum in sorted(cites):
         if not cites[hnum]:
-            if hnum in deferred and hnum not in _KNOWN_DEFERRED:
+            if hnum in deferred and hnum not in _SYNTHETIC_ACK:
                 findings.append(f"H-{hnum:03d}: DEFERRED not acknowledged")
             elif hnum not in deferred:
                 findings.append(f"H-{hnum:03d}: no citation")
-    assert findings == ["H-006: DEFERRED not acknowledged"]
-    assert 5 in _KNOWN_DEFERRED
-    assert 6 not in _KNOWN_DEFERRED
+    assert findings == ["H-902: DEFERRED not acknowledged"]
+    assert 901 in _SYNTHETIC_ACK
+    assert 902 not in _SYNTHETIC_ACK

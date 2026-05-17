@@ -47,6 +47,7 @@ class Metrics:
     signals_blocked_caps: Counter
     signals_blocked_loss_limit: Counter
     signals_blocked_drawdown: Counter
+    signals_blocked_opposite_side: Counter
 
 
 def build_strategy_engine_metrics(registry: CollectorRegistry) -> Metrics:
@@ -65,6 +66,9 @@ def build_strategy_engine_metrics(registry: CollectorRegistry) -> Metrics:
       each time the pre-scoring max-drawdown hard-stop gate blocks a signal
       (``reason`` = ``max_drawdown`` on a fresh trip, or the pre-existing
       latch's reason — reason-agnostic cross-block).
+    * T-542 ``signals_blocked_opposite_side_total{bot_id, reason}`` —
+      incremented each time the pre-scoring opposite-side gate (H-005 /
+      ADR-0016) blocks a signal (``reason`` = ``opposite_side_open``).
     """
     return Metrics(
         signals_blocked_cooldown=Counter(
@@ -88,6 +92,12 @@ def build_strategy_engine_metrics(registry: CollectorRegistry) -> Metrics:
         signals_blocked_drawdown=Counter(
             "signals_blocked_drawdown_total",
             "Signals suppressed by the pre-scoring max-drawdown hard-stop gate (T-525b).",
+            labelnames=("bot_id", "reason"),
+            registry=registry,
+        ),
+        signals_blocked_opposite_side=Counter(
+            "signals_blocked_opposite_side_total",
+            "Signals suppressed by the strategy-engine pre-scoring opposite-side gate (T-542).",
             labelnames=("bot_id", "reason"),
             registry=registry,
         ),

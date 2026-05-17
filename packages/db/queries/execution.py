@@ -49,6 +49,7 @@ __all__ = [
     "insert_trading_event",
     "select_active_bots",
     "select_open_order_id_by_trade_id",
+    "select_open_position_side",
     "select_order_id_by_exchange_id",
     "select_order_meta_by_id",
     "select_position_state",
@@ -672,6 +673,38 @@ async def select_recent_open_trade_exists(
         since,
     )
     return row is not None
+
+
+async def select_open_position_side(
+    conn: _DbExecutor,
+    *,
+    bot_id: str,
+    symbol: str,
+    table_name: Literal["position_state", "paper_position_state"],
+) -> str | None:
+    """Return the ``side`` (``"buy"`` / ``"sell"``) of the OPEN position for
+    ``(bot_id, symbol)`` in ``table_name``, or ``None`` when the bot is flat.
+
+    T-542 H-005 opposite-side gate (ADR-0016). ``position_state`` /
+    ``paper_position_state`` hold OPEN positions only (T-219 deletes the
+    composite-PK ``(bot_id, symbol)`` row on close) ⇒ at most one row ⇒
+    ``LIMIT 1`` is exact, not a heuristic.
+
+    L-021 type-cast audit: both parameters are **column-direct equality**
+    (``WHERE bot_id = $1 AND symbol = $2`` — text columns; no arithmetic, no
+    CASE branch, no operator-overloaded context). PG infers the parameter
+    types directly from the column types; no ``::type`` cast is required
+    (L-021 only bites ``$N`` in non-column-direct contexts). ``table_name``
+    is a whitelisted ``Literal`` (never user input) → the f-string table
+    interpolation is injection-safe, same pattern as
+    :func:`packages.db.queries.trades.select_recent_closed_trades`.
+    """
+    sql = (
+        f"SELECT side FROM {table_name} "  # noqa: S608  # nosec B608 — whitelisted Literal, no user input
+        "WHERE bot_id = $1 AND symbol = $2 LIMIT 1"
+    )
+    row = await conn.fetchrow(sql, bot_id, symbol)
+    return str(row["side"]) if row is not None else None
 
 
 async def update_position_state_after_fill(

@@ -40,6 +40,13 @@ async def test_passthrough_mode_records_decision_passthrough_in_audit_row(
         _REPO_ROOT / "configs" / "bots" / "beta.yaml",
         plugin_registry=plugin_registry,
     )
+    # T-542: neutralise the orthogonal H-005 opposite-side gate (default True
+    # in real configs/bots/*.yaml) — this is a scoring/audit E2E test, not an
+    # opposite-side test; same isolation as relying on all-zero cooldown/caps
+    # knobs. The gate's own code path is exercised in test_opposite_side_gate.
+    beta = beta.model_copy(
+        update={"risk": beta.risk.model_copy(update={"block_opposite_side": False})}
+    )
 
     captured_kwargs: list[dict[str, Any]] = []
 
