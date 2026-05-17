@@ -104,6 +104,14 @@ services:
     image: prom/prometheus:v3.11.2
     restart: unless-stopped
     networks: [backend]
+    # LAN exposure (ops 2026-05-17, operator-approved: homelab, fully
+    # trusted LAN). Bound to the eno1 LAN IP only (not 0.0.0.0, which
+    # would also bind the docker bridges). Prometheus has no auth and
+    # --web.enable-lifecycle is intentionally kept (operator accepts
+    # LAN-reachable /-/reload + /-/quit). Deliberately relaxes the
+    # §16.6 internal-only posture for direct LAN dashboard access.
+    ports:
+      - "192.168.100.100:9090:9090"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -123,23 +131,30 @@ services:
       retries: 5
       start_period: 15s
 
-  # Grafana — dashboards (brief §15.4, §16.6, §18.1). Anonymous Viewer
-  # auth is intentional: the backend network is fenced per §16.6 and
-  # T-014's nginx only exposes signal-gateway + analytics-api, so
-  # Grafana is never reachable from the public internet. Password
-  # auth would add friction without a reachable attack surface. The
-  # GF_SECURITY_ADMIN_PASSWORD=admin is a development default retained
-  # for provisioning API calls; revisit if F1+ introduces UI-authored
-  # dashboards. See infra/grafana/README.md for pre-up detail.
+  # Grafana — dashboards (brief §15.4, §16.6, §18.1). LAN-exposed
+  # (ops 2026-05-17, operator-approved: homelab, fully trusted LAN),
+  # bound to the eno1 LAN IP only (not 0.0.0.0). This deliberately
+  # relaxes the §16.6 internal-only posture, so the old "admin/admin
+  # is fine because Grafana is unreachable" rationale NO LONGER HOLDS:
+  # GF_SECURITY_ADMIN_PASSWORD is now a strong secret from
+  # GRAFANA_ADMIN_PASSWORD (/etc/scalper-v2/secrets.env + project-root
+  # .env; the `:?` guard fails the compose render if it is unset, so
+  # the weak default can never silently come back). Anonymous Viewer
+  # stays enabled so LAN users still see dashboards without a login;
+  # admin actions (datasource add, edit) require the secret. See
+  # infra/grafana/README.md for pre-up detail.
   grafana:
     image: grafana/grafana:13.0.1
     restart: unless-stopped
     networks: [backend]
+    # LAN exposure — see comment above; eno1 IP only, not 0.0.0.0.
+    ports:
+      - "192.168.100.100:3000:3000"
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_AUTH_DISABLE_LOGIN_FORM: "false"
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env / /etc/scalper-v2/secrets.env}
     volumes:
       - /mnt/data/grafana:/var/lib/grafana
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
