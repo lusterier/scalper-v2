@@ -310,9 +310,10 @@ services:
   # execution-service — order placement, lifecycle FSM, cumulative-
   # delta reconciliation (brief §9.5, §18.1, §19 F2 milestone). T-214
   # ships the skeleton: lifespan wires asyncpg.Pool + NatsClient;
-  # /health, /ready (bus + db checks), /metrics. T-215+ will extend
+  # /health, /ready (bus + db checks), /metrics. T-215+ extended
   # the lifespan with the adapter pool composition root + order
-  # placement pipeline + dispatcher + audit loop + reconciliation.
+  # placement pipeline + dispatcher + audit loop + reconciliation
+  # (shipped 2026-04-30).
   # Internal-only per §16.6 — no nginx route, no public surface;
   # primary input is NATS (orders.requests.<bot_id>); HTTP plane is
   # operational only (health + readiness + metrics). Port 8000
@@ -328,8 +329,9 @@ services:
     env_file:
       # required: false — prod hosts populate /etc/scalper-v2/secrets.env
       # with DATABASE_URL (shared with signal-gateway, market-data-svc,
-      # feature-engine). T-215 will add BOT_<ID>_BYBIT_API_KEY/SECRET
-      # entries here per H-022. Dev hosts drop this reference via
+      # feature-engine). Per-bot BOT_<ID>_BYBIT_API_KEY/SECRET/SUB_ACCOUNT
+      # live here per H-022 + are read by services/execution/app/pool.py
+      # (ADR-0004; shipped by T-215, 2026-04-30). Dev hosts drop this reference via
       # compose.dev.yaml `env_file: !reset null` and supply DATABASE_URL
       # via `environment:` overrides expanded from the project-root .env
       # (matches the T-009 / T-015a / T-100 / T-109 flow).
@@ -376,9 +378,10 @@ services:
   # strategy-engine-demo — first real bot, Bybit demo account. exchange.mode:
   # live (Bybit demo uses the live API endpoint). Same image as
   # strategy-engine-smoke; BOT_ID=demo loads configs/bots/demo.yaml
-  # (passthrough scoring). NOTE: per-bot Bybit key wiring into
-  # execution-service is T-215 (not yet implemented) — until then the bot
-  # cannot place live orders even with real keys in secrets.env.
+  # (passthrough scoring). Per-bot Bybit key wiring into execution-service
+  # is implemented (pool.py, shipped by T-215 2026-04-30). The bot is
+  # parked status='paused' pending operator arming (real keys in
+  # secrets.env + execution-service recreate + un-pause), NOT pending code.
   strategy-engine-demo:
     build:
       context: .

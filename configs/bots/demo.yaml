@@ -5,9 +5,10 @@
 # feature resolution (no oi_change / feature-engine dependency) — mirrors
 # smoke.yaml. String-quoted Decimals avoid PyYAML float artefacts.
 #
-# NOTE: per-bot Bybit key wiring into execution-service is T-215 (not yet
-# implemented). Until then this bot cannot place live orders even with
-# real BOT_DEMO_BYBIT_API_KEY/SECRET in secrets.env.
+# NOTE: per-bot Bybit key wiring into execution-service IS implemented
+# (pool.py, shipped by T-215 2026-04-30). This bot is parked status='paused'
+# pending operator arming (real BOT_DEMO_BYBIT_API_KEY/SECRET/SUB_ACCOUNT in
+# secrets.env + execution-service recreate + un-pause), NOT pending code.
 
 bot_id: demo
 version: 1

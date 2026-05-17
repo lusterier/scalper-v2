@@ -103,12 +103,16 @@ Ak `valid: true` – pokračuj. Ak `valid: false` – `errors` pole povie čo tr
 >   `DATABASE_URL`/secrety interpolované z project-root `.env`). Nové env vars
 >   čítané službami pod dev overlayom musia ísť aj do project-root `.env`,
 >   nielen do `/etc/scalper-v2/secrets.env`.
-> - **Live bot:** per-bot `BOT_<ID>_BYBIT_API_KEY/SECRET` + `BOT_CONFIRM_LIVE`
->   sa do `execution-service` ešte **neprepájajú (T-215, neimplementované)**.
->   `execution-service` číta `select_active_bots` (len `status='active'`) a pre
->   `exchange_mode='live'` vyžaduje `BOT_CONFIRM_LIVE=yes` vo svojom env — inak
+> - **Live bot:** per-bot key wiring JE implementované — `services/execution/app/pool.py`
+>   (`_construct_bybit_adapter`) číta `BOT_<ID>_BYBIT_API_KEY/SECRET/SUB_ACCOUNT`
+>   z env (H-022/ADR-0004; shipped T-215, 2026-04-30). Pozor je na **config/arming
+>   gap, NIE na kód**: `execution-service` stavia adaptery len pre `select_active_bots`
+>   (`status='active'`) a pre `exchange_mode='live'` vyžaduje `BOT_CONFIRM_LIVE=yes`
+>   + reálne `BOT_<ID>_BYBIT_API_KEY/SECRET/SUB_ACCOUNT` vo svojom env — inak
 >   RuntimeError a pád celej služby. **Live bota drž `status='paused'`** v DB
->   kým T-215 nie je hotové; inak zhodíš order execution pre celú platformu.
+>   kým operátor nedoplní reálne kľúče do `/etc/scalper-v2/secrets.env`,
+>   nerecreatne `execution-service` (`docker compose up -d`, NIE `restart`) a
+>   neun-pausne; inak zhodíš order execution pre celú platformu.
 
 **Krok 1 – YAML konfig**
 
