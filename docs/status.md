@@ -1,5 +1,13 @@
 # Session status
 
+## 2026-05-17 (T-543 ✅ **D9 SERVICE_NAME mislabel fixed** — feat `826189a` LOCAL [batch-push mode]; F6 2/4 → 3/4; gates [plan APPROVE 1-pass / drift skipped trivial / brief SHIP 5/5 WG / math OOS])
+
+**What**: native analytics-api (via `scripts/dev-up.sh`, not the container) logged `service=signal-gateway` — a §N2 misattribution (D9, flagged at the T-522 F5 close-out RUN `b16d41a`, carved out of T-540). Root cause: `dev-up.sh` sources `.env` with `set -a` (auto-export) → the shared `.env`'s `SERVICE_NAME=signal-gateway` leaks; the native analytics-api uvicorn launch pinned `DATABASE_URL`/`NATS_URL` but not `SERVICE_NAME` → analytics-api `Settings()` inherited it. Fix: pin `SERVICE_NAME=analytics-api` in that env prefix (mirrors `compose.yaml:452` per-service `SERVICE_NAME` — the containerized path was always correct). NEW `tests/scripts/test_dev_up_service_identity.py` line-continuation-robust parse regression pin (2 passed). `config.py`/`.env.example`/`compose` correctly untouched — the cross-service `SERVICE_NAME` env mapping is the correct pattern; the bug was only the native launch-script omission.
+
+**Watch-outs for next session**:
+- **F6 remaining: T-544 ONLY** (`strategy-engine-smoke` compose service — enables a full local F5_E2 deployment smoke; the last numbered F6 task; F6 3/4 → 4/4 on its close). F6+ opportunistic backlog (8 items) is separate.
+- **⚠ BATCH-PUSH MODE STILL ACTIVE** (operator CI-minute budget). Unpushed `origin/master..HEAD` after the T-543 chore: `1ada2b6`, `80896e6`, `4a21b2e`, `b900a29`, `e057876`, `38b554d`, `826189a` (T-543 feat) + pending T-543 chore. **ONE `git push origin master` at batch end** — do NOT push per-task.
+
 ## 2026-05-17 (T-542 ✅ **H-005 opposite-side guard resolved** — feat `e057876` LOCAL [batch-push mode]; F6 1/4 → 2/4; the original F6 driver; ADR-0016; E4 35/36 → 36/36; gates [plan APPROVE pass-2 (1 REVISE) / drift ON TRACK / brief SHIP 8/8 WG / math OOS])
 
 **What**: §20 H-005 (live LONG + opposite SHORT) was DEFERRED in v2 — the original driver that opened F6. Resolved as the per-bot `risk.block_opposite_side` **consumer pre-scoring silent-skip gate** (`services/strategy_engine/app/opposite_side_gate.py`), mirroring the shipped T-526 cooldown gate: per-signal DB read of `position_state`/`paper_position_state`, blocks a new entry whose `_ACTION_TO_SIDE`-mapped side is opposite the open position's side. `RiskSection.block_opposite_side: bool = True` (BRIEF "default blocked"). §N4 TDD (8-row truth table + CLOSE-ordering pin); 537 passed.
