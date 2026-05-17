@@ -66,3 +66,16 @@ The asymmetry (fix §22-tier in-commit vs deliberate-bind H-005 to T-542) is the
 ## Supersedes / superseded by
 
 None. Does **NOT** supersede ADR-0011 (orthogonal pre/post-MVP-sign-off context); extends §19 per the post-Live-ready-phase path ADR-0011:107 anticipated.
+
+## Follow-up — F6 scope clarification (2026-05-17, operator decision C)
+
+At the T-545 plan-stage (the `SignalsSection.source_filter` dead-schema-field fix), plan-reviewer Gate-1 flagged per **L-029** that F6 as opened by this ADR named only the **3 residual carve-outs** (T-542 H-005 / T-543 D9 / T-544 strategy-engine-smoke); a new operator-directed fix (T-545) had no phase home — a §0.10 phase-gate near-miss in a signed-off-MVP repo (the identical pattern L-029 was born from at T-541; the main session-flow should have caught it at session-start per L-029's active control, the gate caught it).
+
+**Operator decision C (2026-05-17):** F6 scope-intent is **extended**. F6 admits not only the 3 original F5-sign-off residual carve-outs but also **operator-directed post-MVP bug-fixes / improvements** surfaced after F5 sign-off. Governance for each such item:
+
+- Promote to a **numbered F6 task** in `TASKS.md` `### F6 numbered` (the F6 `/N` denominator grows; the T-541 opener stays excluded — mirror T-500/T-523/T-200).
+- **No per-item ADR** — ADR-0015 already unlocked F6 via the §6.7 mechanism; this follow-up is the **standing scope-intent basis** for the whole post-MVP batch (distinct from T-541, which had to *open* F6 itself).
+- Each item still runs its own full Gate-1..4 cycle (this clarification governs *phase admissibility*, not the per-task review discipline).
+- **Does NOT reopen the F5 §A+§B Live-ready sign-off** — F6 remains strictly additive post-MVP; no §N10 regression of the signed MVP.
+
+First item under this clarification: **T-545** (`source_filter`). This follow-up is the governance basis for the upcoming operator-directed post-MVP batch (CI-minute-batched per the operator's deferred-push mode — see the session memory).
