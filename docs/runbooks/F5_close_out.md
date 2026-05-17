@@ -98,14 +98,14 @@ E5 — Live-ready MVP scope, PAPER-FEATURE-COMPLETE section SIGNED OFF:
 _(Operator fills on execution. Strict ISO-8601 `+00:00` per §N1.)_
 
 ```
-E6 [ ]  (hardening T-524..T-536 shipped per docs/audit/f5-task-completion.md + integration tests green + dev_stack deployment executed)
-Run timestamp:        `YYYY-MM-DDTHH:MM:SS+00:00`
-Operator:             `<name>`
-Master HEAD at run:   `<git rev-parse HEAD>`
-Result:               `PASS` / `PASS WITH N PARTIALS` / `FAIL` — <one-line summary>
+E6 [x]  (hardening T-524..T-536 shipped per docs/audit/f5-task-completion.md + integration tests green + dev_stack deployment executed)
+Run timestamp:        `2026-05-17T05:24:14+00:00`
+Operator:             `luster`
+Master HEAD at run:   `37e1805f967557e4e63154cc3dcb4e497da99e2f`
+Result:               `PASS WITH 3 PARTIALS` — hardening T-524..T-536 shipped: **VERIFIED** (T-539 ledger audit `docs/audit/f5-task-completion.md` = "F5 LEDGER VERIFIED"). Integration tests green: **CI-grade** — the hardening cluster shipped green via per-task gates + CI-full; NOT independently re-run on the current (markdown-only) HEAD (same basis as E3). Live-ready deployment runbook executed: **PARTIAL** — the 2026-05-17 close-out RUN built + ran the full containerized stack healthy + a live market-data feed (real deployment evidence); the full F5_E2 kill/restart smoke stayed CI-grade per the T-522 close-out **decision A**; the D1–D11 runbook drifts were corrected by T-540. H-005 DEFERRED carve-out unchanged. Informed Live-ready sign-off on this runbook's "Deliberate residual" basis — NOT a clean PASS.
 
 E6 — Live-ready MVP scope SIGNED OFF:
-  operator: ____________________   @ ____-__-__T__:__:__+00:00
+  operator: luster   @ 2026-05-17T05:24:14+00:00
 ```
 
 Discoveries during run (any master-fix commits in the same session — list `fix(T-NNN)` + hash, mirror the F4_E1 precedent). Tech-debt / follow-up candidates (NOT F5 blockers): list or "none".
