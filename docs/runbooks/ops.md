@@ -78,7 +78,7 @@ cat configs/bots/alpha.yaml
 
 ```bash
 # Vždy validuj YAML pred aplikovaním – API vráti 422 ak niečo nesedí
-curl -s -X POST http://localhost:8000/api/bot-configs/validate \
+curl -s -X POST http://localhost:8000/api/configs/validate \
   -H "Content-Type: application/json" \
   -d "{\"bot_id\": \"BOTID\", \"yaml_text\": $(cat configs/bots/BOTID.yaml | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}" \
   | python3 -m json.tool
@@ -91,6 +91,24 @@ Ak `valid: true` – pokračuj. Ak `valid: false` – `errors` pole povie čo tr
 ## Správa botov
 
 ### Pridanie nového bota
+
+> **Prerekvizity (zistené ops 2026-05-17):**
+> - **DB schéma musí existovať.** Migrácie nie sú v compose ani v žiadnom
+>   init servise — sú manuálny krok. Na čerstvej DB (žiadna tabuľka `bots`)
+>   spusti z hosta cez container bridge IP postgresu:
+>   `POSTGRES_URL=postgresql://scalper:<pg_password>@<pg_container_ip>:5432/scalper uv run alembic -c migrations/alembic.ini upgrade head`
+>   (`migrations/env.py` číta `POSTGRES_URL`, NIE `DATABASE_URL`, neload-uje `.env`;
+>   postgres nepublikuje 5432 na host → container IP cez `docker inspect`).
+> - **`compose.dev.yaml` je aktívne mergnuté** (env_file `!reset null`,
+>   `DATABASE_URL`/secrety interpolované z project-root `.env`). Nové env vars
+>   čítané službami pod dev overlayom musia ísť aj do project-root `.env`,
+>   nielen do `/etc/scalper-v2/secrets.env`.
+> - **Live bot:** per-bot `BOT_<ID>_BYBIT_API_KEY/SECRET` + `BOT_CONFIRM_LIVE`
+>   sa do `execution-service` ešte **neprepájajú (T-215, neimplementované)**.
+>   `execution-service` číta `select_active_bots` (len `status='active'`) a pre
+>   `exchange_mode='live'` vyžaduje `BOT_CONFIRM_LIVE=yes` vo svojom env — inak
+>   RuntimeError a pád celej služby. **Live bota drž `status='paused'`** v DB
+>   kým T-215 nie je hotové; inak zhodíš order execution pre celú platformu.
 
 **Krok 1 – YAML konfig**
 
@@ -194,7 +212,7 @@ VALUES (
 **Krok 3 – Zaregistruj konfig cez API**
 
 ```bash
-curl -s -X POST http://localhost:8000/api/bot-configs/BOTID/apply \
+curl -s -X POST http://localhost:8000/api/configs/BOTID/apply \
   -H "Content-Type: application/json" \
   -d "{
     \"yaml_text\": $(cat configs/bots/BOTID.yaml | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))'),
@@ -272,6 +290,22 @@ docker compose ps strategy-engine-BOTID
 docker compose logs --tail=30 strategy-engine-BOTID
 ```
 
+### Webhook kontrakt (signal-gateway)
+
+`POST /webhook` (verejne cez nginx `/webhook,/health,/ready` → `signal-gateway:8000`;
+nginx host port `127.0.0.1:8080`; externe cez systemd cloudflared tunnel `signabot`).
+
+- Body model `SignalEnvelope` (`services/signal_gateway/app/models.py`):
+  povinné `symbol`, `action` (`Literal["LONG","SHORT","CLOSE"]`), `source`,
+  `idempotency_key`; extra top-level kľúče sa absorbujú do `payload`.
+- `symbol` musí byť **input alias zo `symbol_map`**, nie kanonický. Seed (mig.
+  0001): `BTCUSDT.P→BTCUSDT`, `ETHUSDT.P→ETHUSDT`. Neznámy alias → `422
+  symbol_unknown`.
+- `source` musí byť v `signals.source_filter` bota (ak je nastavený), inak sa
+  signál ticho preskočí.
+- HMAC: hlavička **`X-Signature`** = hex HMAC-SHA256 raw request body pod
+  `SIGNAL_GATEWAY_HMAC_SECRET`. Chýbajúci/zlý → `401 {"reason":"hmac_invalid"}`.
+
 ---
 
 ### Aktualizácia konfigurácie bota
@@ -283,7 +317,7 @@ docker compose logs --tail=30 strategy-engine-BOTID
 nano configs/bots/BOTID.yaml
 
 # Aplikuj cez API (verzionované, auditované)
-curl -s -X POST http://localhost:8000/api/bot-configs/BOTID/apply \
+curl -s -X POST http://localhost:8000/api/configs/BOTID/apply \
   -H "Content-Type: application/json" \
   -d "{
     \"yaml_text\": $(cat configs/bots/BOTID.yaml | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))'),
@@ -358,7 +392,7 @@ docker compose restart
 
 ```bash
 # Rýchly healthcheck všetkých služieb
-for s in signal-gateway execution strategy-engine-alpha strategy-engine-beta feature-engine market-data analytics-api alerting; do
+for s in signal-gateway execution strategy-engine-demo strategy-engine-smoke feature-engine market-data analytics-api alerting; do
   status=$(docker compose exec $s python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)" 2>&1 && echo OK || echo FAIL)
   echo "$s: $status"
 done

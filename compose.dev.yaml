@@ -133,18 +133,13 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
 
-  # strategy-engine-alpha + strategy-engine-beta dev overlays. Mirror
+  # strategy-engine-demo + strategy-engine-smoke dev overlays. Mirror
   # signal-gateway pattern (compose.dev.yaml:110-123 above) — env_file
   # !reset null avoids EACCES on /etc/scalper-v2/, DATABASE_URL injected
   # from project-root .env. No host port publish: strategy-engine is
   # internal-only per §16.6 (signal-gateway publishes 127.0.0.1:8000 only
   # because operator-driven webhook-curl smoke needs it).
-  strategy-engine-alpha:
-    env_file: !reset null
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-
-  strategy-engine-beta:
+  strategy-engine-demo:
     env_file: !reset null
     environment:
       DATABASE_URL: ${DATABASE_URL}

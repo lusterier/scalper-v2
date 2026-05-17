@@ -342,7 +342,7 @@ services:
 
   # strategy-engine — per-bot decision process (brief §9.4, §18.1, §19 F3
   # milestone). Two named compose services per BRIEF §18.1:2374-2384 verbatim
-  # shape: strategy-engine-alpha + strategy-engine-beta share the same image
+  # shape: strategy-engine-demo + strategy-engine-smoke share the same image
   # (single Dockerfile T-309) parameterized by BOT_ID. Each container loads
   # configs/bots/<bot_id>.yaml at lifespan startup (T-310a-validated BotConfig
   # sections) and runs the §9.4 main-loop signal consumer (T-310b). Internal-
@@ -358,7 +358,13 @@ services:
   # is T-F3+ deferred per §0.8 anti-hypothetical; today no service code
   # reads the var, T-311 ships brief-required wiring so future task can land
   # the lifespan check in a single small diff.
-  strategy-engine-alpha:
+  # strategy-engine-demo — first real bot, Bybit demo account. exchange.mode:
+  # live (Bybit demo uses the live API endpoint). Same image as
+  # strategy-engine-smoke; BOT_ID=demo loads configs/bots/demo.yaml
+  # (passthrough scoring). NOTE: per-bot Bybit key wiring into
+  # execution-service is T-215 (not yet implemented) — until then the bot
+  # cannot place live orders even with real keys in secrets.env.
+  strategy-engine-demo:
     build:
       context: .
       dockerfile: services/strategy_engine/Dockerfile
@@ -372,45 +378,10 @@ services:
       SERVICE_NAME: strategy-engine
       LOG_LEVEL: INFO
       NATS_URL: nats://nats:4222
-      BOT_ID: alpha
+      BOT_ID: demo
       BOT_CONFIG_DIR: /app/configs/bots
       PLUGIN_REGISTRY_PATH: /app/configs/plugin_registry.yaml
-      BOT_CONFIRM_LIVE: ${BOT_ALPHA_CONFIRM_LIVE:-}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-      nats-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2); sys.exit(0)"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 15s
-
-  # strategy-engine-beta — second per-bot compose service variant. Same
-  # image as strategy-engine-alpha; service-name DNS + BOT_ID env-var
-  # isolate. T-313 E1 dvoj-bot integration test brings up both.
-  strategy-engine-beta:
-    build:
-      context: .
-      dockerfile: services/strategy_engine/Dockerfile
-    image: scalper-v2/strategy-engine:dev
-    restart: unless-stopped
-    networks: [backend]
-    env_file:
-      - path: /etc/scalper-v2/secrets.env
-        required: false
-    environment:
-      SERVICE_NAME: strategy-engine
-      LOG_LEVEL: INFO
-      NATS_URL: nats://nats:4222
-      BOT_ID: beta
-      BOT_CONFIG_DIR: /app/configs/bots
-      PLUGIN_REGISTRY_PATH: /app/configs/plugin_registry.yaml
-      BOT_CONFIRM_LIVE: ${BOT_BETA_CONFIRM_LIVE:-}
+      BOT_CONFIRM_LIVE: ${BOT_DEMO_CONFIRM_LIVE:-}
     depends_on:
       postgres:
         condition: service_healthy
