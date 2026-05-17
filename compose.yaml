@@ -341,6 +341,14 @@ services:
       SERVICE_NAME: execution-service
       LOG_LEVEL: INFO
       NATS_URL: nats://nats:4222
+      # Safety wiring for the pool.py live-mode safeguard
+      # (_check_live_mode_safeguard reads the global env BOT_CONFIRM_LIVE;
+      # absent → RuntimeError → execution-service crash-loop when a live bot
+      # is active). Map the per-bot BOT_DEMO_CONFIRM_LIVE → the global var,
+      # mirroring the strategy-engine-demo block. Single-live-bot scope
+      # (demo); a multi-live-bot setup needs a per-bot safeguard (pool.py
+      # design limitation, pre-existing — not introduced here).
+      BOT_CONFIRM_LIVE: ${BOT_DEMO_CONFIRM_LIVE:-}
     depends_on:
       postgres:
         condition: service_healthy
