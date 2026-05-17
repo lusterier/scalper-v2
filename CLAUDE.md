@@ -163,6 +163,75 @@ Maintain `docs/review-lessons.md` as the persistent memory of patterns the revie
 
 This turns one-off catches into permanent immunity. Don't add lessons for every catch — only for patterns that could repeat.
 
+# Ops mode
+
+Ops tasky sú **oddelené od development taskov**. Nevyžadujú plan-reviewer ani review gates.
+Riaď sa výlučne podľa `docs/runbooks/ops.md`.
+
+**Kedy ide o ops task** (nie development):
+- Pridanie / pozastavenie / reštart bota
+- Správa docker compose stacku
+- DB dotazy a analytika
+- Diagnostika problémov za behu
+- Aktualizácia bot konfigu (nie kódu)
+
+**Kedy ide o development task** (gates platia):
+- Zmena Python kódu v `packages/` alebo `services/`
+- Nová migrácia
+- Zmena YAML schémy / Pydantic modelov
+- Čokoľvek čo ide do `git commit`
+
+### Ops pravidlá
+
+1. **Pred každou ops akciou** prečítaj `docs/runbooks/ops.md`.
+2. **Secrets**: `/etc/scalper-v2/secrets.env` – nikdy nevypisuj hodnoty, iba použij v príkazoch.
+3. **Destruktívne príkazy** (DELETE, docker stop pre live bota, ...) – oznám čo chceš spraviť
+   a počkaj na „rob to" od operátora.
+4. **Analytika**: používaj SQL dotazy z runbooku; ak operátor chce vlastnú analýzu, napíš dotaz,
+   spusti ho a výsledky interpretuj – nevyžaduj jeho zásah do SQL.
+5. **Problémy**: diagnostikuj sám cez logy + DB + healthchecky; navrhni riešenie a potom ho
+   implementuj po súhlase.
+6. **Interaktívny mód**: ak operátor povie „sleduj logy" alebo „diagnostikuj X", rób to
+   iteratívne – jeden príkaz, výsledok, ďalší krok. Nenavrhuj dlhé plány vopred.
+
+### Schéma má prednosť pred runbookom
+
+Runbook je návod na postup, nie zdrojový kód. Kód sa mení, runbook môže zaostávať.
+
+**Pred generovaním bot YAML konfigurácie vždy skontroluj aktuálnu schému:**
+
+```bash
+# Aktuálna BotConfig schéma (povinné a voliteľné polia)
+grep -A 200 "^class BotConfig" packages/scoring/types.py
+
+# Referenčná šablóna (najnovšia production konfigurácia)
+cat configs/bots/alpha.yaml
+```
+
+Skontroluj najmä tieto triedy v `packages/scoring/types.py`:
+- `BotConfig` – top-level štruktúra
+- `RiskSection` – risk management polia (cooldown, caps, loss limit, drawdown)
+- `SizingSection` – position sizing (tiers, score_multipliers, max_notional, method, risk_pct)
+- `ShadowConfig` – shadow variants
+
+Ak nájdeš pole v schéme ktoré nie je v runbooku, **použi hodnotu zo schémy** (default
+z Pydantic Field) a **pridaj poznámku do runbooku** – aktualizuj `docs/runbooks/ops.md`
+priamo na konci ops tasku.
+
+### Kedy aktualizovať ops runbook (pre development tasky)
+
+Brief-reviewer **MUSÍ** skontrolovať aktualizáciu `docs/runbooks/ops.md` ak staged diff:
+- Pridáva alebo mení polia v `BotConfig`, `RiskSection`, `SizingSection` alebo inej
+  config Pydantic schéme v `packages/scoring/types.py`
+- Pridáva nové env vars čítané v `services/execution/app/pool.py`
+- Pridáva novú službu (nový Dockerfile + compose.yaml blok)
+- Mení schému tabuľky `bots` alebo `bot_configs`
+
+Toto je **mandatory**, nie optional. Ak brief-reviewer nenájde aktualizáciu runbooku
+pri relevantnom diffe, vráti `FIX FIRST`.
+
+---
+
 ## What NOT to do
 
 - Don't address the operator by name (unknown).
