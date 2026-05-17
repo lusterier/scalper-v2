@@ -22,9 +22,11 @@ deployment-layer confirmation, NOT a re-test.
 
 ## Prerequisites
 
-- [ ] Project-root `.env` populated with `DATABASE_URL` + `POSTGRES_PASSWORD` + the signal-gateway `HMAC_SECRET`.
-- [ ] Alembic migrations at head: `uv run alembic upgrade head`.
-- [ ] A bot config in `configs/bots/` with a `shadow:` block per BRIEF §13.2 (`enabled: true` + ≥1 `variants:` entry + `max_duration_hours` large enough — e.g. 4 — that variants stay pending across the kill/restart window), and its `bots` row present.
+- [ ] Project-root `.env` populated; source it: `set -a; . ./.env; set +a`. **D8:** the signal-gateway secret env var is `SIGNAL_GATEWAY_HMAC_SECRET` (NOT the un-prefixed name the prior runbook used); containerized signal-gateway compose default is `dev-hmac-secret-32-chars-padding!!`. **D4:** host-run connects `127.0.0.1`, not the `.env` docker-internal host.
+- [ ] Alembic migrations at head: `POSTGRES_URL="postgresql://scalper:$POSTGRES_PASSWORD@127.0.0.1:5432/scalper" uv run alembic -c migrations/alembic.ini upgrade head` (**D1** — `alembic.ini` in `migrations/`; `migrations/env.py` reads `POSTGRES_URL`, no `.env` auto-load).
+- [ ] Use the shipped `configs/bots/smoke.yaml` (**D7** — ships a `shadow:` block: `enabled: true` + 2 variants + `max_duration_hours: 4`; `scoring.mode: passthrough` so any signal accepts without the F4+-unimplemented `oi_change`). Seed its `bots` row: `docker exec scalper-v2-postgres-1 psql -U scalper -d scalper -c "INSERT INTO bots (bot_id,display_name,status,exchange_mode) VALUES ('smoke','Smoke fixture','active','paper') ON CONFLICT (bot_id) DO NOTHING;"`.
+- [ ] **D10:** the execution-service paper adapter requires, for EVERY `bots` row, env `BOT_<ID>_PAPER_SEED_BALANCE` / `_SLIPPAGE_MODEL` (`fixed_pct`|`proportional_to_qty`|`half_spread`) / `_FEE_RATE` / `_SLIPPAGE_PARAMS_JSON` — e.g. `BOT_SMOKE_PAPER_SEED_BALANCE=10000`, `BOT_SMOKE_PAPER_SLIPPAGE_MODEL=fixed_pct`, `BOT_SMOKE_PAPER_FEE_RATE=0.00055`, `BOT_SMOKE_PAPER_SLIPPAGE_PARAMS_JSON='{"fixed_slippage_pct":"0"}'` (+ the same for alpha/beta or execution-service crash-loops on startup).
+- [ ] **Honesty note (L-028 / T-522 close-out decision A):** the individual D-fixes in this runbook are close-out-RUN-verified-correct (commit `b16d41a` / `docs/status.md`), but the full F5_E2 live signal→kill→restart sequence was **NOT re-run end-to-end under T-540** — compose ships `strategy-engine-alpha`/`-beta` only; a `smoke` bot also needs a `strategy-engine-smoke` service (documented residual). **E3's sanctioned verification is CI-grade** (the 2 controlling restart tests green in CI-full + the T-519 §20 audit + the E4 hazard meta-test); this deployment smoke is the optional deeper confirmation, NOT the E3 sign-off gate.
 - [ ] `docker compose -f compose.yaml -f compose.dev.yaml up -d postgres nats nats-init signal-gateway market-data-svc feature-engine execution-service strategy-engine-<bot>` → all healthy (`docker compose ps` shows none `unhealthy`).
 - [ ] `ohlc_1m` seeded/flowing for the bot's symbol(s) so §13.4 replay has candles from `created_at`→now.
 
@@ -33,7 +35,10 @@ deployment-layer confirmation, NOT a re-test.
 POST an ACCEPT-able signal via the signal-gateway webhook (HMAC, F3_E1 precedent):
 
 ```
-SIGNATURE=$(printf '%s' "$SIGNAL_PAYLOAD" | openssl dgst -sha256 -hmac "$HMAC_SECRET" | awk '{print $2}')
+# D11: symbol_map ships `BTCUSDT.P → BTCUSDT` — the webhook payload uses the
+# TradingView-side alias `BTCUSDT.P` (the canonical `BTCUSDT` is unmapped → reject).
+SIGNAL_PAYLOAD='{"source":"tv_test","idempotency_key":"f5-e2-smoke-1","symbol":"BTCUSDT.P","action":"LONG","payload":{}}'
+SIGNATURE=$(printf '%s' "$SIGNAL_PAYLOAD" | openssl dgst -sha256 -hmac "$SIGNAL_GATEWAY_HMAC_SECRET" | awk '{print $2}')  # D8: env var is SIGNAL_GATEWAY_HMAC_SECRET
 curl -X POST http://127.0.0.1:8000/webhook \
   -H "Content-Type: application/json" -H "X-Signature: sha256=${SIGNATURE}" \
   -d "$SIGNAL_PAYLOAD"

@@ -19,7 +19,7 @@ The single F5 close-out gate: verify + sign off all 6 F5 exit criteria, completi
 
 ## Pre-flight
 
-- [ ] Dev stack up per `docs/runbooks/dev_stack.md`; project-root `.env` populated; `uv run alembic upgrade head`.
+- [ ] Dev stack up per `docs/runbooks/dev_stack.md`; project-root `.env` populated + sourced (`set -a; . ./.env; set +a`); `POSTGRES_URL="postgresql://scalper:$POSTGRES_PASSWORD@127.0.0.1:5432/scalper" uv run alembic -c migrations/alembic.ini upgrade head` (**D1** — `alembic.ini` lives in `migrations/`; `migrations/env.py` reads `POSTGRES_URL` and does NOT auto-load `.env`; host-run DSN uses `127.0.0.1`).
 - [ ] Record master HEAD at run: `git rev-parse HEAD` (captured in the §A/§B sign-off blocks).
 - [ ] **Ledger trust precondition**: T-539 `docs/audit/f5-task-completion.md` verdict is **F5 LEDGER VERIFIED** (counter `64/66` correct + gapless; every E1..E6 owning task green; no forgotten/uncounted task). E6's "all hardening shipped" leans on that audit — confirm it before signing.
 
@@ -31,7 +31,7 @@ Evidence is commit-cited (feat SHA + controlling test / re-runnable command), no
 
 - **Owners** (TASKS.md F5 exit-criteria trace): T-507 (CLI/orchestrator) + T-509 (worker connect).
 - **Evidence**: feat `e4723e8` (T-507a BusProtocol + ReplayBus subscribe), `db2d282` (T-507b `scripts/backtest.py` CLI orchestrator + ReplayClock + analytics helpers), `850b94a` (T-509 backtest worker connect). Replay determinism + intra-candle + 1-week seeded backtest covered by unit/integration tests (BRIEF §12.2 "Tests required").
-- **Verify**: run `docs/runbooks/F5_E1_backtest_smoke.md` **Step 1** → expected: `scripts/backtest.py` exits 0, a `run_id` printed, `backtest_runs.finished_at` non-NULL, `backtest_runs.summary` has the 5 aggregates (total trades / WR / P&L / PF / MDD).
+- **Verify**: run `docs/runbooks/F5_E1_backtest_smoke.md` **Step 1** → expected: the corrected `python -m scripts.backtest --config-path configs/bots/smoke.yaml …` (**D2/D3/D4**) exits 0, a `run_id` printed, `backtest_runs.finished_at` non-NULL, `backtest_runs.summary` has the 5 aggregates (total trades / WR / P&L / PF / MDD). T-540-verified runnable (close-out RUN `b16d41a` + re-run).
 - [ ] **E1 verified** (F5_E1 Step 1 PASS).
 
 ### E2 — Two backtests with different configs compared side-by-side
@@ -45,7 +45,7 @@ Evidence is commit-cited (feat SHA + controlling test / re-runnable command), no
 
 - **Owners**: T-511 (FSM + paper seed) + T-512a (replay infra) + T-512b (variant kill-test) + T-513b1 (rejected replay infra) + T-513b2 (rejected kill-test). **FULLY SATISFIED 2026-05-08** per the TASKS.md exit-criteria trace.
 - **Evidence**: feat `067ad6f` (T-512a §13.4 restart-recovery via OHLC replay, H-023), `83e0c4d` (T-512b mandatory kill-during-variant test), `d8d54de` (T-513b1 rejected-signal restart-recovery), `709ca81` (T-513b2 rejected kill-test). Controlling tests: `services/execution/tests/integration/test_shadow_restart.py::test_shadow_variant_survives_restart_via_replay` + `services/execution/tests/integration/test_rejected_observation_restart.py::test_rejected_signal_shadow_survives_restart_via_replay`.
-- **Verify**: `uv run pytest services/execution/tests/integration/test_shadow_restart.py::test_shadow_variant_survives_restart_via_replay services/execution/tests/integration/test_rejected_observation_restart.py::test_rejected_signal_shadow_survives_restart_via_replay` → both pass; **and** run `docs/runbooks/F5_E2_shadow_smoke.md` Steps 1-3 → expected: the pre-kill `shadow_variants` rows survive (original `created_at`) and are finalized/resumed via replay — NOT `lost_on_restart` (H-023).
+- **Verify (D6 — CORRECTED):** the 2 controlling tests `test_shadow_restart.py::test_shadow_variant_survives_restart_via_replay` + `test_rejected_observation_restart.py::test_rejected_signal_shadow_survives_restart_via_replay` are **CI-full / testcontainer-gated** — the integration conftest skips them unless `NATS_TEST_URL` + `POSTGRES_TEST_DSN` are set, and running them ad-hoc against the shared dev-stack NATS is NOT a valid harness (request-reply times out — an environment mismatch, not a shadow-restart defect). **Sanctioned E3 verification:** (a) confirm both tests green in **CI-full** on the signed master HEAD, OR (b) run `docs/runbooks/F5_E2_shadow_smoke.md` (deployment-layer smoke — see its L-028 honesty note re the `strategy-engine-smoke` residual). Per the T-522 close-out **decision A**, E3's basis is the CI-grade evidence: these tests shipped green CI-full 2026-05-08 (T-512b/T-513b2) + the T-519 §20 audit + the E4 hazard meta-test (all resolve H-016/H-023). Replay recovery (H-023): pre-kill `shadow_variants` survive (original `created_at`) and are finalized/resumed — NOT `lost_on_restart`.
 - [ ] **E3 verified** (2 named tests pass + F5_E2 PASS).
 
 ### E4 — All hazards in §20 have an associated test that passes
@@ -74,6 +74,7 @@ Evidence is commit-cited (feat SHA + controlling test / re-runnable command), no
 - **E4 residual: H-005 DEFERRED.** Per T-519 + operator-acknowledged carve-out: the `opposite_side_open` scoring rule is code-verified non-existent; §20 H-005 Policy+Test are DEFERRED, tracked in a NEW T-F5+ backlog ticket ("opposite_side_open scoring condition + H-005 test"). E4 is therefore **35/36 + H-005 explicitly DEFERRED** — the Live-ready sign-off is on this **known-residual basis, NOT a false 100%**. The CI guard `tests/test_hazard_catalog_coverage.py` enforces the H-005-DEFERRED whitelist.
 - T-522 **references, does not re-derive**, the T-519 / T-521 / T-539 artifacts — this runbook is the orchestration + sign-off gate; the underlying audits stand on their own commits.
 - **F5+ opportunistic backlog** (post-Live-ready, NOT F5 blockers): per TASKS.md "## Backlog → ### F5+ opportunistic" — explicitly out of this F5 sign-off.
+- **T-540 corrected this runbook's command/prereq drift** (D1–D11 from the close-out RUN `b16d41a`; plan `docs/plans/T-540.md`). Deliberate NOT-touched boundary (L-026): **D9** (native analytics-api `SERVICE_NAME` mislabel) → separate `fix(...)` (code bug, different class); `configs/bots/alpha.yaml`/`beta.yaml` (real bots; the `oi_change` scoring dependency is the separate F4+ "built-in oi_change feature" ticket — `smoke.yaml` is the runnable fixture instead); closed-phase runbooks `F3_E1_dvoj_bot_smoke.md` / `F2_E1_testnet_smoke.md` (carry the same D8/D11-class patterns but are F2/F3-closed operator docs, out of F5-corrective scope).
 
 ## Sign-off
 

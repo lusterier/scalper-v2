@@ -1,0 +1,71 @@
+# T-540 — dedicated runnable F5 smoke fixture (D7/oi_change resolution).
+#
+# scoring.mode: passthrough + rules: []  → decision="passthrough" deterministically
+# with ZERO feature resolution (packages/scoring/evaluator.py:155-156; pinned by
+# test_passthrough_empty_rules_decision_passthrough). This sidesteps the F4+-
+# unimplemented `oi_change` feature that alpha.yaml's active-mode rule binds to —
+# alpha.yaml is a real bot and is NOT modified (the oi_change impl is the separate
+# F4+ "built-in oi_change feature" backlog item). smoke.yaml exists so the F5_E2
+# shadow-restart smoke + F5_close_out E3 are runnable out-of-the-box.
+#
+# execution.* + risk: mirrored verbatim from alpha/beta.yaml (so the F5_E1 Step-2
+# `--override 'execution.sl_pct=...'` example targets a field that exists here).
+# trading.universe is canonical (BTCUSDT/ETHUSDT — yaml_loader maps universe→symbols;
+# NOT the `.P` TradingView-input alias, which only appears in the F5_E2 webhook
+# *payload*). String-quoted Decimals avoid PyYAML float artefacts.
+
+bot_id: smoke
+version: 1
+
+exchange:
+  mode: paper
+  account: sub_smoke
+  api_key_env: BOT_SMOKE_BYBIT_API_KEY
+  api_secret_env: BOT_SMOKE_BYBIT_API_SECRET
+
+signals:
+  ttl_seconds: 120
+
+trading:
+  universe: [BTCUSDT, ETHUSDT]
+
+execution:
+  qty: "0.001"
+  leverage: 20
+  sl_pct: "0.01"
+  tp_pct: "0.01"
+  tp_qty_pct: "0.5"
+  be_trigger: "0.005"
+  be_sl_level: "0.003"
+  trail_pct: "0.005"
+  fee_rate: "0.00055"
+
+scoring:
+  mode: passthrough
+  trigger_threshold: 1.0
+  rules: []
+
+# all-zero risk: defaults disable the cooldown (T-526) + concurrent-caps (T-524)
+# gates — no behavior change vs baseline; see alpha.yaml comment for details.
+risk:
+  cooldown_after_loss_minutes: 0
+  cooldown_after_streak_n_losses: 0
+  cooldown_after_streak_n_losses_minutes: 0
+  max_open_trades_per_bot: 0
+  max_open_trades_global: 0
+  daily_loss_limit_usd: "0"
+  max_drawdown_pct: "0"
+
+# F5_E2 shadow-restart smoke fixture: enabled + 2 variants overriding existing
+# ExecutionSection fields (ShadowVariant.overrides targets execution.*; names
+# unique; max_duration_hours ≤ 24 keeps variants pending across the kill/restart).
+shadow:
+  enabled: true
+  max_duration_hours: 4
+  variants:
+    - name: tighter_sl
+      overrides:
+        sl_pct: "0.005"
+    - name: wider_tp
+      overrides:
+        tp_pct: "0.02"

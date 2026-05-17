@@ -1973,7 +1973,7 @@ Implements `ExchangeClient`. State lives in DB tables `paper_positions`, `paper_
 
 ### 12.2 Backtest harness
 
-CLI: `python scripts/backtest.py --bot <id> --from <date> --to <date> [--override 'path.to.field=value' ...]`
+CLI: `python -m scripts.backtest --bot <id> --config-path configs/bots/<id>.yaml --from <date> --to <date> [--override 'path.to.field=value' ...]` (module form — direct script-path invocation fails `ModuleNotFoundError: packages` because the repo root is not on `sys.path`; `--config-path` is required in run mode. Per the T-540 fix of the D1–D11 close-out-run drifts.)
 
 **Components:**
 - `ReplayBus`: in-process NATS-compatible publish/subscribe; messages delivered in timestamp order.
@@ -1992,7 +1992,7 @@ CLI: `python scripts/backtest.py --bot <id> --from <date> --to <date> [--overrid
 - Summary statistics (total trades, WR, P&L, PF, MDD) computed and persisted to `backtest_runs.summary`.
 
 **Comparison mode:**
-- `python scripts/backtest.py --compare run_A_uuid run_B_uuid`: outputs a diff of aggregate metrics and a per-trade diff where the same signal produced different outcomes.
+- `python -m scripts.backtest --compare run_A_uuid run_B_uuid`: outputs a diff of aggregate metrics and a per-trade diff where the same signal produced different outcomes.
 
 **Tests required:**
 - Unit: replay determinism (same input → same output).

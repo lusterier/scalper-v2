@@ -19,7 +19,7 @@ End-to-end UX smoke verifying all 9 dashboard sections + Playwright CI green on 
 
 - [ ] Project root `.env` populated with `DATABASE_URL` + `POSTGRES_PASSWORD`.
 - [ ] `docker compose -f compose.yaml -f compose.dev.yaml up -d postgres nats nats-init` brings infra healthy.
-- [ ] Alembic migrations applied (manual or via service-side init): `uv run alembic upgrade head`.
+- [ ] Alembic migrations applied (manual or via service-side init): `POSTGRES_URL="postgresql://scalper:$POSTGRES_PASSWORD@127.0.0.1:5432/scalper" uv run alembic -c migrations/alembic.ini upgrade head` (D1 — `alembic.ini` is in `migrations/` not repo root; `migrations/env.py` reads `POSTGRES_URL` and does NOT auto-load `.env`; host-run DSN uses `127.0.0.1`).
 - [ ] At least 1 bot config in `configs/bots/` (alpha.yaml or similar) — needed for BotSelector + Strategy editor + Settings.
 - [ ] Optional fixture data in DB (smoke renders empty placeholders if absent — runbook still tickable for navigation criteria).
 
