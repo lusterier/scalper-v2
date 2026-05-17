@@ -74,7 +74,11 @@ else
   # Host 0.0.0.0 per operator-led 2026-05-08 trusted-LAN stance (matches
   # postgres + nats LAN bind in compose.dev.yaml). Vite proxy still works
   # via 127.0.0.1 — same listener.
-  DATABASE_URL="${DATABASE_URL}" NATS_URL="${NATS_URL}" \
+  # SERVICE_NAME pinned (D9 / T-543): the `set -a; . .env` prelude above
+  # exports .env's SERVICE_NAME=signal-gateway; analytics-api Settings would
+  # inherit it and log service=signal-gateway. Pin our own identity here, the
+  # same way DATABASE_URL/NATS_URL override .env, mirroring compose.yaml.
+  DATABASE_URL="${DATABASE_URL}" NATS_URL="${NATS_URL}" SERVICE_NAME=analytics-api \
     setsid nohup uv run uvicorn services.analytics_api.app.main:create_app \
     --factory --host 0.0.0.0 --port 8000 \
     >"${ANALYTICS_LOG_FILE}" 2>&1 &
