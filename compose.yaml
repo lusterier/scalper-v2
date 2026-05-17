@@ -425,6 +425,42 @@ services:
       retries: 5
       start_period: 15s
 
+  # strategy-engine-smoke — F5_E2 shadow-restart deployment-smoke fixture bot
+  # (T-544). Same image as strategy-engine-alpha/-beta; BOT_ID=smoke loads
+  # configs/bots/smoke.yaml (T-540: scoring.mode passthrough + shadow:). Lets
+  # docs/runbooks/F5_E2_shadow_smoke.md run the full local deployment smoke.
+  strategy-engine-smoke:
+    build:
+      context: .
+      dockerfile: services/strategy_engine/Dockerfile
+    image: scalper-v2/strategy-engine:dev
+    restart: unless-stopped
+    networks: [backend]
+    env_file:
+      - path: /etc/scalper-v2/secrets.env
+        required: false
+    environment:
+      SERVICE_NAME: strategy-engine
+      LOG_LEVEL: INFO
+      NATS_URL: nats://nats:4222
+      BOT_ID: smoke
+      BOT_CONFIG_DIR: /app/configs/bots
+      PLUGIN_REGISTRY_PATH: /app/configs/plugin_registry.yaml
+      BOT_CONFIRM_LIVE: ${BOT_SMOKE_CONFIRM_LIVE:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      nats-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2); sys.exit(0)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
   # analytics-api — read-heavy REST + SSE backing the dashboard UI
   # (brief §9.6, §18.1, §19 F4 milestone). T-400 ships the skeleton:
   # lifespan wires asyncpg.Pool + NatsClient; /health, /ready (bus +
