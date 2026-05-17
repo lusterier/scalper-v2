@@ -2617,6 +2617,24 @@ secrets:
 - Operator signs off on the **Live-ready MVP** scope. *(Renamed from "Plný MVP" per ADR-0011 — production-ready semantic includes pre-live operational hardening cluster T-524..T-536.)*
 - All hardening tasks (T-524..T-536) shipped + integration tests green + Live-ready deployment runbook executed.
 
+### Phase F6 — Post-MVP Hardening (est. ongoing — post-MVP, additive)
+
+**Goal:** resolve the deferred hazards + ops/doc debt accumulated through F5 close-out, beyond the signed Live-ready MVP. **Additive — does NOT reopen or invalidate the F5 §A+§B Live-ready sign-off** (the F6 items were operator-acknowledged residual carve-outs at F5 sign-off, now scheduled — not regressions).
+
+**Tasks:**
+- T-542 — H-005 opposite-side-position guard + H-005 test (resolve the deferred opposite-signal guard; un-DEFER §20 H-005 → E4 36/36).
+- T-543 — D9: native analytics-api `SERVICE_NAME` mislabel fix.
+- T-544 — strategy-engine-smoke compose service (enables a full local F5_E2 deployment smoke).
+- F6+ opportunistic backlog (8 polish items carried over from F5+; see `TASKS.md` `### F6+ opportunistic`).
+
+**Exit criteria:**
+- H-005 resolved — `opposite_side_open` guard implemented + tested; §20 H-005 no longer DEFERRED; E4 36/36.
+- D9 fixed — analytics-api logs the correct `SERVICE_NAME`.
+- `strategy-engine-smoke` compose service shipped.
+- *(Optional)* a full local F5_E2 deployment smoke green end-to-end.
+
+*(Phase F6 added 2026-05-17 per ADR-0015 — §6.7 BRIEF §19 amendment, post-MVP additive. ADR-0011:72/75 rejected an F6 phase in the F5-pre-sign-off context [single-MVP-narrative protection]; ADR-0015 deliberately differs because F5 is now signed-closed [F6 is post-MVP additive, not a 2-phase MVP], consistent with the post-Live-ready phase ADR-0011:107 anticipated. ADR-0015 does NOT supersede ADR-0011.)*
+
 ---
 
 ## 20. Known Hazards Catalog
@@ -3188,7 +3206,7 @@ sizing:
   # DEFERRED — `tier_promotion` / `tier_demotion` are NOT modelled by the
   # shipped SizingSection (operator OQ-2=A at T-527; `extra="forbid"`
   # REJECTS them at config load). Kept for forward reference; tracked by
-  # the T-F5+ backlog ticket (stateful tier-adjustment layer). Do NOT
+  # the T-F6+ backlog ticket (stateful tier-adjustment layer; relabelled T-F5+→T-F6+ 2026-05-17 per ADR-0015 — Phase F6 opened). Do NOT
   # include these keys in a live bot config until that ticket ships.
   # tier_promotion:
   #   min_trades: 10
