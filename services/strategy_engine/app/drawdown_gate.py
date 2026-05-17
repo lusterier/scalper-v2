@@ -101,7 +101,7 @@ async def check_max_drawdown(
     *,
     pool: asyncpg.Pool,
     bot_id: BotId,
-    exchange_mode: Literal["live", "testnet", "paper"],
+    exchange_mode: Literal["live", "testnet", "paper", "demo"],
     now: datetime,
     risk_config: RiskSection,
 ) -> DrawdownDecision:
@@ -117,7 +117,7 @@ async def check_max_drawdown(
         return _NOT_BLOCKED
 
     table_name: Literal["trades", "paper_trades"] = (
-        "trades" if exchange_mode in ("live", "testnet") else "paper_trades"
+        "trades" if exchange_mode in ("live", "testnet", "demo") else "paper_trades"
     )
 
     async with pool.acquire() as conn:

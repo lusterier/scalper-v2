@@ -81,7 +81,7 @@ async def check_opposite_side(
     *,
     pool: asyncpg.Pool,
     bot_id: BotId,
-    exchange_mode: Literal["live", "testnet", "paper"],
+    exchange_mode: Literal["live", "testnet", "paper", "demo"],
     symbol: str,
     signal_side: Literal["buy", "sell"],
     risk_config: RiskSection,
@@ -103,7 +103,7 @@ async def check_opposite_side(
         )
 
     table_name: Literal["position_state", "paper_position_state"] = (
-        "position_state" if exchange_mode in ("live", "testnet") else "paper_position_state"
+        "position_state" if exchange_mode in ("live", "testnet", "demo") else "paper_position_state"
     )
     async with pool.acquire() as conn:
         open_side = await select_open_position_side(

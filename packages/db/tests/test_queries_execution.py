@@ -82,7 +82,7 @@ async def test_select_active_bots_filter_status_applied_via_sql_where_clause() -
 async def test_select_active_bots_validates_exchange_mode_literal() -> None:
     """Unknown exchange_mode in row → ValueError (defends against operator typos)."""
     conn = MagicMock()
-    conn.fetch = AsyncMock(return_value=[_row("alpha", "Alpha", "demo")])
+    conn.fetch = AsyncMock(return_value=[_row("alpha", "Alpha", "garbage")])
     with pytest.raises(ValueError, match="unknown exchange_mode"):
         await select_active_bots(conn)
 
@@ -91,6 +91,7 @@ def test_validate_exchange_mode_accepts_live_testnet_paper() -> None:
     assert _validate_exchange_mode("live") == "live"
     assert _validate_exchange_mode("testnet") == "testnet"
     assert _validate_exchange_mode("paper") == "paper"
+    assert _validate_exchange_mode("demo") == "demo"  # T-549a
 
 
 def test_validate_exchange_mode_rejects_unknown_value() -> None:

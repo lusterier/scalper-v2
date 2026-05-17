@@ -204,3 +204,22 @@ async def test_live_mode_queries_position_state() -> None:
     sql = captured[0][0]
     assert "position_state" in sql
     assert "paper_position_state" not in sql
+
+
+async def test_demo_mode_queries_position_state() -> None:
+    """T-549a §N4 pin: demo (real Bybit demo-trading account) → real
+    `position_state`, NOT paper_position_state — else the H-005 opposite-side
+    guard reads empty paper data and never blocks for demo."""
+    pool, captured = _mock_pool(None)
+    await check_opposite_side(
+        pool=pool,
+        bot_id="alpha",  # type: ignore[arg-type]
+        exchange_mode="demo",
+        symbol="BTCUSDT",
+        signal_side="buy",
+        risk_config=RiskSection(),
+    )
+    assert len(captured) == 1
+    sql = captured[0][0]
+    assert "position_state" in sql
+    assert "paper_position_state" not in sql

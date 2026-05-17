@@ -297,6 +297,23 @@ async def test_live_mode_queries_trades_table() -> None:
     assert captured[0][1:] == ("alpha", 1)
 
 
+async def test_demo_mode_queries_trades_table() -> None:
+    """T-549a §N4 pin: demo (real Bybit demo-trading account) → real `trades`,
+    NOT paper_trades — else the cooldown streak walk reads empty paper data."""
+    pool, captured = _mock_pool([])
+    cfg = RiskSection(cooldown_after_loss_minutes=10)
+    await check_cooldown(
+        pool=pool,
+        bot_id="alpha",  # type: ignore[arg-type]
+        exchange_mode="demo",
+        now=_T_NOW,
+        risk_config=cfg,
+    )
+    assert len(captured) == 1
+    assert "FROM trades " in captured[0][0]
+    assert captured[0][1:] == ("alpha", 1)
+
+
 # 11
 async def test_streak_n_zero_disables_streak_cooldown_regardless_of_streak_minutes() -> None:
     """WG#4 pin: streak_n=0 disables streak knob even when streak_minutes>0.

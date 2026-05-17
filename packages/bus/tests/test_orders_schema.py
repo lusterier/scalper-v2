@@ -87,8 +87,28 @@ def test_order_request_validates_exchange_mode_literal() -> None:
             be_trigger=Decimal("0.003"),
             be_sl_level=Decimal("0.001"),
             trail_pct=Decimal("0.002"),
-            exchange_mode="demo",  # type: ignore[arg-type]
+            exchange_mode="garbage",  # type: ignore[arg-type]
         )
+
+
+def test_order_request_accepts_demo_exchange_mode() -> None:
+    """T-549a: ``exchange_mode="demo"`` (Bybit Demo Trading) is a valid OrderRequest mode."""
+    req = OrderRequest(
+        bot_id="alpha",
+        signal_id=1,
+        symbol="BTCUSDT",
+        side="buy",
+        qty=Decimal("0.001"),
+        leverage=10,
+        sl_pct=Decimal("0.005"),
+        tp_pct=Decimal("0.015"),
+        tp_qty_pct=Decimal("0.5"),
+        be_trigger=Decimal("0.003"),
+        be_sl_level=Decimal("0.001"),
+        trail_pct=Decimal("0.002"),
+        exchange_mode="demo",
+    )
+    assert req.exchange_mode == "demo"
 
 
 # ---------------------------------------------------------------------------

@@ -104,7 +104,7 @@ class OrderRequest(BaseModel):
     be_trigger: Decimal
     be_sl_level: Decimal
     trail_pct: Decimal
-    exchange_mode: Literal["live", "testnet", "paper"]
+    exchange_mode: Literal["live", "testnet", "paper", "demo"]
     # T-511b2 / ADR-0010: shadow runtime config carried from strategy-engine
     # producer (which reads BotConfig.shadow). Empty list = shadow disabled.
     shadow_variants: list[VariantSpec] = Field(default_factory=list)

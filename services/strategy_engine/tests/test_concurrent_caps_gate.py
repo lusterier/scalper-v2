@@ -188,3 +188,17 @@ async def test_live_mode_counts_trades() -> None:
     )
     assert "FROM trades " in captured[0][0]
     assert captured[0][1:] == ("alpha",)
+
+
+async def test_demo_mode_counts_trades() -> None:
+    """T-549a §N4 pin: demo (real Bybit demo-trading account) counts real
+    `trades`, NOT paper_trades — else the concurrent cap is unenforced for demo."""
+    pool, captured = _mock_pool([0])
+    await check_concurrent_caps(
+        pool=pool,
+        bot_id="alpha",  # type: ignore[arg-type]
+        exchange_mode="demo",
+        risk_config=RiskSection(max_open_trades_per_bot=1),
+    )
+    assert "FROM trades " in captured[0][0]
+    assert captured[0][1:] == ("alpha",)

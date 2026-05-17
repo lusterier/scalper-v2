@@ -68,8 +68,8 @@ __all__ = [
 ]
 
 
-ExchangeMode = Literal["live", "testnet", "paper"]
-_VALID_EXCHANGE_MODES: frozenset[str] = frozenset({"live", "testnet", "paper"})
+ExchangeMode = Literal["live", "testnet", "paper", "demo"]
+_VALID_EXCHANGE_MODES: frozenset[str] = frozenset({"live", "testnet", "paper", "demo"})
 
 _SELECT_ACTIVE_BOTS_SQL = """
     SELECT bot_id, display_name, exchange_mode

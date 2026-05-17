@@ -307,3 +307,30 @@ async def test_live_mode_queries_trades(monkeypatch: pytest.MonkeyPatch) -> None
         risk_config=_CFG,
     )
     assert captured["table_name"] == "trades"
+
+
+async def test_demo_mode_queries_trades(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-549a §N4 pin: demo is a real Bybit demo-trading account → real `trades`
+    table (NOT paper_trades). Guards the gate dispatch tuple regression."""
+    pool, _ = _mock_pool()
+    captured: dict[str, Any] = {}
+
+    async def _pc(_conn: Any, *, table_name: str, bot_id: str) -> tuple[Decimal, Decimal]:
+        captured["table_name"] = table_name
+        return (Decimal("0"), Decimal("0"))
+
+    monkeypatch.setattr(
+        "services.strategy_engine.app.drawdown_gate.select_kill_switch_state",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "services.strategy_engine.app.drawdown_gate.select_pnl_peak_and_current", _pc
+    )
+    await check_max_drawdown(
+        pool=pool,
+        bot_id=cast("BotId", "alpha"),
+        exchange_mode="demo",
+        now=_NOW,
+        risk_config=_CFG,
+    )
+    assert captured["table_name"] == "trades"

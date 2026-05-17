@@ -128,6 +128,7 @@ class ExchangeMode(StrEnum):
     LIVE = "live"
     TESTNET = "testnet"
     PAPER = "paper"
+    DEMO = "demo"  # T-549a: Bybit Demo Trading (real account, api-demo.bybit.com routing in T-549b)
 
 
 class ExchangeSource(StrEnum):

@@ -241,14 +241,25 @@ def test_exchange_section_round_trip() -> None:
 
 
 def test_exchange_section_rejects_invalid_mode_literal() -> None:
-    """`mode: "demo"` not in Literal["live","testnet","paper"] → ValidationError."""
+    """`mode: "garbage"` not in Literal["live","testnet","paper","demo"] → ValidationError."""
     with pytest.raises(ValidationError, match=r"mode"):
         ExchangeSection(
-            mode="demo",  # type: ignore[arg-type]
+            mode="garbage",  # type: ignore[arg-type]
             account="sub_alpha",
             api_key_env="K",
             api_secret_env="S",
         )
+
+
+def test_exchange_section_accepts_demo_mode() -> None:
+    """T-549a: `mode: "demo"` (Bybit Demo Trading) is a valid ExchangeSection mode."""
+    section = ExchangeSection(
+        mode="demo",
+        account="sub_alpha",
+        api_key_env="K",
+        api_secret_env="S",
+    )
+    assert section.mode == "demo"
 
 
 def test_signals_section_defaults_when_constructed_empty() -> None:

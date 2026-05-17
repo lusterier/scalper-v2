@@ -199,7 +199,7 @@ async def check_cooldown(
     *,
     pool: asyncpg.Pool,
     bot_id: BotId,
-    exchange_mode: Literal["live", "testnet", "paper"],
+    exchange_mode: Literal["live", "testnet", "paper", "demo"],
     now: datetime,
     risk_config: RiskSection,
 ) -> CooldownDecision:
@@ -220,7 +220,7 @@ async def check_cooldown(
         return _INACTIVE
 
     table_name: Literal["trades", "paper_trades"] = (
-        "trades" if exchange_mode in ("live", "testnet") else "paper_trades"
+        "trades" if exchange_mode in ("live", "testnet", "demo") else "paper_trades"
     )
     async with pool.acquire() as conn:
         rows = await select_recent_closed_trades(

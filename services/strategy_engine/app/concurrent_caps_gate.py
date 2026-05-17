@@ -87,7 +87,7 @@ async def check_concurrent_caps(
     *,
     pool: asyncpg.Pool,
     bot_id: BotId,
-    exchange_mode: Literal["live", "testnet", "paper"],
+    exchange_mode: Literal["live", "testnet", "paper", "demo"],
     risk_config: RiskSection,
 ) -> CapsDecision:
     """Per-signal concurrent-trades cap verdict; derived state.
@@ -106,7 +106,7 @@ async def check_concurrent_caps(
         return _NOT_BLOCKED
 
     table_name: Literal["trades", "paper_trades"] = (
-        "trades" if exchange_mode in ("live", "testnet") else "paper_trades"
+        "trades" if exchange_mode in ("live", "testnet", "demo") else "paper_trades"
     )
 
     async with pool.acquire() as conn:

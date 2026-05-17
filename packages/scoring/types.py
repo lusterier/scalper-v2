@@ -168,7 +168,7 @@ class ExchangeSection(BaseModel):
 
     model_config = ConfigDict(frozen=True, strict=True)
 
-    mode: Literal["live", "testnet", "paper"]
+    mode: Literal["live", "testnet", "paper", "demo"]
     account: str
     api_key_env: str
     api_secret_env: str

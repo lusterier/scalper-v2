@@ -349,3 +349,28 @@ async def test_live_mode_sums_trades(monkeypatch: pytest.MonkeyPatch) -> None:
         risk_config=RiskSection(daily_loss_limit_usd=Decimal("100")),
     )
     assert captured["table_name"] == "trades"
+
+
+async def test_demo_mode_sums_trades(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-549a §N4 pin: demo (real Bybit demo-trading account) → real `trades`,
+    NOT paper_trades — else the daily-loss kill-switch never trips for demo."""
+    pool, _ = _mock_pool()
+    monkeypatch.setattr(
+        "services.strategy_engine.app.loss_limit_gate.select_kill_switch_state",
+        AsyncMock(return_value=None),
+    )
+    captured: dict[str, Any] = {}
+
+    async def _sum(_conn: Any, *, table_name: str, bot_id: str, since: Any) -> Decimal:
+        captured["table_name"] = table_name
+        return Decimal("0")
+
+    monkeypatch.setattr("services.strategy_engine.app.loss_limit_gate.sum_realized_pnl_since", _sum)
+    await check_daily_loss_limit(
+        pool=pool,
+        bot_id="alpha",  # type: ignore[arg-type]
+        exchange_mode="demo",
+        now=_NOW,
+        risk_config=RiskSection(daily_loss_limit_usd=Decimal("100")),
+    )
+    assert captured["table_name"] == "trades"
