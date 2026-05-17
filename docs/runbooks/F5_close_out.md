@@ -1,0 +1,114 @@
+# F5 close-out runbook + E1..E6 sign-off (Live-ready MVP)
+
+**Phase:** F5 close-out — BRIEF §19 F5 "Exit criteria" (all 6 bullets verbatim below); Live-ready MVP scope per ADR-0011
+**Mode:** dev (operator-host; production deploy per BRIEF §16.2 / §18)
+**Owner:** operator (manual; T-522 ships this runbook + the pre-filled E1..E6 evidence trace — the **operator** executes the verification steps and signs §A + §B; the author does not pre-fill or self-sign)
+
+Verbatim BRIEF §19 F5 exit-criteria (the 6 bullets; the `E1..E6` labels are per the TASKS.md "F5 exit-criteria trace" + ADR-0011 — they map 1:1 to these 6 bullets in order):
+
+> - **E1**: Backtest on a 30-day historical window completes and reports aggregates.
+> - **E2**: Two backtests with different configs compared side-by-side.
+> - **E3**: Shadow variants persist across restart (verified by killing execution-service mid-variant).
+> - **E4**: All hazards in §20 have an associated test that passes.
+> - **E5**: Operator signs off on the **Live-ready MVP** scope. *(Renamed from "Plný MVP" per ADR-0011 — production-ready semantic includes pre-live operational hardening cluster T-524..T-536.)*
+> - **E6**: All hardening tasks (T-524..T-536) shipped + integration tests green + Live-ready deployment runbook executed.
+
+## Purpose
+
+The single F5 close-out gate: verify + sign off all 6 F5 exit criteria, completing the F5 phase — §A paper-feature-complete (E1..E5) + §B Live-ready (E6). This runbook **orchestrates and cites** the evidence + per-criterion verification; it does **NOT re-derive** the prior close-out-tail audits — T-519 (E4 §20-hazard audit), T-521 (E1/E2/E3 operator smokes), T-539 (task-ledger reconciliation) already produced the underlying evidence on their own commits; T-522 ties them together for the operator sign-off. Sign-off is on an **informed known-residual basis** (see "Deliberate residual").
+
+## Pre-flight
+
+- [ ] Dev stack up per `docs/runbooks/dev_stack.md`; project-root `.env` populated; `uv run alembic upgrade head`.
+- [ ] Record master HEAD at run: `git rev-parse HEAD` (captured in the §A/§B sign-off blocks).
+- [ ] **Ledger trust precondition**: T-539 `docs/audit/f5-task-completion.md` verdict is **F5 LEDGER VERIFIED** (counter `64/66` correct + gapless; every E1..E6 owning task green; no forgotten/uncounted task). E6's "all hardening shipped" leans on that audit — confirm it before signing.
+
+## E1..E6 evidence trace + operator verification
+
+Evidence is commit-cited (feat SHA + controlling test / re-runnable command), not prose — mirrors the T-539 `docs/audit/f5-task-completion.md` model. "completing" feat is cited for L-007-split clusters; the full per-leaf trail is in the T-539 report.
+
+### E1 — Backtest on a 30-day historical window completes and reports aggregates
+
+- **Owners** (TASKS.md F5 exit-criteria trace): T-507 (CLI/orchestrator) + T-509 (worker connect).
+- **Evidence**: feat `e4723e8` (T-507a BusProtocol + ReplayBus subscribe), `db2d282` (T-507b `scripts/backtest.py` CLI orchestrator + ReplayClock + analytics helpers), `850b94a` (T-509 backtest worker connect). Replay determinism + intra-candle + 1-week seeded backtest covered by unit/integration tests (BRIEF §12.2 "Tests required").
+- **Verify**: run `docs/runbooks/F5_E1_backtest_smoke.md` **Step 1** → expected: `scripts/backtest.py` exits 0, a `run_id` printed, `backtest_runs.finished_at` non-NULL, `backtest_runs.summary` has the 5 aggregates (total trades / WR / P&L / PF / MDD).
+- [ ] **E1 verified** (F5_E1 Step 1 PASS).
+
+### E2 — Two backtests with different configs compared side-by-side
+
+- **Owners**: T-508 (CLI `--compare`) + T-516 (UI variant view).
+- **Evidence**: feat `fcdc453` (T-508 `scripts/backtest.py --compare` aggregate + per-trade diff), `47bb7d0` / `8b76db5` / `4b8ff86` (T-516a1/a2/b paper-trade analytics backend + UI drill-down).
+- **Verify**: `docs/runbooks/F5_E1_backtest_smoke.md` **Step 2** → expected: two distinct `run_id`s; `--compare` emits an aggregate-metrics diff + a per-trade diff; exits 0. (UI variant drill-down renders in the dashboard.)
+- [ ] **E2 verified** (F5_E1 Step 2 PASS).
+
+### E3 — Shadow variants persist across restart (verified by killing execution-service mid-variant)
+
+- **Owners**: T-511 (FSM + paper seed) + T-512a (replay infra) + T-512b (variant kill-test) + T-513b1 (rejected replay infra) + T-513b2 (rejected kill-test). **FULLY SATISFIED 2026-05-08** per the TASKS.md exit-criteria trace.
+- **Evidence**: feat `067ad6f` (T-512a §13.4 restart-recovery via OHLC replay, H-023), `83e0c4d` (T-512b mandatory kill-during-variant test), `d8d54de` (T-513b1 rejected-signal restart-recovery), `709ca81` (T-513b2 rejected kill-test). Controlling tests: `services/execution/tests/integration/test_shadow_restart.py::test_shadow_variant_survives_restart_via_replay` + `services/execution/tests/integration/test_rejected_observation_restart.py::test_rejected_signal_shadow_survives_restart_via_replay`.
+- **Verify**: `uv run pytest services/execution/tests/integration/test_shadow_restart.py::test_shadow_variant_survives_restart_via_replay services/execution/tests/integration/test_rejected_observation_restart.py::test_rejected_signal_shadow_survives_restart_via_replay` → both pass; **and** run `docs/runbooks/F5_E2_shadow_smoke.md` Steps 1-3 → expected: the pre-kill `shadow_variants` rows survive (original `created_at`) and are finalized/resumed via replay — NOT `lost_on_restart` (H-023).
+- [ ] **E3 verified** (2 named tests pass + F5_E2 PASS).
+
+### E4 — All hazards in §20 have an associated test that passes
+
+- **Owner**: T-519 (§20 hazard test audit; F5 E4 owner).
+- **Evidence**: `docs/audit/hazard-test-coverage.md` (T-519, feat `3d4fc38`) — verdict **35/36 hazards have a resolvable, pytest-collected, passing test; H-005 explicitly DEFERRED** (operator-acknowledged residual-risk T-F5+ carve-out). Permanent CI guard `tests/test_hazard_catalog_coverage.py` parses live §20 + resolves every `**Test.**` citation via `pytest --collect-only`.
+- **Verify**: `uv run pytest tests/test_hazard_catalog_coverage.py` → expected: passes (every §20 `**Test.**` citation resolves; the `_KNOWN_DEFERRED={5}` H-005 whitelist invariant holds — a new deferral OR H-005 losing DEFERRED fails this test).
+- [ ] **E4 verified** (meta-test passes; 35/36 + H-005 DEFERRED — see Deliberate residual).
+
+### E5 — Operator signs off on the Live-ready MVP scope (paper-feature-complete section)
+
+- **Owner**: T-522 (this runbook).
+- **Evidence**: E1..E4 verified above = paper-feature-complete (backtest harness + comparison + shadow restart + §20 hazard coverage).
+- **Action**: operator reviews E1..E4 results and signs **§A** below.
+- [ ] **E5** — operator sign-off recorded in §A.
+
+### E6 — All hardening (T-524..T-536) shipped + integration tests green + Live-ready deployment runbook executed
+
+- **Owners**: T-524..T-536 + T-522.
+- **Evidence**: T-539 `docs/audit/f5-task-completion.md` (**F5 LEDGER VERIFIED** — the entire hardening cluster shipped+merged+counter-closed, F5 `64/66` correct + gapless). Representative completing feats: risk-mgmt T-524 `3ef5265` / T-525a1 `e93f8cf` / T-525a2 `061f1d3` / T-525b `7a4459b` / T-526 `c1363f4`; sizing T-527 `96fae4f` / T-528 `610c8b4` / T-529 `f90c382`; balance-equity T-530 `93faa9e` / T-531 `78e74cc` / T-532 `2bfc6a3`; FSM T-533 `e87aee7`; SL/TP T-534 `fe631d4`+`195f7a6`+`f513fde` / T-535 `8c29c52` / T-536 `dbae961`. (Full per-leaf trail: the T-539 report.)
+- **Verify**: (a) **hardening shipped** — confirm `docs/audit/f5-task-completion.md` verdict line reads "F5 LEDGER VERIFIED"; (b) **integration tests green** — `uv run pytest` exits 0 (or the CI-equivalent integration suite green on master HEAD); (c) **Live-ready deployment runbook executed** — bring the full stack up per `docs/runbooks/dev_stack.md` and confirm `docker compose ps` shows no `unhealthy`.
+- [ ] **E6 verified** (ledger VERIFIED + integration green + deployment up healthy).
+
+## Deliberate residual (informed sign-off basis — L-026)
+
+- **E4 residual: H-005 DEFERRED.** Per T-519 + operator-acknowledged carve-out: the `opposite_side_open` scoring rule is code-verified non-existent; §20 H-005 Policy+Test are DEFERRED, tracked in a NEW T-F5+ backlog ticket ("opposite_side_open scoring condition + H-005 test"). E4 is therefore **35/36 + H-005 explicitly DEFERRED** — the Live-ready sign-off is on this **known-residual basis, NOT a false 100%**. The CI guard `tests/test_hazard_catalog_coverage.py` enforces the H-005-DEFERRED whitelist.
+- T-522 **references, does not re-derive**, the T-519 / T-521 / T-539 artifacts — this runbook is the orchestration + sign-off gate; the underlying audits stand on their own commits.
+- **F5+ opportunistic backlog** (post-Live-ready, NOT F5 blockers): per TASKS.md "## Backlog → ### F5+ opportunistic" — explicitly out of this F5 sign-off.
+
+## Sign-off
+
+### §A — Paper-feature-complete (E1..E5)
+
+_(Operator fills on execution. Strict ISO-8601 `+00:00` per §N1.)_
+
+```
+E1 [ ]   E2 [ ]   E3 [ ]   E4 [ ] (35/36 + H-005 DEFERRED)
+Run timestamp:        `YYYY-MM-DDTHH:MM:SS+00:00`
+Operator:             `<name>`
+Master HEAD at run:   `<git rev-parse HEAD>`
+Result:               `PASS` / `PASS WITH N PARTIALS` / `FAIL` — <one-line summary>
+
+E5 — Live-ready MVP scope, PAPER-FEATURE-COMPLETE section SIGNED OFF:
+  operator: ____________________   @ ____-__-__T__:__:__+00:00
+```
+
+### §B — Live-ready (E6)
+
+_(Operator fills on execution. Strict ISO-8601 `+00:00` per §N1.)_
+
+```
+E6 [ ]  (hardening T-524..T-536 shipped per docs/audit/f5-task-completion.md + integration tests green + dev_stack deployment executed)
+Run timestamp:        `YYYY-MM-DDTHH:MM:SS+00:00`
+Operator:             `<name>`
+Master HEAD at run:   `<git rev-parse HEAD>`
+Result:               `PASS` / `PASS WITH N PARTIALS` / `FAIL` — <one-line summary>
+
+E6 — Live-ready MVP scope SIGNED OFF:
+  operator: ____________________   @ ____-__-__T__:__:__+00:00
+```
+
+Discoveries during run (any master-fix commits in the same session — list `fix(T-NNN)` + hash, mirror the F4_E1 precedent). Tech-debt / follow-up candidates (NOT F5 blockers): list or "none".
+
+## On sign-off complete
+
+When §A + §B are both signed `PASS`, F5 phase closes. The T-522 `chore(tasks)` then bumps the F5 counter **`64/66 → 66/66`** — E5 + E6 are the 2 documented sign-off slots (authority: `docs/audit/f5-task-completion.md`, the T-539 reconciliation that established `66−64=2 = T-522 two sign-off sections`) — and marks **F5 COMPLETE** in `docs/status.md`. This is the one task where the TASKS.md counter line is legitimately edited; the citation distinguishes the authorized close-bump from counter drift.
