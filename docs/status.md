@@ -1,5 +1,13 @@
 # Session status
 
+## 2026-05-17 (T-545 ✅ **`source_filter` wired into the consumer** — feat `4a21b2e` LOCAL [batch-push mode]; F6 1/4; first operator-directed post-MVP fix under ADR-0015 decision-C; all gates [plan APPROVE pass-3/3 / drift ON TRACK / brief SHIP / math OOS])
+
+**What**: `SignalsSection.source_filter` (schema since T-310a) was dead — never read at runtime, so a configured per-bot source allowlist was silently ignored. Wired into the consumer as a **3b' source-allowlist silent-skip gate** between the 3b symbol filter `return` and the CLOSE block — mirrors 3b EXACTLY (`trading_logger.info("signal_outside_source_filter")` + `return`; no Prometheus counter, no `metrics.py` change — same silent-skip class as `signal_outside_universe`). §N4 TDD: 4 cases incl. the CLOSE-ordering pin; 36 passed incl. sibling regression; ruff+mypy clean. `docs/runbooks/ops.md` new-bot YAML template now documents a commented-optional `signals:`/`source_filter` block (CLAUDE.md ops-runbook rule).
+
+**Governance**: F6 admissibility per the **ADR-0015 2026-05-17 decision-C follow-up** (F6 scope extended to operator-directed post-MVP fixes; promoted to numbered T-545, no per-item ADR, no L-029 violation). F5 §A+§B Live-ready sign-off NOT reopened — F6 strictly additive.
+
+**⚠ BATCH-PUSH MODE ACTIVE** (operator CI-minute budget 1912/2000): T-545 feat `4a21b2e` + the F6-governance commits (`1ada2b6`/`80896e6`) + prior batch are **committed LOCAL, NOT pushed**. More operator-directed F6 tasks follow in this batch; **ONE `git push origin master` at batch end** (the only CI-minute-consuming step). Do NOT push per-task.
+
 ## 2026-05-17 (T-541 ✅ **Phase F6 (Post-MVP Hardening) OPENED** — feat `7bdb459`; ADR-0015 §6.7 BRIEF §19 amendment; F5 §A+§B Live-ready sign-off NOT reopened, F6 strictly additive; all gates [plan-reviewer APPROVE pass-5/5 / drift ON TRACK / brief SHIP after 1 FIX FIRST / math OOS]; NEW L-029)
 
 **Why F6 opened (the H-005→F6 arc):** the operator asked to resolve H-005 (the long-deferred `opposite_side_open` guard). The H-005 plan ran 2 plan-reviewer passes; **pass-2 BLOCKER-1** caught a §0.10 **phase-gate violation** — F5 was COMPLETE with "no next phase unlocked", H-005 was only a `T-F5+` backlog ticket, so pulling ~180-230 LOC trading-critical code in was not authorized. Surfaced to the operator; the operator chose a **full F6 phase**. T-541 is the §6.7 phase-opener meta-task (mirror T-523/T-500/T-200). **NEW L-029** records the generalizable lesson (a signed-off-MVP repo is phase-gated *harder*; "operator requested" ≠ phase unlock; backlog→numbered-task + explicit phase unlock is governance, not a plan-text fix — caught at plan-reviewer, the main session-start had wrongly treated the request as the unlock).
