@@ -31,6 +31,10 @@ if TYPE_CHECKING:
     import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+# T-547: alpha/beta bot fixtures relocated from configs/bots/ (deleted by
+# 1750021) into this test-owned dir (byte-identical). _REPO_ROOT stays for
+# the non-deleted configs/plugin_registry.yaml.
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
 _FIXED_NOW = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
 
 
@@ -106,7 +110,7 @@ async def test_scoring_evaluations_records_one_rule_result_entry_per_scoring_rul
 
     for bot_name in ("alpha", "beta"):
         bot_config = load_bot_config(
-            _REPO_ROOT / "configs" / "bots" / f"{bot_name}.yaml",
+            _FIXTURES / f"{bot_name}.yaml",
             plugin_registry=plugin_registry,
         )
         # T-542: neutralise the orthogonal H-005 opposite-side gate (default
@@ -144,7 +148,7 @@ async def test_scoring_evaluations_feature_snapshot_non_empty_after_resolver_cal
     """E2 #2 — feature_snapshot non-empty dict after T-307 evaluator populates."""
     plugin_registry = load_plugin_registry(_REPO_ROOT / "configs" / "plugin_registry.yaml")
     bot_config = load_bot_config(
-        _REPO_ROOT / "configs" / "bots" / "alpha.yaml",
+        _FIXTURES / "alpha.yaml",
         plugin_registry=plugin_registry,
     )
     # T-542: neutralise the orthogonal H-005 opposite-side gate (default True

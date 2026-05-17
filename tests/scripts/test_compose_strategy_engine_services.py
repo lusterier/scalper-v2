@@ -1,17 +1,18 @@
 """T-544 regression pin: the `strategy-engine-smoke` compose service.
 
-`compose.yaml` ships per-bot `strategy-engine-<bot>` services (alpha, beta);
+`compose.yaml` ships per-bot `strategy-engine-<bot>` services (demo, smoke);
 the F5_E2 deployment smoke (`docs/runbooks/F5_E2_shadow_smoke.md`) needs a
 `strategy-engine-smoke` for the `smoke` fixture bot. It must be a verbatim
-instance of the parameterized pattern — identical to `strategy-engine-beta`
+instance of the parameterized pattern — identical to `strategy-engine-demo`
 except `BOT_ID` / `BOT_CONFIRM_LIVE`. The dev overlay must likewise mirror
-the alpha/beta overlay verbatim (no per-bot keys).
+the demo overlay verbatim (no per-bot keys). (1750021 removed
+strategy-engine-alpha→demo + deleted -beta; surviving pair = smoke ↔ demo.)
 
 `compose.yaml` has no custom tags → plain ``yaml.safe_load``. ``compose.dev
 .yaml`` uses Compose-merge tags (``!reset`` / ``!override``) which
 ``safe_load`` cannot construct (raises ``ConstructorError``); a tolerant
 loader maps every unknown ``!``-tag to ``None`` (the precise value is
-irrelevant — beta and smoke resolve identically, so verbatim equality holds).
+irrelevant — demo and smoke resolve identically, so verbatim equality holds).
 """
 
 from __future__ import annotations
@@ -69,18 +70,18 @@ def test_compose_has_strategy_engine_smoke_service() -> None:
     assert "healthcheck" in smoke
 
 
-def test_smoke_mirrors_beta_exactly_modulo_bot_keys() -> None:
-    """Load-bearing pin: strategy-engine-smoke == strategy-engine-beta once
+def test_smoke_mirrors_demo_exactly_modulo_bot_keys() -> None:
+    """Load-bearing pin: strategy-engine-smoke == strategy-engine-demo once
     BOT_ID + BOT_CONFIRM_LIVE are normalised on BOTH — any drift from the
     parameterized pattern (image, deps, healthcheck, env, …) red-fails."""
     services = _services(_COMPOSE, tolerant=False)
     assert _normalised(services["strategy-engine-smoke"]) == _normalised(
-        services["strategy-engine-beta"]
+        services["strategy-engine-demo"]
     )
 
 
-def test_dev_overlay_smoke_mirrors_beta_verbatim() -> None:
-    """compose.dev.yaml strategy-engine-smoke overlay equals the beta overlay
+def test_dev_overlay_smoke_mirrors_demo_verbatim() -> None:
+    """compose.dev.yaml strategy-engine-smoke overlay equals the demo overlay
     verbatim — the dev overlay carries no per-bot keys (no substitution)."""
     services = _services(_COMPOSE_DEV, tolerant=True)
-    assert services["strategy-engine-smoke"] == services["strategy-engine-beta"]
+    assert services["strategy-engine-smoke"] == services["strategy-engine-demo"]

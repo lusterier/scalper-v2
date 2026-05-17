@@ -1028,12 +1028,14 @@ def test_yaml_loader_risk_block_rejects_typo_keys() -> None:
 
 
 def test_yaml_loader_alpha_fixture_loads_with_risk_block(tmp_path: Path) -> None:
-    """configs/bots/alpha.yaml has a risk: block (all zeros) — must parse + yield defaults."""
+    """The alpha bot fixture has a risk: block (all zeros) — must parse + yield defaults."""
     from pathlib import Path as _P
 
-    alpha_path = _P(__file__).parent.parent.parent.parent / "configs" / "bots" / "alpha.yaml"
-    if not alpha_path.exists():
-        pytest.skip("repo fixture alpha.yaml not present")
+    # T-547: alpha.yaml relocated from configs/bots/ (deleted by 1750021) into
+    # this test-owned fixtures dir (byte-identical). Always present now → the
+    # former exists()/skip guard is dead code; removed to restore the coverage
+    # 1750021 silently dropped.
+    alpha_path = _P(__file__).parent / "fixtures" / "alpha.yaml"
     cfg = load_bot_config_from_string(alpha_path.read_text())
     assert cfg.bot_id == "alpha"
     # All-zero risk block matches RiskSection() defaults.

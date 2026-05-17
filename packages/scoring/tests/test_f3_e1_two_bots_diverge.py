@@ -25,6 +25,10 @@ from packages.scoring.registry import load_plugin_registry
 from packages.scoring.resolver import ResolverResult
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+# T-547: alpha/beta bot fixtures relocated from configs/bots/ (deleted by
+# 1750021) into this test-owned dir (byte-identical). _REPO_ROOT stays for
+# the non-deleted configs/plugin_registry.yaml.
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
 _FIXED_NOW = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
 
 
@@ -61,11 +65,11 @@ async def test_two_bots_react_differently_to_same_signal() -> None:
     """E1 §19:2547 — alpha (active) decides execute; beta (passthrough) decides passthrough."""
     plugin_registry = load_plugin_registry(_REPO_ROOT / "configs" / "plugin_registry.yaml")
     alpha = load_bot_config(
-        _REPO_ROOT / "configs" / "bots" / "alpha.yaml",
+        _FIXTURES / "alpha.yaml",
         plugin_registry=plugin_registry,
     )
     beta = load_bot_config(
-        _REPO_ROOT / "configs" / "bots" / "beta.yaml",
+        _FIXTURES / "beta.yaml",
         plugin_registry=plugin_registry,
     )
     signal = _signal()

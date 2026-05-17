@@ -32,6 +32,10 @@ from packages.scoring.registry import load_plugin_registry
 from packages.scoring.resolver import ResolverResult
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+# T-547: alpha/beta bot fixtures relocated from configs/bots/ (deleted by
+# 1750021) into this test-owned dir (byte-identical). _REPO_ROOT stays for
+# the non-deleted configs/plugin_registry.yaml.
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
 _FIXED_NOW = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
 _FEATURE_REF = "ind.btcusdt.15m.oi_change"
 
@@ -57,7 +61,7 @@ async def test_oi_squeeze_runs_in_evaluator_pipeline() -> None:
     """
     plugin_registry = load_plugin_registry(_REPO_ROOT / "configs" / "plugin_registry.yaml")
     beta = load_bot_config(
-        _REPO_ROOT / "configs" / "bots" / "beta.yaml",
+        _FIXTURES / "beta.yaml",
         plugin_registry=plugin_registry,
     )
 
@@ -97,7 +101,7 @@ def test_oi_squeeze_contributes_to_score_when_history_sufficient() -> None:
     """
     plugin_registry = load_plugin_registry(_REPO_ROOT / "configs" / "plugin_registry.yaml")
     beta = load_bot_config(
-        _REPO_ROOT / "configs" / "bots" / "beta.yaml",
+        _FIXTURES / "beta.yaml",
         plugin_registry=plugin_registry,
     )
 
