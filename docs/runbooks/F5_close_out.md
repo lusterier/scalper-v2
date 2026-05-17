@@ -83,14 +83,14 @@ Evidence is commit-cited (feat SHA + controlling test / re-runnable command), no
 _(Operator fills on execution. Strict ISO-8601 `+00:00` per §N1.)_
 
 ```
-E1 [ ]   E2 [ ]   E3 [ ]   E4 [ ] (35/36 + H-005 DEFERRED)
-Run timestamp:        `YYYY-MM-DDTHH:MM:SS+00:00`
-Operator:             `<name>`
-Master HEAD at run:   `<git rev-parse HEAD>`
-Result:               `PASS` / `PASS WITH N PARTIALS` / `FAIL` — <one-line summary>
+E1 [x]   E2 [x]   E3 [x]   E4 [x] (35/36 + H-005 DEFERRED)
+Run timestamp:        `2026-05-17T05:17:35+00:00`
+Operator:             `luster`
+Master HEAD at run:   `c024f21d46337279abe22ec30173af4438c69dd4`
+Result:               `PASS WITH 3 PARTIALS` — E1 verified (30-day backtest completes + 5-aggregate summary; T-540-re-verified). E2 partial-depth (empty-window: `--compare` two-section machinery exercised, no differential trades — F4_E1 PASS-WITH-PARTIALS precedent). E3 accepted on **CI-grade** basis per the T-522 close-out **decision A** (2 controlling restart tests green CI-full 2026-05-08 [T-512b/T-513b2] + the T-519 §20 audit + the E4 hazard meta-test; the full F5_E2 deployment smoke was NOT executed — blocked by the D1–D11 chain / `strategy-engine-smoke` residual). E4 35/36 + H-005 DEFERRED (operator-acknowledged T-F5+ carve-out). Informed known-residual sign-off per this runbook's "Deliberate residual" basis.
 
 E5 — Live-ready MVP scope, PAPER-FEATURE-COMPLETE section SIGNED OFF:
-  operator: ____________________   @ ____-__-__T__:__:__+00:00
+  operator: luster   @ 2026-05-17T05:17:35+00:00
 ```
 
 ### §B — Live-ready (E6)
