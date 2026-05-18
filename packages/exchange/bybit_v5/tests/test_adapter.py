@@ -778,7 +778,8 @@ async def test_get_instrument_info_calls_upstream_with_market_endpoint_and_categ
                         "qtyStep": "0.001",
                         "minOrderQty": "0.001",
                         "minNotionalValue": "5",
-                    }
+                    },
+                    "priceFilter": {"tickSize": "0.1"},
                 }
             ]
         }
@@ -792,6 +793,7 @@ async def test_get_instrument_info_calls_upstream_with_market_endpoint_and_categ
     assert info.qty_step == _D("0.001")
     assert info.min_order_qty == _D("0.001")
     assert info.min_notional_usd == _D("5")
+    assert info.tick_size == _D("0.1")
 
 
 async def test_get_instrument_info_caches_within_ttl() -> None:
@@ -805,7 +807,8 @@ async def test_get_instrument_info_caches_within_ttl() -> None:
                         "qtyStep": "0.001",
                         "minOrderQty": "0.001",
                         "minNotionalValue": "5",
-                    }
+                    },
+                    "priceFilter": {"tickSize": "0.1"},
                 }
             ]
         }
@@ -827,7 +830,8 @@ async def test_get_instrument_info_re_calls_upstream_after_ttl_expires() -> None
                         "qtyStep": "0.001",
                         "minOrderQty": "0.001",
                         "minNotionalValue": "5",
-                    }
+                    },
+                    "priceFilter": {"tickSize": "0.1"},
                 }
             ]
         }
@@ -869,6 +873,55 @@ async def test_get_instrument_info_acquires_limiter_with_market_group() -> None:
         return_value={
             "list": [
                 {
+                    "priceFilter": {"tickSize": "0.1"},
+                    "lotSizeFilter": {
+                        "qtyStep": "0.001",
+                        "minOrderQty": "0.001",
+                        "minNotionalValue": "5",
+                    },
+                }
+            ]
+        }
+    )
+    limiter = _make_limiter_mock()
+    adapter = _make_adapter(client=client, limiter=limiter)
+    await adapter.get_instrument_info("BTCUSDT")
+    limiter.acquire.assert_awaited_once_with("sub-a", "market")
+
+
+async def test_get_instrument_info_parses_price_tick_size() -> None:
+    """T-558a / finding #2 — priceFilter.tickSize parsed into InstrumentInfo.tick_size."""
+    from decimal import Decimal as _D
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {
+                    "lotSizeFilter": {
+                        "qtyStep": "0.001",
+                        "minOrderQty": "0.001",
+                        "minNotionalValue": "5",
+                    },
+                    "priceFilter": {"tickSize": "0.1"},
+                }
+            ]
+        }
+    )
+    adapter = _make_adapter(client=client)
+    info = await adapter.get_instrument_info("BTCUSDT")
+    assert info.tick_size == _D("0.1")
+
+
+async def test_get_instrument_info_raises_when_price_filter_missing() -> None:
+    """T-558a — missing priceFilter.tickSize → OrderRejected (mirror empty-list posture)."""
+    from packages.exchange.errors import OrderRejected
+
+    client = _make_client_mock()
+    client.request = AsyncMock(
+        return_value={
+            "list": [
+                {
                     "lotSizeFilter": {
                         "qtyStep": "0.001",
                         "minOrderQty": "0.001",
@@ -878,10 +931,9 @@ async def test_get_instrument_info_acquires_limiter_with_market_group() -> None:
             ]
         }
     )
-    limiter = _make_limiter_mock()
-    adapter = _make_adapter(client=client, limiter=limiter)
-    await adapter.get_instrument_info("BTCUSDT")
-    limiter.acquire.assert_awaited_once_with("sub-a", "market")
+    adapter = _make_adapter(client=client)
+    with pytest.raises(OrderRejected):
+        await adapter.get_instrument_info("BTCUSDT")
 
 
 # --- T-208b: get_closed_pnl_cumulative (5 tests) ---------------------------

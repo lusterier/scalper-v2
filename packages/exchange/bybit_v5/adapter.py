@@ -387,10 +387,11 @@ class BybitV5Adapter:
 
         HTTP: GET /v5/market/instruments-info?category=linear&symbol=<symbol>.
         Response shape: ``result.list[0].lotSizeFilter.{qtyStep, minOrderQty,
-        minNotionalValue}``. Decimal arithmetic preserved per §5.3.
+        minNotionalValue}`` + ``priceFilter.tickSize`` (T-558a / finding #2).
+        Decimal arithmetic preserved per §5.3.
 
-        Empty list response → :class:`OrderRejected` (instrument not found
-        on exchange — delisted or typo'd symbol).
+        Empty list OR missing ``priceFilter.tickSize`` → :class:`OrderRejected`
+        (instrument not found / delisted / typo'd symbol).
         """
         cached = self._instruments_info_cache.get(symbol)
         if cached is not None and (self._now_fn() - cached[1]) < timedelta(
@@ -414,11 +415,20 @@ class BybitV5Adapter:
             raise OrderRejected(msg)
         raw = items[0]
         lot = raw["lotSizeFilter"]
+        # T-558a / finding #2: priceFilter.tickSize is in the SAME response
+        # (no extra HTTP). Missing → OrderRejected (mirror the empty-list
+        # posture; a linear perp always declares priceFilter.tickSize).
+        price_filter = raw.get("priceFilter") or {}
+        tick_raw = price_filter.get("tickSize")
+        if tick_raw is None:
+            msg = f"instrument priceFilter.tickSize missing for {symbol}"
+            raise OrderRejected(msg)
         info = InstrumentInfo(
             symbol=symbol,
             qty_step=Decimal(lot["qtyStep"]),
             min_order_qty=Decimal(lot["minOrderQty"]),
             min_notional_usd=Decimal(lot.get("minNotionalValue", "0")),
+            tick_size=Decimal(tick_raw),
         )
         self._instruments_info_cache[symbol] = (info, self._now_fn())
         return info

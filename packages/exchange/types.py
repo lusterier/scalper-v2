@@ -46,13 +46,16 @@ class InstrumentInfo:
     Decimal precision (§5.3) preserved on numeric fields. minNotional pre-flight
     is DEFERRED to T-529-future (requires last_price; out of T-529 narrow
     scope); ``min_notional_usd`` populated for forward-compat but not consumed
-    by ``quantize_qty`` in T-529.
+    by ``quantize_qty`` in T-529. ``tick_size`` (Bybit priceFilter.tickSize;
+    T-558a / finding #2) is the price grid step — consumed by
+    ``quantize_price`` at the T-558b SL/TP apply-site (no reader in T-558a).
     """
 
     symbol: str
     qty_step: Decimal
     min_order_qty: Decimal
     min_notional_usd: Decimal
+    tick_size: Decimal
 
 
 @dataclass(frozen=True, slots=True)

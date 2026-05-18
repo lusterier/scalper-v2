@@ -107,6 +107,7 @@ def _ok_adapter() -> MagicMock:
             qty_step=Decimal("0.0001"),
             min_order_qty=Decimal("0.0001"),
             min_notional_usd=Decimal("5"),
+            tick_size=Decimal("0.1"),
         )
     )
     return adapter
@@ -328,6 +329,7 @@ async def test_placement_quantizes_qty_before_place_market_order() -> None:
             qty_step=Decimal("0.001"),
             min_order_qty=Decimal("0.001"),
             min_notional_usd=Decimal("5"),
+            tick_size=Decimal("0.1"),
         )
     )
     handler, _, _, _ = _build(adapter=adapter)
@@ -351,6 +353,7 @@ async def test_placement_pre_flight_rejects_when_qty_below_min_order_qty() -> No
             qty_step=Decimal("0.001"),
             min_order_qty=Decimal("0.001"),
             min_notional_usd=Decimal("5"),
+            tick_size=Decimal("0.1"),
         )
     )
     handler, _, _, logger = _build(adapter=adapter)
@@ -444,6 +447,7 @@ async def test_placement_uses_quantized_qty_in_all_downstream_calls(
             qty_step=Decimal("0.001"),
             min_order_qty=Decimal("0.001"),
             min_notional_usd=Decimal("5"),
+            tick_size=Decimal("0.1"),
         )
     )
     handler, _, bus, _ = _build(adapter=adapter)
@@ -1475,6 +1479,7 @@ async def test_tp_size_below_min_order_qty_rejects_before_place() -> None:
             qty_step=Decimal("0.001"),
             min_order_qty=Decimal("0.001"),
             min_notional_usd=Decimal("5"),
+            tick_size=Decimal("0.1"),
         )
     )
     # qty 0.001 (== min, entry OK) x tp_qty_pct 0.5 = 0.0005 < min 0.001 → TP unsatisfiable.
@@ -1505,6 +1510,7 @@ async def test_tp_size_qty_step_round_down_proceeds_with_aligned_size() -> None:
             qty_step=Decimal("0.001"),
             min_order_qty=Decimal("0.001"),
             min_notional_usd=Decimal("5"),
+            tick_size=Decimal("0.1"),
         )
     )
     # qty 0.003 x 0.5 = 0.0015 → quantize_qty step 0.001 → 0.001 (>= min) → proceed.
@@ -1529,6 +1535,7 @@ async def test_tp_qty_pct_one_boundary_proceeds() -> None:
             qty_step=Decimal("0.001"),
             min_order_qty=Decimal("0.001"),
             min_notional_usd=Decimal("5"),
+            tick_size=Decimal("0.1"),
         )
     )
     handler, _, _, _ = _build(adapter=adapter)

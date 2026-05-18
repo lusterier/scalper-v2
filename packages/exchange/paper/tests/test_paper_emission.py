@@ -442,6 +442,7 @@ async def test_get_instrument_info_returns_fixture_for_btcusdt() -> None:
     assert info.qty_step == Decimal("0.001")
     assert info.min_order_qty == Decimal("0.001")
     assert info.min_notional_usd == Decimal("5")
+    assert info.tick_size == Decimal("0.10")
 
 
 async def test_get_instrument_info_raises_order_rejected_for_unknown_symbol() -> None:

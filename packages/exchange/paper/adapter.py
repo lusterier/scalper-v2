@@ -104,18 +104,21 @@ _PAPER_INSTRUMENT_FIXTURES: Final[dict[str, InstrumentInfo]] = {
         qty_step=Decimal("0.001"),
         min_order_qty=Decimal("0.001"),
         min_notional_usd=Decimal("5"),
+        tick_size=Decimal("0.10"),
     ),
     "ETHUSDT": InstrumentInfo(
         symbol="ETHUSDT",
         qty_step=Decimal("0.01"),
         min_order_qty=Decimal("0.01"),
         min_notional_usd=Decimal("5"),
+        tick_size=Decimal("0.01"),
     ),
     "SOLUSDT": InstrumentInfo(
         symbol="SOLUSDT",
         qty_step=Decimal("0.1"),
         min_order_qty=Decimal("0.1"),
         min_notional_usd=Decimal("5"),
+        tick_size=Decimal("0.010"),
     ),
 }
 
