@@ -738,9 +738,9 @@ async def test_paper_mode_calls_set_trading_stop_full_sl_then_partial_tp_returns
     sl_call_kwargs = adapter.set_trading_stop.await_args_list[0].kwargs
     tp_call_kwargs = adapter.set_trading_stop.await_args_list[1].kwargs
     assert sl_call_kwargs["tpsl_mode"] == "Full"
-    assert sl_call_kwargs["sl_price"] == Decimal("45000.50") * (Decimal("1") - Decimal("0.005"))
+    assert sl_call_kwargs["sl_price"] == Decimal("44775.4")  # T-558b1: quantized
     assert tp_call_kwargs["tpsl_mode"] == "Partial"
-    assert tp_call_kwargs["tp_price"] == Decimal("45000.50") * (Decimal("1") + Decimal("0.015"))
+    assert tp_call_kwargs["tp_price"] == Decimal("45675.5")  # T-558b1: quantized
     assert tp_call_kwargs["tp_size"] == Decimal("0.001") * Decimal("0.5")
 
 
@@ -803,7 +803,7 @@ async def test_post_fill_price_live_sl_set_uses_tpsl_mode_full_explicit_kwarg() 
     # First set_trading_stop call = SL with Full mode.
     sl_call = adapter.set_trading_stop.await_args_list[0]
     assert sl_call.kwargs["tpsl_mode"] == "Full"
-    assert sl_call.kwargs["sl_price"] == Decimal("45000.50") * (Decimal("1") - Decimal("0.005"))
+    assert sl_call.kwargs["sl_price"] == Decimal("44775.4")  # T-558b1: quantized
 
 
 @pytest.mark.parametrize(
@@ -870,7 +870,7 @@ async def test_post_fill_price_live_tp_set_uses_tpsl_mode_partial_with_tp_size_e
     # Second set_trading_stop call = TP with Partial mode + tp_size.
     tp_call = adapter.set_trading_stop.await_args_list[1]
     assert tp_call.kwargs["tpsl_mode"] == "Partial"
-    assert tp_call.kwargs["tp_price"] == Decimal("45000.50") * (Decimal("1") + Decimal("0.015"))
+    assert tp_call.kwargs["tp_price"] == Decimal("45675.5")  # T-558b1: quantized
     assert tp_call.kwargs["tp_size"] == Decimal("0.001") * Decimal("0.5")
 
 
@@ -1541,3 +1541,63 @@ async def test_tp_qty_pct_one_boundary_proceeds() -> None:
     handler, _, _, _ = _build(adapter=adapter)
     await handler(_envelope(_request_payload(qty="0.001", tp_qty_pct="1.0")))
     adapter.place_market_order.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# T-558b1 / H-038 — SL/TP tick-quantized before set_trading_stop + persisted
+# ---------------------------------------------------------------------------
+
+
+async def test_placement_sl_tp_tick_quantized_at_set_trading_stop_and_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-558b1 / H-038 — live SL/TP quantized @tick before set_trading_stop + persist."""
+    from packages.bus.schemas.orders import OrderPlaced, SLMoved
+
+    captured: dict[str, Any] = {}
+
+    async def _spy_persist(**kwargs: Any) -> tuple[OrderPlaced, SLMoved, int]:
+        captured["sl_price"] = kwargs["sl_price"]
+        captured["tp_price"] = kwargs["tp_price"]
+        return (
+            OrderPlaced(
+                bot_id="alpha",
+                order_id=1,
+                exchange_order_id="ord-1",
+                symbol="BTCUSDT",
+                timestamp=_FIXED_NOW,
+            ),
+            SLMoved(
+                bot_id="alpha",
+                order_id=1,
+                exchange_order_id="ord-1",
+                symbol="BTCUSDT",
+                timestamp=_FIXED_NOW,
+                new_sl_price=Decimal("1"),
+                sl_type="protective",
+            ),
+            1,
+        )
+
+    monkeypatch.setattr("services.execution.app.placement.persist_placement_tx", _spy_persist)
+    handler, adapter, _, _ = _build()
+    await handler(_envelope())  # default: live, buy, fill 45000.50, tick_size 0.1
+    # 45000.50*0.995 = 44775.4975 → buy ROUND_FLOOR @0.1 → 44775.4
+    # 45000.50*1.015 = 45675.5075 → buy ROUND_FLOOR @0.1 → 45675.5
+    sl_call = adapter.set_trading_stop.await_args_list[0]
+    tp_call = adapter.set_trading_stop.await_args_list[1]
+    assert sl_call.kwargs["sl_price"] == Decimal("44775.4")
+    assert tp_call.kwargs["tp_price"] == Decimal("45675.5")
+    # OQ-3: the SAME quantized value is persisted (DB == exchange, no drift).
+    assert captured["sl_price"] == Decimal("44775.4")
+    assert captured["tp_price"] == Decimal("45675.5")
+
+
+async def test_placement_quantize_price_uses_request_side_and_instrument_tick() -> None:
+    """T-558b1 / H-038 — sell → quantize_price ROUND_CEILING (side+tick threaded)."""
+    handler, adapter, _, _ = _build()
+    await handler(_envelope(_request_payload(side="sell")))
+    # compute_sl_price(sell, 45000.50, 0.005) = 45000.50*1.005 = 45225.5025
+    # quantize sell → ROUND_CEILING @tick 0.1 → 452255.025 → 452256 → 45225.6
+    sl_call = adapter.set_trading_stop.await_args_list[0]
+    assert sl_call.kwargs["sl_price"] == Decimal("45225.6")

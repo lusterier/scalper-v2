@@ -74,7 +74,7 @@ from packages.exchange.errors import (
     RateLimitError,
     UnknownState,
 )
-from packages.exchange.quantize import quantize_qty
+from packages.exchange.quantize import quantize_price, quantize_qty
 from packages.scoring.types import SizingTier
 from packages.sizing import compute_qty_from_risk, compute_qty_from_sizing
 
@@ -432,8 +432,24 @@ def make_per_bot_handler(
                 f"fill_price None after {fill_price_retry_attempts} attempts"
             )
         # T-216b1+T-216b2 — post-fill_price pipeline (§9.5 steps 6-9).
-        sl_price = compute_sl_price(request.side, fill_price, request.sl_pct)
-        tp_price = compute_tp_price(request.side, fill_price, request.tp_pct)
+        # T-558b1 / H-038: tick-quantize SL/TP side-aware (quantize_price:
+        # buy→ROUND_FLOOR / sell→ROUND_CEILING — SL never tighter, TP never
+        # further) BEFORE the paper/live fork below, so paper, live, AND
+        # persist_placement_tx all receive the SAME exchange-valid value
+        # (parity preserved; kills the DB↔exchange drift — Bybit silently
+        # snaps sub-tick / a stricter instrument rejects it; T-556). tick from
+        # instrument_info (bound :280, block early-returns on failure); side
+        # from request. (BE/trail: T-558b2.)
+        sl_price = quantize_price(
+            compute_sl_price(request.side, fill_price, request.sl_pct),
+            request.side,
+            instrument_info.tick_size,
+        )
+        tp_price = quantize_price(
+            compute_tp_price(request.side, fill_price, request.tp_pct),
+            request.side,
+            instrument_info.tick_size,
+        )
         # tp_size computed + qty_step-aligned + min-lot-validated pre-flight at
         # step 3b (T-557 / H-037); reused here unchanged.
         notional_usd = compute_notional_usd(quantized_qty, fill_price)
