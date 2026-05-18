@@ -62,6 +62,14 @@ __all__ = ["BybitV5Adapter"]
 
 
 _CATEGORY = "linear"
+# T-550: Bybit V5 GET /v5/position/list (category=linear) requires symbol OR
+# settleCoin. v2 platform scope = USDT-margined linear perps (every configured
+# symbol BTCUSDT/ETHUSDT/SOLUSDT is USDT-settled; mirror _CATEGORY="linear").
+# Per L-001 active control: market/protocol-binding constant, NOT operationally
+# tunable (mirror _MAX_CLOSED_PNL_PAGES precedent). Non-USDT linear perps would
+# need symbol-derived/configurable settleCoin — out of scope (future
+# market-scope task), not this fix.
+_SETTLE_COIN = "USDT"
 # Q9 brief default — 1h TTL; operator-tunable via ctor kwarg per L-001 §N9.
 _DEFAULT_LEVERAGE_CACHE_TTL_S = 3600.0
 _DEFAULT_INSTRUMENTS_INFO_CACHE_TTL_S = 3600.0  # T-529 / H-036; mirror leverage TTL
@@ -287,6 +295,8 @@ class BybitV5Adapter:
         params: dict[str, Any] = {"category": _CATEGORY}
         if symbol is not None:
             params["symbol"] = symbol
+        else:
+            params["settleCoin"] = _SETTLE_COIN
         await self._limiter.acquire(self._sub_account, "positions")
         try:
             result = await self._client.request(

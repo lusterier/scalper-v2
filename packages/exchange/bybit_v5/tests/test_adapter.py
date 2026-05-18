@@ -1105,7 +1105,9 @@ async def test_get_positions_calls_upstream_with_bybit_v5_query_shape_no_filter(
     await adapter.get_positions()
     call = client.request.await_args
     assert call.args == ("GET", "/v5/position/list")
-    assert call.kwargs["params"] == {"category": "linear"}
+    # Bybit V5 /v5/position/list (category=linear) requires symbol OR settleCoin
+    # (T-550); no-symbol reconcile path → settleCoin=USDT.
+    assert call.kwargs["params"] == {"category": "linear", "settleCoin": "USDT"}
     assert call.kwargs["retries"] == 3
 
 
