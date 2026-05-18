@@ -90,8 +90,11 @@ class Settings(BaseSettings):
     rate_limit_pause_ms: int = 500
 
     # T-216a — placement-handler fill_price retry knobs (CONCERN #7 fix per L-001).
-    execution_fill_price_retry_attempts: int = 3
-    execution_fill_price_retry_backoff_s: float = 0.1
+    # T-556 — widened from 3x0.1s: a live-diagnostic measured Bybit demo
+    # /v5/execution/list fill propagation ~2.8s (2026-05-18); 12x1.0s gives a
+    # ~13-15s window. Remains §N9 env-tunable via EXECUTION_FILL_PRICE_RETRY_*.
+    execution_fill_price_retry_attempts: int = 12
+    execution_fill_price_retry_backoff_s: float = 1.0
 
     # T-216b2 — OrderRequestDedupConsumer per-bot ring capacity (H-009; OQ-7/OQ-8).
     execution_orders_dedup_capacity: int = 10000

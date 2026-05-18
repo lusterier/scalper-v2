@@ -651,6 +651,40 @@ async def test_fill_price_unresolved_after_all_exception_attempts_publishes_to_d
 
 
 # ---------------------------------------------------------------------------
+# T-556 — resolved-after-retry observability log (2 tests)
+# ---------------------------------------------------------------------------
+
+
+async def test_fill_price_resolved_after_retry_logs_attempt_and_elapsed() -> None:
+    """T-556 — fill resolves after >=1 retry → INFO log, 1-indexed attempt + elapsed_ms."""
+    adapter = _ok_adapter()
+    adapter.get_fill_price = AsyncMock(side_effect=[None, Decimal("100.0")])
+    handler, _, bus, logger = _build(adapter=adapter, attempts=3)
+    await handler(_envelope())
+    assert adapter.get_fill_price.await_count == 2
+    bus.publish.assert_not_called()
+    info_calls = [
+        c
+        for c in logger.info.call_args_list
+        if c.args and c.args[0] == "execution.fill_price_resolved_after_retry"
+    ]
+    assert len(info_calls) == 1
+    kwargs = info_calls[0].kwargs
+    assert kwargs["attempt"] == 2  # 1-indexed (resolved on 2nd call)
+    assert kwargs["exchange_order_id"] == "ord-1"
+    assert kwargs["elapsed_ms"] >= 0
+
+
+async def test_fill_price_resolved_first_attempt_does_not_log_resolved_after_retry() -> None:
+    """T-556 — first-attempt success must NOT emit the resolved-after-retry log."""
+    handler, adapter, _, logger = _build()
+    await handler(_envelope())
+    assert adapter.get_fill_price.await_count == 1
+    info_keys = [c.args[0] for c in logger.info.call_args_list if c.args]
+    assert "execution.fill_price_resolved_after_retry" not in info_keys
+
+
+# ---------------------------------------------------------------------------
 # set_leverage error path (1 test)
 # ---------------------------------------------------------------------------
 

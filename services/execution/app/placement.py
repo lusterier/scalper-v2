@@ -28,11 +28,14 @@ Per-message handler (single :func:`make_per_bot_handler` body):
    log key ``execution.place_market_order_qty_rejected``
    (operator-actionable signal until T-F2+ step-size cache lands).
 6. Call ``adapter.get_fill_price(symbol, exchange_order_id)`` with inline
-   retry per Settings ``execution_fill_price_retry_*`` (CONCERN #7 / L-001);
-   transient adapter exceptions (AuthError / NetworkTimeout / RateLimitError)
-   are treated as None per T-216c / H-032 — warn-log + retry counter advances
-   + sleep on remaining attempts; if None after all attempts → DLQ +
-   raise :class:`FillPriceUnresolvedError`.
+   retry per Settings ``execution_fill_price_retry_*`` (CONCERN #7 / L-001;
+   T-556 widened the defaults to 12x1.0s for slow exchange fill propagation
+   — Bybit demo ``/v5/execution/list`` ~2.8s — and emits an INFO
+   ``execution.fill_price_resolved_after_retry`` when the fill resolves after
+   >=1 retry). Transient adapter exceptions (AuthError / NetworkTimeout /
+   RateLimitError) are treated as None per T-216c / H-032 — warn-log + retry
+   counter advances + sleep on remaining attempts; if None after all attempts
+   → DLQ + raise :class:`FillPriceUnresolvedError`.
 7. **T-216b2 — paper branch fork**: if ``request.exchange_mode == "paper"``,
    call ``set_trading_stop(Full, sl)`` + ``set_trading_stop(Partial, tp, tp_size)``
    then return (PaperExchange persists paper_* internally; T-218 emits
@@ -54,6 +57,7 @@ Per-message handler (single :func:`make_per_bot_handler` body):
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 from packages.bus.schemas.orders import OrderRequest, subject_for_orders_dlq
@@ -338,6 +342,7 @@ def make_per_bot_handler(
             return
         # 6. get_fill_price with inline retry (Settings-tunable per L-001).
         fill_price: Decimal | None = None
+        fill_price_loop_start = time.monotonic()
         for attempt in range(fill_price_retry_attempts):
             try:
                 fill_price = await adapter.get_fill_price(
@@ -359,6 +364,19 @@ def make_per_bot_handler(
                 )
                 fill_price = None
             if fill_price is not None:
+                if attempt > 0:
+                    # T-556: fill resolved only after >=1 retry (slow exchange
+                    # fill propagation, e.g. Bybit demo /v5/execution/list
+                    # ~2.8s). Operator visibility for the slow-fill condition
+                    # the widened Settings window absorbs. OUTSIDE the T-216c
+                    # try/except (H-032 byte-unchanged); 1-indexed attempt.
+                    logger.info(
+                        "execution.fill_price_resolved_after_retry",
+                        bot_id=bot_id,
+                        exchange_order_id=place_result.exchange_order_id,
+                        attempt=attempt + 1,
+                        elapsed_ms=round((time.monotonic() - fill_price_loop_start) * 1000),
+                    )
                 break
             if attempt + 1 < fill_price_retry_attempts:
                 await asyncio.sleep(fill_price_retry_backoff_s)

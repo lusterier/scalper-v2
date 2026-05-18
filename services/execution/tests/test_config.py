@@ -92,3 +92,11 @@ def test_shadow_rejected_replay_settings_env_overrides(monkeypatch: pytest.Monke
     s = Settings()  # type: ignore[call-arg]
     assert s.shadow_rejected_replay_query_window_max_hours == Decimal("24")
     assert s.shadow_rejected_replay_per_observation_timeout_seconds == 60.5
+
+
+def test_fill_price_retry_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-556 — widened fill-price retry window (Bybit demo /v5/execution/list ~2.8s propagation)."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@h/d")
+    s = Settings()  # type: ignore[call-arg]
+    assert s.execution_fill_price_retry_attempts == 12
+    assert s.execution_fill_price_retry_backoff_s == 1.0
