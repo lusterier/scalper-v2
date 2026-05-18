@@ -22,11 +22,11 @@ Bybit URL routing per ``exchange_mode``:
 
 * ``live`` → REST ``https://api.bybit.com`` + WS ``wss://stream.bybit.com/v5/private``
 * ``testnet`` → REST ``https://api-testnet.bybit.com`` + WS ``wss://stream-testnet.bybit.com/v5/private``
+* ``demo`` → REST ``https://api-demo.bybit.com`` + WS ``wss://stream-demo.bybit.com/v5/private``
+  (Bybit Demo Trading — real isolated demo account; requires demo-account
+  API keys, NOT live keys; per ADR-0017, supersedes the prior ADR-0004
+  demo=live-URL F2 contract)
 * ``paper`` → in-process simulator, no URLs
-
-Demo deployment (per memory ``deployment.md``) uses ``exchange_mode='live'``
-with a demo-flagged ``BOT_<ID>_BYBIT_SUB_ACCOUNT`` env value; live URLs
-are the contracted F2 routing for demo sub-accounts (ADR-0004).
 """
 
 from __future__ import annotations
@@ -72,8 +72,10 @@ __all__ = [
 # _BACKOFF_BASE_S precedent.
 _BYBIT_PROD_REST_URL = "https://api.bybit.com"
 _BYBIT_TESTNET_REST_URL = "https://api-testnet.bybit.com"
+_BYBIT_DEMO_REST_URL = "https://api-demo.bybit.com"
 _BYBIT_PROD_WS_URL = "wss://stream.bybit.com/v5/private"
 _BYBIT_TESTNET_WS_URL = "wss://stream-testnet.bybit.com/v5/private"
+_BYBIT_DEMO_WS_URL = "wss://stream-demo.bybit.com/v5/private"
 
 _VALID_SLIPPAGE_MODELS: frozenset[str] = frozenset(
     {"fixed_pct", "proportional_to_qty", "half_spread"}
@@ -162,22 +164,35 @@ async def _check_live_mode_safeguard(
     bound_logger: BoundLogger,
     now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
-    """BRIEF §16.5:2253-2257 safeguard — fail-fast + Telegram alert for live mode.
+    """BRIEF §16.5:2253-2257 safeguard — fail-fast + Telegram alert for live
+    mode; plus a non-gating ``DEMO MODE ENGAGED`` advisory for demo mode.
 
     Per BRIEF §16.5:2256 verbatim *"logs a loud warning `LIVE MODE ENGAGED`
     AND sends a Telegram alert"* — both clauses spec-mandated. Implementation:
 
-    1. If exchange_mode != "live" → no-op (testnet + paper bypass per §16.5:2257).
-    2. If env var unset / != "yes" → log ERROR + raise RuntimeError (lifespan
+    1. If exchange_mode == "demo" → log WARNING `DEMO MODE ENGAGED` (no env
+       check, no publish) + return. Demo trades a real Bybit demo account
+       (real order lifecycle, isolated demo funds — no real capital), so it
+       gets a startup advisory but is NOT gated like live (operator decision
+       T-549b / ADR-0017; §16.5 amended accordingly).
+    2. If exchange_mode != "live" → no-op (testnet + paper bypass per §16.5:2257).
+    3. If env var unset / != "yes" → log ERROR + raise RuntimeError (lifespan
        death; operator sees clear error in logs). NO publish (operator did NOT
        confirm live deploy; emitting Telegram before raise would be misleading).
-    3. If env var == "yes" → log WARNING `LIVE MODE ENGAGED` + publish NATS
+    4. If env var == "yes" → log WARNING `LIVE MODE ENGAGED` + publish NATS
        envelope to ``system.alerts``; alerting-svc catch-all rule
        (configs/alerts.yaml:32-35) routes to Telegram via default template.
 
     Per WG#3 plan-stage 2026-05-12: RuntimeError raised BEFORE bus.publish on
     error path; tests pin assert_not_called on publish for the unset-env case.
     """
+    if bot_row.exchange_mode == "demo":
+        bound_logger.warning(
+            "DEMO MODE ENGAGED",
+            bot_id=bot_row.bot_id,
+            exchange_mode="demo",
+        )
+        return
     if bot_row.exchange_mode != "live":
         return
     confirm = env.get(_LIVE_MODE_CONFIRM_ENV, "").strip().lower()
@@ -228,6 +243,9 @@ def _construct_bybit_adapter(
     if bot_row.exchange_mode == "testnet":
         rest_url = _BYBIT_TESTNET_REST_URL
         ws_url = _BYBIT_TESTNET_WS_URL
+    elif bot_row.exchange_mode == "demo":
+        rest_url = _BYBIT_DEMO_REST_URL
+        ws_url = _BYBIT_DEMO_WS_URL
     else:
         rest_url = _BYBIT_PROD_REST_URL
         ws_url = _BYBIT_PROD_WS_URL
@@ -313,7 +331,7 @@ async def build_adapter_pool(
     paper_consumer_tasks: list[asyncio.Task[None]] = []
     paper_bot_ids: set[BotId] = set()  # T-218c H-031 — populated for exchange_mode="paper"
     for bot_row in bot_rows:
-        if bot_row.exchange_mode in ("live", "testnet"):
+        if bot_row.exchange_mode in ("live", "testnet", "demo"):
             # T-520 sub-commit #1 — BRIEF §16.5 live-mode safeguard.
             await _check_live_mode_safeguard(
                 bot_row=bot_row,

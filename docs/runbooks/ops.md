@@ -113,6 +113,17 @@ Ak `valid: true` – pokračuj. Ak `valid: false` – `errors` pole povie čo tr
 >   kým operátor nedoplní reálne kľúče do `/etc/scalper-v2/secrets.env`,
 >   nerecreatne `execution-service` (`docker compose up -d`, NIE `restart`) a
 >   neun-pausne; inak zhodíš order execution pre celú platformu.
+> - **Demo bot (`exchange.mode: demo`, T-549b/ADR-0017):** routuje sa na
+>   dedikovaný Bybit Demo Trading endpoint (REST `https://api-demo.bybit.com`
+>   / WS `wss://stream-demo.bybit.com/v5/private`) — vyžaduje **demo-account**
+>   API kľúče (vytvorené v Bybit Demo Trading sekcii, **NIE live kľúče**;
+>   live kľúče proti demo endpointu = `retCode=10003 API key is invalid`).
+>   Demo **nepotrebuje** `BOT_CONFIRM_LIVE` (safeguard ho pre demo obchádza),
+>   ale pri štarte loguje `DEMO MODE ENGAGED` advisory (bez Telegramu). Demo
+>   zapisuje do **reálnych** `trades`/`position_state` (T-549a) → všetky risk
+>   gates (cooldown / caps / drawdown / loss-limit / opposite-side) platia.
+>   Rovnaký arming postup ako live (reálne kľúče do secrets.env +
+>   `docker compose up -d execution-service` + un-pause), len bez CONFIRM_LIVE.
 
 **Krok 1 – YAML konfig**
 
@@ -126,7 +137,9 @@ Povinné polia na zmenu:
 ```yaml
 bot_id: BOTID          # lowercase, bez medzier
 exchange:
-  mode: paper          # paper | testnet | live
+  mode: paper          # paper | testnet | live | demo
+  # demo = Bybit Demo Trading (api-demo.bybit.com); demo-account kľúče,
+  # bez BOT_CONFIRM_LIVE, loguje DEMO MODE ENGAGED, reálne trades/position_state
   account: sub_BOTID
   api_key_env: BOT_BOTID_BYBIT_API_KEY
   api_secret_env: BOT_BOTID_BYBIT_API_SECRET
@@ -235,13 +248,15 @@ BOT_BOTID_PAPER_SLIPPAGE_MODEL=fixed
 BOT_BOTID_PAPER_SLIPPAGE_PARAMS_JSON={"slippage_pct": "0.0001"}
 ```
 
-Pre live/testnet bot:
+Pre live/testnet/demo bot:
 ```
 BOT_BOTID_BYBIT_API_KEY=...
 BOT_BOTID_BYBIT_API_SECRET=...
 BOT_BOTID_BYBIT_SUB_ACCOUNT=sub_BOTID
-BOT_BOTID_CONFIRM_LIVE=yes    # len ak mode=live
+BOT_BOTID_CONFIRM_LIVE=yes    # len ak mode=live (mode=demo/testnet ho NEvyžaduje)
 ```
+Pre `mode=demo` použi **demo-account** kľúče z Bybit Demo Trading sekcie
+(nie live kľúče — inak `retCode=10003`); `BOT_BOTID_CONFIRM_LIVE` netreba.
 
 **Krok 5 – compose.yaml blok**
 

@@ -1,20 +1,25 @@
 # demo — first real bot on the Bybit demo account. Created by ops task
-# 2026-05-17. exchange.mode: live because the Bybit demo account uses the
-# LIVE API endpoint (not testnet). scoring.mode: passthrough + rules: []
-# → every well-formed signal becomes decision="passthrough" with ZERO
-# feature resolution (no oi_change / feature-engine dependency) — mirrors
-# smoke.yaml. String-quoted Decimals avoid PyYAML float artefacts.
+# 2026-05-17. exchange.mode: demo → execution-service routes this bot to the
+# dedicated Bybit Demo Trading endpoint (REST https://api-demo.bybit.com /
+# WS wss://stream-demo.bybit.com/v5/private) per T-549b / ADR-0017. Demo
+# requires DEMO-account API keys (created from Bybit's Demo Trading section,
+# NOT live keys). scoring.mode: passthrough + rules: [] → every well-formed
+# signal becomes decision="passthrough" with ZERO feature resolution (no
+# oi_change / feature-engine dependency) — mirrors smoke.yaml. String-quoted
+# Decimals avoid PyYAML float artefacts.
 #
 # NOTE: per-bot Bybit key wiring into execution-service IS implemented
-# (pool.py, shipped by T-215 2026-04-30). This bot is parked status='paused'
-# pending operator arming (real BOT_DEMO_BYBIT_API_KEY/SECRET/SUB_ACCOUNT in
+# (pool.py, shipped by T-215 2026-04-30; demo endpoint routing by T-549b).
+# This bot is parked status='paused' pending operator arming (real
+# BOT_DEMO_BYBIT_API_KEY/SECRET/SUB_ACCOUNT — demo-account keys — in
 # secrets.env + execution-service recreate + un-pause), NOT pending code.
+# Demo bypasses BOT_CONFIRM_LIVE but logs a DEMO MODE ENGAGED advisory.
 
 bot_id: demo
 version: 1
 
 exchange:
-  mode: live
+  mode: demo
   account: sub_demo
   api_key_env: BOT_DEMO_BYBIT_API_KEY
   api_secret_env: BOT_DEMO_BYBIT_API_SECRET

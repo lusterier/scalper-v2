@@ -31,7 +31,7 @@ def _now_fn() -> datetime:
 def _bot_row(
     *,
     bot_id: str = "alpha",
-    exchange_mode: Literal["live", "testnet", "paper"] = "live",
+    exchange_mode: Literal["live", "testnet", "paper", "demo"] = "live",
 ) -> BotRow:
     return BotRow(
         bot_id=bot_id,
@@ -164,5 +164,32 @@ async def test_safeguard_bypassed_for_paper() -> None:
         now_fn=_now_fn,
     )
     logger.warning.assert_not_called()
+    logger.error.assert_not_called()
+    bus.publish.assert_not_awaited()
+
+
+async def test_safeguard_logs_DEMO_MODE_ENGAGED_for_demo() -> None:
+    """T-549b / ADR-0017 OQ-1: exchange_mode=demo → WARNING `DEMO MODE
+    ENGAGED` (no env-gate, no publish, no RuntimeError).
+
+    Demo trades a real Bybit demo account (real order lifecycle, isolated
+    demo funds — no real capital), so it gets a startup advisory but is
+    NOT gated like live. Distinct from testnet/paper (silent bypass).
+    """
+    bus = _make_bus()
+    logger = MagicMock()
+    # NO env var; demo must not require BOT_CONFIRM_LIVE.
+    await _check_live_mode_safeguard(
+        bot_row=_bot_row(bot_id="alpha", exchange_mode="demo"),
+        env={},
+        bus=bus,
+        bound_logger=logger,
+        now_fn=_now_fn,
+    )
+    logger.warning.assert_called_once_with(
+        "DEMO MODE ENGAGED",
+        bot_id="alpha",
+        exchange_mode="demo",
+    )
     logger.error.assert_not_called()
     bus.publish.assert_not_awaited()

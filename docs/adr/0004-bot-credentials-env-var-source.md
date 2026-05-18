@@ -1,6 +1,6 @@
 # ADR-0004: Per-bot Bybit credentials sourced from env vars (incl. sub_account)
 
-Status: accepted
+Status: accepted (§"Demo / testnet routing clarification" partially superseded by ADR-0017 — see ADR-0017 for the active demo endpoint routing; the demo=live-URL F2 contract here is the point-in-time record only)
 Date: 2026-04-30
 Deciders: operator, Claude Code
 Supersedes: ADR-0003 §Decision 6 (sub_account source)

@@ -343,11 +343,14 @@ services:
       NATS_URL: nats://nats:4222
       # Safety wiring for the pool.py live-mode safeguard
       # (_check_live_mode_safeguard reads the global env BOT_CONFIRM_LIVE;
-      # absent → RuntimeError → execution-service crash-loop when a live bot
-      # is active). Map the per-bot BOT_DEMO_CONFIRM_LIVE → the global var,
-      # mirroring the strategy-engine-demo block. Single-live-bot scope
-      # (demo); a multi-live-bot setup needs a per-bot safeguard (pool.py
-      # design limitation, pre-existing — not introduced here).
+      # absent → RuntimeError → execution-service crash-loop when a
+      # mode:live bot is active). Retained for any future mode:live bot,
+      # mapped per-bot via BOT_DEMO_CONFIRM_LIVE mirroring the
+      # strategy-engine-demo block. INERT for the demo bot since T-549b:
+      # demo.yaml is mode:demo → the safeguard logs a DEMO MODE ENGAGED
+      # advisory and bypasses BOT_CONFIRM_LIVE (ADR-0017). A multi-live-bot
+      # setup needs a per-bot safeguard (pool.py design limitation,
+      # pre-existing — not introduced here).
       BOT_CONFIRM_LIVE: ${BOT_DEMO_CONFIRM_LIVE:-}
     depends_on:
       postgres:
@@ -384,12 +387,14 @@ services:
   # reads the var, T-311 ships brief-required wiring so future task can land
   # the lifespan check in a single small diff.
   # strategy-engine-demo — first real bot, Bybit demo account. exchange.mode:
-  # live (Bybit demo uses the live API endpoint). Same image as
-  # strategy-engine-smoke; BOT_ID=demo loads configs/bots/demo.yaml
-  # (passthrough scoring). Per-bot Bybit key wiring into execution-service
-  # is implemented (pool.py, shipped by T-215 2026-04-30). The bot is
-  # parked status='paused' pending operator arming (real keys in
-  # secrets.env + execution-service recreate + un-pause), NOT pending code.
+  # demo → execution-service routes to the dedicated Bybit Demo Trading
+  # endpoint (api-demo.bybit.com) per T-549b / ADR-0017; needs demo-account
+  # keys (not live keys). Same image as strategy-engine-smoke; BOT_ID=demo
+  # loads configs/bots/demo.yaml (passthrough scoring). Per-bot Bybit key
+  # wiring into execution-service is implemented (pool.py, shipped by T-215
+  # 2026-04-30; demo endpoint routing by T-549b). The bot is parked
+  # status='paused' pending operator arming (real keys in secrets.env +
+  # execution-service recreate + un-pause), NOT pending code.
   strategy-engine-demo:
     build:
       context: .

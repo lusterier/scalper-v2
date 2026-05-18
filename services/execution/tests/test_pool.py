@@ -313,6 +313,36 @@ async def test_bybit_testnet_bot_constructed_with_testnet_urls(
     await asyncio.gather(*result.ws_tasks, return_exceptions=True)
 
 
+async def test_bybit_demo_bot_constructed_with_demo_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-549b / ADR-0017: exchange_mode='demo' → dedicated Bybit Demo Trading
+    endpoints; demo constructs the Bybit adapter WITHOUT BOT_CONFIRM_LIVE
+    (OQ-1: demo is not gated by the §16.5 live-mode safeguard)."""
+    pool = _make_pool_with_rows([{"bot_id": "alpha", "display_name": "A", "exchange_mode": "demo"}])
+    client_factory, ws_factory, _ = _patch_bybit_ctors(monkeypatch)
+    # NEW env: Bybit creds only, NO BOT_CONFIRM_LIVE — demo must construct
+    # without the §16.5 live env-gate (do not reuse _LIVE_ENV).
+    demo_env = {
+        "BOT_ALPHA_BYBIT_API_KEY": "alpha_key",
+        "BOT_ALPHA_BYBIT_API_SECRET": "alpha_secret",
+        "BOT_ALPHA_BYBIT_SUB_ACCOUNT": "sub-alpha",
+    }
+    result = await build_adapter_pool(
+        pool=pool,
+        bus=_make_bus_for_live_tests(),
+        rate_limiter=MagicMock(),
+        settings=_settings(),
+        bound_logger=_logger(),
+        env=demo_env,
+    )
+    assert client_factory.call_args.kwargs["base_url"] == "https://api-demo.bybit.com"
+    assert ws_factory.call_args.kwargs["ws_url"] == "wss://stream-demo.bybit.com/v5/private"
+    for task in result.ws_tasks:
+        task.cancel()
+    await asyncio.gather(*result.ws_tasks, return_exceptions=True)
+
+
 async def test_adapter_pool_uses_distinct_credentials_per_bot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -851,7 +851,7 @@ CREATE TABLE bots (
     display_name        TEXT NOT NULL,
     created_at          TIMESTAMPTZ NOT NULL,
     status              TEXT NOT NULL,                -- 'active' | 'paused' | 'archived'
-    exchange_mode       TEXT NOT NULL,                -- 'live' | 'testnet' | 'paper'
+    exchange_mode       TEXT NOT NULL,                -- 'live' | 'testnet' | 'paper' | 'demo'
     config_hash         TEXT NOT NULL,                -- SHA256 of the YAML at last apply
     config_applied_at   TIMESTAMPTZ NOT NULL,
     meta                JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -1331,7 +1331,7 @@ class OrderRequest(BaseModel):
     be_trigger: Decimal
     be_sl_level: Decimal
     trail_pct: Decimal
-    exchange_mode: Literal["live", "testnet", "paper"]
+    exchange_mode: Literal["live", "testnet", "paper", "demo"]
 ```
 
 #### `orders.events`
@@ -2280,6 +2280,7 @@ Example entry:
 - Starting a bot with `exchange.mode: live` requires env var `BOT_CONFIRM_LIVE=yes` in the service's environment.
 - Startup logs a loud warning `LIVE MODE ENGAGED` and sends a Telegram alert.
 - Testnet and paper modes do not require this.
+- Demo mode does not require `BOT_CONFIRM_LIVE` and is not gated, but startup logs a `DEMO MODE ENGAGED` advisory warning (no Telegram alert) because it places real orders against the isolated Bybit demo account. (T-549b / ADR-0017 — §6.7 amendment.)
 
 ### 16.6 Network
 
@@ -3093,7 +3094,7 @@ created_at: "2026-04-25T10:00:00+00:00"
 status: active
 
 exchange:
-  mode: testnet                    # live | testnet | paper
+  mode: testnet                    # live | testnet | paper | demo
   account: sub_alpha               # Bybit sub-account label
   api_key_env: BOT_ALPHA_BYBIT_API_KEY
   api_secret_env: BOT_ALPHA_BYBIT_API_SECRET
