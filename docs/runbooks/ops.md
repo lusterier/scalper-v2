@@ -750,6 +750,25 @@ curl -s http://192.168.100.100:8222/streamsz | python3 -m json.tool | grep -E "n
 curl -s http://192.168.100.100:8222/subsz | python3 -m json.tool
 ```
 
+**Dashboard UI nejde z 2. PC / `vite.config.ts` crash (`paths[0] … undefined`)**
+
+UI sa servuje cez **Vite dev server** (NIE cez nginx — nginx mountuje len
+`nginx.conf`, žiadny built UI v `/usr/share/nginx/html`). Vite vyžaduje
+Node **20.19.6 cez nvm** + pnpm 10.33.2. Crash `failed to load config from
+vite.config.ts` / `unplugin … path.resolve(undefined)` = shell beží system
+Node (v18, `/usr/bin/node`) namiesto nvm v20.19.6 (nvm sa v shelli
+nenačítal). `ui/.nvmrc` pin-uje `20.19.6` → `nvm use` v `ui/` ho
+auto-vyberie.
+```bash
+cd /home/luster/scalper-v2/ui
+export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"
+nvm use                       # číta ui/.nvmrc → v20.19.6 (al. nvm use 20.19.6)
+nohup pnpm dev > /tmp/vite.log 2>&1 &
+# Vite má server.host 0.0.0.0:5173 (§16.2) → z 2. PC: http://<host-LAN-IP>:5173
+# (NIE :8080 — to je nginx; Vite proxuje /api + /events na 127.0.0.1:8080
+#  loopback na tom istom hoste, takže nginx ostáva §16.6 loopback-bound)
+```
+
 ### Kill-switch (manuálne zastavenie bota)
 
 ```bash
