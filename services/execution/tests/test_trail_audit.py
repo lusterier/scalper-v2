@@ -30,7 +30,7 @@ from packages.exchange.errors import (
     RateLimitError,
     UnknownState,
 )
-from packages.exchange.types import Position
+from packages.exchange.types import InstrumentInfo, Position
 from services.execution.app import trail_audit as ta_mod
 from services.execution.app.trail_audit import run_trail_audit_tick
 
@@ -100,12 +100,26 @@ def _ps_trail(
     )
 
 
-def _adapter(positions: list[Position] | Exception) -> MagicMock:
+def _adapter(positions: list[Position] | Exception, *, tick: str = "0.001") -> MagicMock:
     adapter = MagicMock()
     if isinstance(positions, Exception):
         adapter.get_positions = AsyncMock(side_effect=positions)
     else:
         adapter.get_positions = AsyncMock(return_value=positions)
+    # T-558b2 (L-034): trail_audit now calls adapter.get_instrument_info(ps.symbol)
+    # for the tick (quantize the recomputed `expected`). Default tick 0.001 →
+    # existing on-grid fixtures (expected 99.500, exchange 99.0/99.5) quantize
+    # to themselves (no-op) → zero drift-behaviour ripple; the no-false-drift
+    # test passes tick="0.1" to exercise the quantize.
+    adapter.get_instrument_info = AsyncMock(
+        return_value=InstrumentInfo(
+            symbol="BTCUSDT",
+            qty_step=Decimal("0.001"),
+            min_order_qty=Decimal("0.001"),
+            min_notional_usd=Decimal("5"),
+            tick_size=Decimal(tick),
+        )
+    )
     return adapter
 
 
@@ -397,4 +411,24 @@ async def test_trail_audit_no_live_bots_no_op(
         paper=_paper("p1", "p2"),
     )
     patched_ps.assert_not_awaited()
+    patched_insert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trail_audit_expected_quantized_no_false_drift(
+    patched_ps: AsyncMock,
+    patched_fsm: AsyncMock,
+    patched_insert: AsyncMock,
+) -> None:
+    """T-558b2 / H-038 — quantized `expected` vs quantized exchange SL → drift 0, NO false-positive.
+
+    buy best=10 trail_pct=0.005 → raw _compute_trail_sl_price = 9.950; tick 0.1 →
+    quantize buy ROUND_FLOOR → 9.9 (the value lifecycle now sends / Bybit holds).
+    Pre-T-558b2 raw expected 9.950 vs exchange 9.9 → drift 0.05/9.950 ≈ 0.005025
+    > 0.001 tolerance → false `trail_sl_drift_detected`. With `expected` quantized
+    → 9.9 == 9.9 → drift 0 → NO emit.
+    """
+    patched_ps.return_value = [_ps_trail("alpha", "BTCUSDT", best_price="10")]
+    adapters = _adapters(alpha=_adapter([_pos("BTCUSDT", sl_price="9.9")], tick="0.1"))
+    await _tick(adapters=adapters)
     patched_insert.assert_not_awaited()

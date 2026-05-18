@@ -31,7 +31,7 @@ from packages.exchange.errors import (
     RateLimitError,
     UnknownState,
 )
-from packages.exchange.types import Position
+from packages.exchange.types import InstrumentInfo, Position
 from services.execution.app import lifecycle as lifecycle_mod
 from services.execution.app.lifecycle import (
     _detect_sl_overwrite,
@@ -204,6 +204,22 @@ def _build_args(
     # no emit); tests exercising the check pre-set their own get_positions.
     if not isinstance(getattr(used_adapter, "get_positions", None), AsyncMock):
         used_adapter.get_positions = AsyncMock(return_value=[])
+    # T-558b2 (L-034): the BE/trail branches now call
+    # adapter.get_instrument_info(symbol) for the tick (quantize_price).
+    # Default tick_size 0.001 → every existing on-grid fixture value
+    # (100.300 / 109.450 / …) quantizes to itself (no-op) → zero
+    # value-ripple; tests proving the quantize pre-set their own
+    # get_instrument_info with a sub-tick (mirror the get_positions stance).
+    if not isinstance(getattr(used_adapter, "get_instrument_info", None), AsyncMock):
+        used_adapter.get_instrument_info = AsyncMock(
+            return_value=InstrumentInfo(
+                symbol="BTCUSDT",
+                qty_step=Decimal("0.001"),
+                min_order_qty=Decimal("0.001"),
+                min_notional_usd=Decimal("5"),
+                tick_size=Decimal("0.001"),
+            )
+        )
     return {
         "bot_id": BotId("alpha"),
         "symbol": "BTCUSDT",
@@ -872,3 +888,43 @@ async def test_run_position_monitor_invokes_sl_overwrite_then_continues(
     # FSM continued past the check (OQ-2=A non-destructive): the BE/trail
     # path was reached on the same tick.
     patched_queries["select_trade_fsm_params"].assert_called()
+
+
+# ---------------------------------------------------------------------------
+# T-558b2 / H-038 — BE/trail SL tick-quantized at set_trading_stop + persist
+# ---------------------------------------------------------------------------
+
+
+async def test_lifecycle_be_sl_tick_quantized_at_set_and_persist(
+    patched_queries: dict[str, Any],
+    fast_sleep: AsyncMock,
+) -> None:
+    """T-558b2 / H-038 — BE SL quantized (buy floor @0.1) at set_trading_stop + persist."""
+    bus = MagicMock()
+    bus.kv_get = AsyncMock(return_value=(b"101.0", 1))
+    patched_queries["select_position_state"].side_effect = [
+        _ps_row(side="buy", entry_price=Decimal("100.07"), sl_type="protective"),
+        None,
+    ]
+    adapter = MagicMock()
+    adapter.set_trading_stop = AsyncMock()
+    adapter.get_instrument_info = AsyncMock(
+        return_value=InstrumentInfo(
+            symbol="BTCUSDT",
+            qty_step=Decimal("0.001"),
+            min_order_qty=Decimal("0.001"),
+            min_notional_usd=Decimal("5"),
+            tick_size=Decimal("0.1"),
+        )
+    )
+    pool = _build_pool()
+    args = _build_args(
+        pool=pool, bus=bus, side="buy", entry_price=Decimal("100.07"), adapter=adapter
+    )
+    await run_position_monitor_for_trade(**args)
+    # _compute_be_sl_price("buy", 100.07, 0.003) = 100.07 * 1.003 = 100.37021
+    # quantize_price buy ROUND_FLOOR @0.1 → 100.37021/0.1=1003.7021 → 1003 → 100.3
+    call_kwargs = adapter.set_trading_stop.call_args.kwargs
+    assert call_kwargs["sl_price"] == Decimal("100.3")
+    sl_call = patched_queries["update_position_state_sl"].call_args
+    assert sl_call.kwargs["sl_price"] == Decimal("100.3")  # DB == exchange (OQ-3)

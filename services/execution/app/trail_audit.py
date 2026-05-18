@@ -83,6 +83,7 @@ from packages.exchange.errors import (
     RateLimitError,
     UnknownState,
 )
+from packages.exchange.quantize import quantize_price
 
 from .lifecycle import (
     _compute_trail_sl_price,
@@ -182,7 +183,22 @@ async def run_trail_audit_tick(
             exchange_sl = pos.sl_price
             if exchange_sl is None:
                 continue  # SL removed — T-534b2/H-028 domain (+ paper)
-            expected = _compute_trail_sl_price(ps.side, best_price, trail_pct)
+            # T-558b2 / H-038: quantize `expected` to the instrument tick
+            # side-aware — lifecycle now sends a tick-quantized trail SL and
+            # Bybit holds exactly that, so a raw `_compute_trail_sl_price`
+            # `expected` would drift ~1 tick vs `exchange_sl` and false-fire
+            # `trail_sl_drift_detected` on every trailing position. Quantizing
+            # `expected` with the SAME quantize_price/side/tick → quantized-vs-
+            # quantized compare (drift ≈ 0). The drift-tolerance is KEPT
+            # byte-unchanged (OQ-2 — it still guards partial-apply / silent-
+            # fail). Phase B (conn-free, alongside get_positions); adapter's
+            # 1h-TTL cache makes the per-symbol get_instrument_info ~free.
+            instrument = await adapter.get_instrument_info(ps.symbol)
+            expected = quantize_price(
+                _compute_trail_sl_price(ps.side, best_price, trail_pct),
+                ps.side,
+                instrument.tick_size,
+            )
             if expected <= Decimal("0"):
                 continue  # degenerate config guard (div-by-zero); never under valid config
             drift = abs(exchange_sl - expected) / expected

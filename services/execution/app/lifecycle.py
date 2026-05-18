@@ -43,18 +43,18 @@ its tick is strictly sequential, so a legitimate trail/BE update leaves
 exchange == DB at the next tick-start (no tolerance needed). Disjoint
 from T-534b2/H-028: ``exchange_sl is None`` (SL *removed* / naked, or
 paper — paper ``get_positions`` returns ``sl_price=None`` per T-534a) is
-the watchdog's domain, NOT an overwrite — deferred here. Known
-limitation (OQ-3=A): if Bybit normalizes the SL to the symbol price-tick
-and echoes a value ≠ what was sent, exact equality would false-positive;
-tick-tolerant compare is an F5+ follow-up raised only if testnet/live
-surfaces it.
+the watchdog's domain, NOT an overwrite — deferred here. (T-558b2 / H-038
+RESOLVED the prior OQ-3=A tick-normalization limitation: the BE/trail SL
+is now ``quantize_price``'d to the instrument tick BEFORE set_trading_stop,
+so the value sent is already tick-aligned and Bybit echoes it unchanged —
+exact equality holds; no tick-tolerant compare needed.)
 """
 
 from __future__ import annotations
 
 import asyncio
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 from packages.db.queries.execution import (
     insert_trading_event,
@@ -71,6 +71,7 @@ from packages.exchange.errors import (
     RateLimitError,
     UnknownState,
 )
+from packages.exchange.quantize import quantize_price
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -206,7 +207,19 @@ async def run_position_monitor_for_trade(
             if ps.sl_type == "protective" and _check_be_trigger(
                 side, current_price, entry_price, fsm_params["be_trigger"]
             ):
-                new_be_sl = _compute_be_sl_price(side, entry_price, fsm_params["be_sl_level"])
+                # T-558b2 / H-038: tick-quantize the BE SL side-aware
+                # (quantize_price buy→ROUND_FLOOR / sell→ROUND_CEILING — never
+                # tighter) before set_trading_stop; the SAME quantized value is
+                # persisted via update_position_state_sl below (DB==exchange,
+                # kills the §N1 drift; resolves the lifecycle.py OQ-3=A
+                # tick-normalization limitation). tick from the adapter's
+                # 1h-TTL-cached get_instrument_info.
+                instrument = await adapter.get_instrument_info(symbol)
+                new_be_sl = quantize_price(
+                    _compute_be_sl_price(side, entry_price, fsm_params["be_sl_level"]),
+                    cast("Literal['buy', 'sell']", side),
+                    instrument.tick_size,
+                )
                 try:
                     await adapter.set_trading_stop(
                         symbol=symbol,
@@ -245,7 +258,14 @@ async def run_position_monitor_for_trade(
                     )
 
             elif ps.sl_type == "trail" and ps.best_price is not None and new_best != ps.best_price:
-                new_trail_sl = _compute_trail_sl_price(side, new_best, fsm_params["trail_pct"])
+                # T-558b2 / H-038: tick-quantize the trail SL side-aware
+                # (same quantize_price + persist contract as the BE branch).
+                instrument = await adapter.get_instrument_info(symbol)
+                new_trail_sl = quantize_price(
+                    _compute_trail_sl_price(side, new_best, fsm_params["trail_pct"]),
+                    cast("Literal['buy', 'sell']", side),
+                    instrument.tick_size,
+                )
                 try:
                     await adapter.set_trading_stop(
                         symbol=symbol,
