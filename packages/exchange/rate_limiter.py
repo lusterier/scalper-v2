@@ -8,8 +8,9 @@ PaperExchange does NOT consume the limiter (no upstream rate limit).
 
 Design per ADR-0003 (commit ``dcf98bd``):
 
-1. Three bucket families: ``bybit.<sub_account>.orders``,
-   ``bybit.<sub_account>.positions``, ``bybit.ip.global``.
+1. Four bucket families: ``bybit.<sub_account>.orders``,
+   ``bybit.<sub_account>.positions``, ``bybit.<sub_account>.market``,
+   ``bybit.ip.global``.
 2. 500ms coordinated-pause-flag at ``bybit.ip.pause`` — written by
    :meth:`signal_upstream_rate_limit` (caller-driven from T-208 on Bybit
    429); read by :meth:`_wait_if_paused` at the head of every
@@ -85,6 +86,8 @@ class SharedRateLimiter:
         orders_capacity: float,
         positions_rate: float,
         positions_capacity: float,
+        market_rate: float,
+        market_capacity: float,
         ip_global_rate: float,
         ip_global_capacity: float,
         pause_ms: int,
@@ -94,6 +97,7 @@ class SharedRateLimiter:
         self._params: dict[str, tuple[float, float]] = {
             "orders": (orders_rate, orders_capacity),
             "positions": (positions_rate, positions_capacity),
+            "market": (market_rate, market_capacity),
             "_ip_global": (ip_global_rate, ip_global_capacity),
         }
         self._pause_ms = pause_ms

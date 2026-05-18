@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     rate_limit_orders_capacity: float = 20.0
     rate_limit_positions_rate: float = 10.0
     rate_limit_positions_capacity: float = 20.0
+    # T-552 — "market" bucket family wired (T-529 introduced the EndpointGroup
+    # member + get_instrument_info caller but omitted the ctor/Settings
+    # lockstep). Defaults per ADR-0003:20 ("market ~120 req/s per-IP") — mirror
+    # the ip.global 120/240 tier.
+    rate_limit_market_rate: float = 120.0
+    rate_limit_market_capacity: float = 240.0
     rate_limit_ip_global_rate: float = 120.0
     rate_limit_ip_global_capacity: float = 240.0
     rate_limit_pause_ms: int = 500

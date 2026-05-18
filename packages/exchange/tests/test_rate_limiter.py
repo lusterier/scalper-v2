@@ -44,6 +44,8 @@ def _make_limiter(
     orders_capacity: float = 20.0,
     positions_rate: float = 10.0,
     positions_capacity: float = 20.0,
+    market_rate: float = 120.0,
+    market_capacity: float = 240.0,
     ip_global_rate: float = 120.0,
     ip_global_capacity: float = 240.0,
     pause_ms: int = 500,
@@ -56,6 +58,8 @@ def _make_limiter(
         orders_capacity=orders_capacity,
         positions_rate=positions_rate,
         positions_capacity=positions_capacity,
+        market_rate=market_rate,
+        market_capacity=market_capacity,
         ip_global_rate=ip_global_rate,
         ip_global_capacity=ip_global_capacity,
         pause_ms=pause_ms,
@@ -67,10 +71,11 @@ def _make_limiter(
 
 
 def test_constructor_accepts_settings_kwargs_per_adr_0003() -> None:
-    """ADR-0003 §4: 8 ctor kwargs (3 rate/capacity pairs + pause_ms + bus + now_fn)."""
+    """ADR-0003 §4: 10 ctor kwargs (4 rate/capacity pairs + pause_ms + bus + now_fn)."""
     limiter = _make_limiter()
     assert limiter._params["orders"] == (10.0, 20.0)
     assert limiter._params["positions"] == (10.0, 20.0)
+    assert limiter._params["market"] == (120.0, 240.0)
     assert limiter._params["_ip_global"] == (120.0, 240.0)
     assert limiter._pause_ms == 500
 
@@ -108,6 +113,20 @@ async def test_acquire_uses_correct_bucket_key_per_endpoint_group() -> None:
     await limiter.acquire("sub-b", "positions")
     write_keys = [call.args[1] for call in bus.kv_put.await_args_list]
     assert write_keys == ["bybit.sub-b.positions", "bybit.ip.global"]
+
+
+async def test_acquire_market_group_debits_market_bucket() -> None:
+    """T-552 regression pin: ``market`` endpoint group keys
+    ``bybit.<sub>.market`` and does NOT ``KeyError``. T-529 introduced the
+    ``EndpointGroup`` member + the ``get_instrument_info`` caller but omitted
+    the ``_params["market"]`` lockstep — ``acquire(...,"market")`` KeyError'd
+    on the first real ``get_instrument_info`` during demo-bot placement.
+    """
+    bus = _make_bus_mock()
+    limiter = _make_limiter(bus=bus)
+    await limiter.acquire("sub-c", "market")
+    write_keys = [call.args[1] for call in bus.kv_put.await_args_list]
+    assert write_keys == ["bybit.sub-c.market", "bybit.ip.global"]
 
 
 @pytest.mark.asyncio

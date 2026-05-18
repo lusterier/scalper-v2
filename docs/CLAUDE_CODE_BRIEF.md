@@ -1934,7 +1934,7 @@ Upper layer (`execution-service`) maps these to decisions: retry, abort, reconci
 ### 11.4 Shared rate limiter
 
 - Token bucket in NATS KV `rate_limits`.
-- Keys: `bybit.<sub_account>.orders`, `bybit.<sub_account>.positions`, `bybit.ip.global`.
+- Keys: `bybit.<sub_account>.orders`, `bybit.<sub_account>.positions`, `bybit.<sub_account>.market`, `bybit.ip.global`.
 - Each call debits one token; refills per Bybit documented limits.
 - Coordinated backoff: on `RateLimitError`, all adapters on the same IP receive a 500ms pause flag published to KV (`bybit.ip.pause`).
 
