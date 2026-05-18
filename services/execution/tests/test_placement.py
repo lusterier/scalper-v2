@@ -94,12 +94,18 @@ def _ok_adapter() -> MagicMock:
     adapter.get_fill_price = AsyncMock(return_value=Decimal("45000.50"))
     adapter.set_trading_stop = AsyncMock()
     # T-529 / H-036: pre-flight qty validation requires get_instrument_info.
-    # Default fixture: BTCUSDT canonical Bybit values; aligned with _request_payload qty=0.001.
+    # T-557 / H-037: default min/step = 0.0001 so the default _request_payload
+    # (qty=0.001, tp_qty_pct=0.5 → tp_size=0.0005) satisfies the partial-TP
+    # min-lot pre-flight (0.0005 >= 0.0001). quantize_qty(0.001) and
+    # quantize_qty(0.0005) at step 0.0001 are byte-identical to step 0.001
+    # (0.001 // 0.0001 * 0.0001 = 0.001; 0.0005 // 0.0001 * 0.0001 = 0.0005)
+    # → zero value-ripple across all shared-fixture default-payload tests
+    # (verified: no shared-fixture test uses a sub-0.001-granularity qty).
     adapter.get_instrument_info = AsyncMock(
         return_value=InstrumentInfo(
             symbol="BTCUSDT",
-            qty_step=Decimal("0.001"),
-            min_order_qty=Decimal("0.001"),
+            qty_step=Decimal("0.0001"),
+            min_order_qty=Decimal("0.0001"),
             min_notional_usd=Decimal("5"),
         )
     )
@@ -325,7 +331,9 @@ async def test_placement_quantizes_qty_before_place_market_order() -> None:
         )
     )
     handler, _, _, _ = _build(adapter=adapter)
-    await handler(_envelope(_request_payload(qty="0.0015")))
+    # T-557 / H-037: tp_qty_pct=1.0 so partial tp_size == quantized qty (>= min);
+    # this test pins the H-036 entry-qty 0.0015→0.001 round-down, unrelated to TP.
+    await handler(_envelope(_request_payload(qty="0.0015", tp_qty_pct="1.0")))
     adapter.place_market_order.assert_awaited_once()
     call = adapter.place_market_order.await_args
     # Third positional arg is qty per BybitV5Adapter.place_market_order signature.
@@ -439,7 +447,9 @@ async def test_placement_uses_quantized_qty_in_all_downstream_calls(
         )
     )
     handler, _, bus, _ = _build(adapter=adapter)
-    await handler(_envelope(_request_payload(qty="0.0015")))
+    # T-557 / H-037: tp_qty_pct=1.0 so partial tp_size == quantized qty (>= min);
+    # this test pins the H-036 entry-qty 0.0015→0.001 round-down, unrelated to TP.
+    await handler(_envelope(_request_payload(qty="0.0015", tp_qty_pct="1.0")))
 
     # AC#17 site #1 — place_market_order kwarg.
     pmm_call = adapter.place_market_order.await_args
@@ -1445,3 +1455,82 @@ async def test_sizing_risk_per_sl_zero_equity_skips_sub_lowest_tier() -> None:
         )
         == 1.0
     )
+
+
+# ---------------------------------------------------------------------------
+# T-557 / H-037 — partial-TP size pre-flight min-lot validation (3 tests)
+# ---------------------------------------------------------------------------
+
+
+async def test_tp_size_below_min_order_qty_rejects_before_place() -> None:
+    """T-557 / H-037 — partial tp_size < min_order_qty → pre-flight reject; NO order."""
+    from packages.exchange.types import InstrumentInfo
+
+    registry = CollectorRegistry()
+    metrics = build_execution_metrics(registry)
+    adapter = _ok_adapter()
+    adapter.get_instrument_info = AsyncMock(
+        return_value=InstrumentInfo(
+            symbol="BTCUSDT",
+            qty_step=Decimal("0.001"),
+            min_order_qty=Decimal("0.001"),
+            min_notional_usd=Decimal("5"),
+        )
+    )
+    # qty 0.001 (== min, entry OK) x tp_qty_pct 0.5 = 0.0005 < min 0.001 → TP unsatisfiable.
+    handler, _, bus, logger = _build(adapter=adapter, metrics=metrics)
+    await handler(_envelope(_request_payload(qty="0.001", tp_qty_pct="0.5")))
+    adapter.set_leverage.assert_not_called()
+    adapter.place_market_order.assert_not_called()
+    bus.publish.assert_not_called()
+    error_keys = [c.args[0] for c in logger.error.call_args_list]
+    assert "execution.tp_size_below_min_order_qty" in error_keys
+    assert (
+        registry.get_sample_value(
+            "execution_tp_unsatisfiable_skipped_total",
+            {"bot_id": "alpha", "symbol": "BTCUSDT"},
+        )
+        == 1.0
+    )
+
+
+async def test_tp_size_qty_step_round_down_proceeds_with_aligned_size() -> None:
+    """T-557 / H-037 — qty_step round-down keeps tp_size >= min → proceed, aligned downstream."""
+    from packages.exchange.types import InstrumentInfo
+
+    adapter = _ok_adapter()
+    adapter.get_instrument_info = AsyncMock(
+        return_value=InstrumentInfo(
+            symbol="BTCUSDT",
+            qty_step=Decimal("0.001"),
+            min_order_qty=Decimal("0.001"),
+            min_notional_usd=Decimal("5"),
+        )
+    )
+    # qty 0.003 x 0.5 = 0.0015 → quantize_qty step 0.001 → 0.001 (>= min) → proceed.
+    handler, _, _, _ = _build(adapter=adapter)
+    await handler(_envelope(_request_payload(qty="0.003", tp_qty_pct="0.5")))
+    adapter.place_market_order.assert_awaited_once()
+    # Live path: 2nd set_trading_stop call = Partial TP; tp_size must be the
+    # qty_step-aligned 0.001 (NOT raw 0.0015).
+    partial_tp_call = adapter.set_trading_stop.await_args_list[1]
+    assert partial_tp_call.kwargs["tpsl_mode"] == "Partial"
+    assert partial_tp_call.kwargs["tp_size"] == Decimal("0.001")
+
+
+async def test_tp_qty_pct_one_boundary_proceeds() -> None:
+    """T-557 / H-037 — tp_qty_pct=1.0 → tp_size == entry qty (>= min) → proceeds, no reject."""
+    from packages.exchange.types import InstrumentInfo
+
+    adapter = _ok_adapter()
+    adapter.get_instrument_info = AsyncMock(
+        return_value=InstrumentInfo(
+            symbol="BTCUSDT",
+            qty_step=Decimal("0.001"),
+            min_order_qty=Decimal("0.001"),
+            min_notional_usd=Decimal("5"),
+        )
+    )
+    handler, _, _, _ = _build(adapter=adapter)
+    await handler(_envelope(_request_payload(qty="0.001", tp_qty_pct="1.0")))
+    adapter.place_market_order.assert_awaited_once()

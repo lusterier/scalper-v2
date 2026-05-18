@@ -41,6 +41,7 @@ class Metrics:
 
     virtual_balance: Gauge
     signals_skipped_sizing: Counter
+    tp_unsatisfiable_skipped: Counter
 
 
 def build_execution_metrics(registry: CollectorRegistry) -> Metrics:
@@ -52,6 +53,9 @@ def build_execution_metrics(registry: CollectorRegistry) -> Metrics:
       skipped a signal at the placement seam (``reason`` ∈ ``fetch_failed`` /
       ``compute_error`` / ``sub_lowest_tier``; mirror the strategy-engine
       ``signals_blocked_*`` T-526/T-524 silent-skip counter pattern).
+    * T-557 ``execution_tp_unsatisfiable_skipped_total{bot_id,symbol}`` — H-037
+      partial-TP min-lot pre-flight reject (``quantized_qty * tp_qty_pct``
+      below instrument ``min_order_qty`` → order rejected before place).
     """
     return Metrics(
         virtual_balance=Gauge(
@@ -65,6 +69,14 @@ def build_execution_metrics(registry: CollectorRegistry) -> Metrics:
             "§B.1 sizing skipped a signal at the placement seam, by reason "
             "(fetch_failed / compute_error / sub_lowest_tier) (T-527b2b).",
             labelnames=("bot_id", "reason"),
+            registry=registry,
+        ),
+        tp_unsatisfiable_skipped=Counter(
+            "execution_tp_unsatisfiable_skipped_total",
+            "Partial-TP min-lot pre-flight reject: quantized_qty * tp_qty_pct "
+            "below instrument min_order_qty → order rejected before place "
+            "(T-557 / H-037).",
+            labelnames=("bot_id", "symbol"),
             registry=registry,
         ),
     )

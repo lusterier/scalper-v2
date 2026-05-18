@@ -694,6 +694,15 @@ docker compose exec postgres psql -U scalper scalper -c \
 
 # Skontroluj cooldown/caps gates
 docker compose logs --tail=100 strategy-engine-BOTID | grep -E "blocked|cooldown|cap"
+
+# T-557 / H-037: partial-TP pod exchange min-lot → order zamietnutý PRED placnutím
+# (žiadna pozícia sa neotvorí). Nastane keď execution.qty * tp_qty_pct je menšie
+# než min_order_qty inštrumentu (napr. BTCUSDT min 0.001: qty 0.001 * tp_qty_pct
+# 0.5 = 0.0005 < 0.001). Bot vyzerá že "neobchoduje" hoci signály chodia.
+docker compose logs --tail=100 execution | grep "execution.tp_size_below_min_order_qty"
+# Metrika: execution_tp_unsatisfiable_skipped_total{bot_id,symbol} (Prometheus)
+# Riešenie: zvýš execution.qty alebo tp_qty_pct v bot YAML tak, aby
+# qty * tp_qty_pct >= min_order_qty daného symbolu (potom restart strategy-engine-BOTID).
 ```
 
 **Execution servis nereaguje**

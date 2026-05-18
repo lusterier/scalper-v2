@@ -45,4 +45,25 @@ def test_metrics_is_frozen_dataclass() -> None:
     metrics = build_execution_metrics(registry)
     assert dataclasses.is_dataclass(metrics)
     fields = {f.name for f in dataclasses.fields(metrics)}
-    assert fields == {"virtual_balance", "signals_skipped_sizing"}  # T-527b2b added the Counter
+    assert fields == {
+        "virtual_balance",
+        "signals_skipped_sizing",
+        "tp_unsatisfiable_skipped",  # T-557 / H-037
+    }
+
+
+def test_build_execution_metrics_declares_tp_unsatisfiable_counter() -> None:
+    """T-557 / H-037 — partial-TP min-lot pre-flight reject counter (Counter, `_total`)."""
+    from prometheus_client import Counter
+
+    registry = CollectorRegistry()
+    metrics = build_execution_metrics(registry)
+    assert isinstance(metrics.tp_unsatisfiable_skipped, Counter)
+    metrics.tp_unsatisfiable_skipped.labels(bot_id="alpha", symbol="BTCUSDT").inc()
+    assert (
+        registry.get_sample_value(
+            "execution_tp_unsatisfiable_skipped_total",
+            {"bot_id": "alpha", "symbol": "BTCUSDT"},
+        )
+        == 1.0
+    )

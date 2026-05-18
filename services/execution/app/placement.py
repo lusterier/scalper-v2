@@ -39,13 +39,18 @@ Per-message handler (single :func:`make_per_bot_handler` body):
 7. **T-216b2 — paper branch fork**: if ``request.exchange_mode == "paper"``,
    call ``set_trading_stop(Full, sl)`` + ``set_trading_stop(Partial, tp, tp_size)``
    then return (PaperExchange persists paper_* internally; T-218 emits
-   ``OrderFilled`` from ``stream_executions``).
+   ``OrderFilled`` from ``stream_executions``). ``tp_size`` here is the
+   step-3b T-557/H-037 pre-flight-validated value (pre-flight is BEFORE this
+   fork, so paper + live are covered uniformly).
 8. **T-216b2 — live/testnet SL set** (§9.5 step 6, H-013 explicit ``Full``):
    on exception (AuthError / OrderRejected / NetworkTimeout / RateLimitError /
    UnknownState) → invoke :func:`emergency_close` (T-216b1 H-004 path) and return.
 9. **T-216b2 — live/testnet TP set** (§9.5 step 7, H-013 explicit ``Partial``):
    on exception → log ERROR ``execution.tp_set_failed_continuing_with_sl_only``
-   and continue (OQ-2 default A; position remains with SL only; T-217 monitor takes over).
+   and continue (OQ-2 default A; position remains with SL only; T-217 monitor
+   takes over). T-557/H-037: the sub-min-lot ``tp_size`` case is now rejected
+   pre-flight at step 3b (no position opened) — this catch covers only the
+   remaining transient/auth/network TP-set failures, NOT min-lot.
 10. **T-216b2 — persistence-tx** (§9.5 step 8): single tx via
     :func:`persist_placement_tx` (5 INSERTs: orders + trades + position_state
     + 2 trading_events). On failure → log ERROR + return (orphan; T-221 reconciles).
@@ -293,6 +298,35 @@ def make_per_bot_handler(
                 error=str(exc),
             )
             return
+        # 3b. T-557 / H-037: partial-TP size pre-flight min-lot validation.
+        # The partial-TP order qty (quantized_qty * tp_qty_pct) MUST satisfy
+        # the same instrument qty_step/min_order_qty filter as the entry qty
+        # (H-036) — Bybit rejects a sub-min-lot Partial set_trading_stop, which
+        # silently left the position SL-only (operator capital risk, surfaced
+        # by the T-556 live-diagnostic). Reuse quantize_qty: round-down-align
+        # to qty_step AND validate >= min_order_qty. On QtyValidationError →
+        # reject the whole signal BEFORE place (no set_leverage, no order, no
+        # NATS, no rate-limit token) so no position opens that cannot honor its
+        # configured TP. The validated tp_size is carried to ALL downstream
+        # sites (paper/live set_trading_stop, persist_placement_tx).
+        try:
+            tp_size = quantize_qty(
+                compute_tp_size(quantized_qty, request.tp_qty_pct),
+                instrument_info,
+            )
+        except QtyValidationError as exc:
+            logger.error(
+                "execution.tp_size_below_min_order_qty",
+                bot_id=bot_id,
+                symbol=request.symbol,
+                quantized_qty=str(quantized_qty),
+                tp_qty_pct=str(request.tp_qty_pct),
+                tp_size=str(exc.actual_qty),
+                qty_step=str(exc.info.qty_step),
+                min_order_qty=str(exc.info.min_order_qty),
+            )
+            metrics.tp_unsatisfiable_skipped.labels(bot_id=bot_id, symbol=request.symbol).inc()
+            return
         # 4. set_leverage (LRU cached adapter-internal).
         try:
             await adapter.set_leverage(request.symbol, request.leverage)
@@ -400,7 +434,8 @@ def make_per_bot_handler(
         # T-216b1+T-216b2 — post-fill_price pipeline (§9.5 steps 6-9).
         sl_price = compute_sl_price(request.side, fill_price, request.sl_pct)
         tp_price = compute_tp_price(request.side, fill_price, request.tp_pct)
-        tp_size = compute_tp_size(quantized_qty, request.tp_qty_pct)
+        # tp_size computed + qty_step-aligned + min-lot-validated pre-flight at
+        # step 3b (T-557 / H-037); reused here unchanged.
         notional_usd = compute_notional_usd(quantized_qty, fill_price)
 
         # 7. Paper-bot fork — PaperExchange persists paper_* internally;
