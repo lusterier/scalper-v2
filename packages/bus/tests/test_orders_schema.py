@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -395,3 +397,27 @@ def test_order_request_risk_per_sl_sizing_round_trips() -> None:
     assert rebuilt.sizing.risk_pct == Decimal("0.01")
     assert str(rebuilt.sizing.risk_pct) == "0.01"
     assert rebuilt.schema_version == "1.0"
+
+
+def test_orders_dlq_stream_provisioned_captures_dlq_subject() -> None:
+    """T-553 §N4 regression pin: the ORDERS_DLQ JetStream stream exists and
+    captures every ``orders.dlq.<bot_id>`` subject.
+
+    T-216a shipped the DLQ subject + ``placement.py`` publish path WITHOUT the
+    §8.2 / ``infra/nats/streams`` stream; the safety-net failed on the first
+    real order-request failure (T-552 demo arming — ``nats: no response from
+    stream``). This data-config pin catches what ``test_placement.py`` cannot
+    (it mocks ``bus.publish`` — L-021/L-008 mock-bypass).
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    cfg = json.loads((repo_root / "infra" / "nats" / "streams" / "orders_dlq.json").read_text())
+    assert cfg["name"] == "ORDERS_DLQ"
+    assert "orders.dlq.>" in cfg["subjects"]
+    assert cfg["max_age"] == 31536000000000000  # 365d ns, == AUDIT (forensic)
+    # subject_for_orders_dlq(<bot>) must be captured by the stream's wildcard:
+    # NATS `orders.dlq.>` matches any `orders.dlq.<token...>`.
+    subj = subject_for_orders_dlq("anybot")
+    assert subj == "orders.dlq.anybot"
+    wildcard_prefix = cfg["subjects"][0][:-1]  # "orders.dlq.>" -> "orders.dlq."
+    assert wildcard_prefix == "orders.dlq."
+    assert subj.startswith(wildcard_prefix)

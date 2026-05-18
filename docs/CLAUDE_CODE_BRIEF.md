@@ -1265,6 +1265,12 @@ streams:
     max_age: 365d
     replicas: 1
 
+  - name: ORDERS_DLQ                       # T-553: dead-letter for failed order-requests
+    subjects: ["orders.dlq.>"]             # orders.dlq.<bot_id> (T-216a OQ-3/OQ-8, app-level handler-explicit; NOT a max_deliver consumer — H-003)
+    retention: limits
+    max_age: 365d                          # forensic, like AUDIT/TRADING_EVENTS
+    replicas: 1
+
   - name: ALERTS
     subjects: [system.alerts]
     retention: limits

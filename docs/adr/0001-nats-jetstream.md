@@ -53,3 +53,26 @@ Negative / trade-offs:
 
 - T-008: `packages/bus` — NATS client wrapper, `MessageEnvelope` Pydantic model, publish/subscribe helpers.
 - T-012: Docker Compose service for NATS JetStream with `infra/nats/server.conf` and stream bootstrap for `SIGNALS`, `ORDERS`, `MARKET_TICKS`, `MARKET_OHLC`, `FEATURES`, `AUDIT`, `TRADING_EVENTS`, `ALERTS` plus the three KV buckets.
+
+---
+
+> **T-553 ORDERS_DLQ stream provisioned (2026-05-18):** T-216a shipped the
+> `orders.dlq.<bot_id>` dead-letter subject + the `placement.py`
+> DLQ-publish-on-failure path (OQ-3/OQ-8) WITHOUT the §8.2 / `infra/nats/streams`
+> stream lockstep; the failure safety-net itself failed on the first real
+> order-request failure (`error="nats: no response from stream"`, surfaced
+> during T-552 demo-bot arming). T-553 adds a **dedicated forensic
+> `ORDERS_DLQ` stream** (`subjects:["orders.dlq.>"]`, `max_age` 365d mirroring
+> AUDIT/TRADING_EVENTS, `duplicate_window` 0 — per operator decision; a DLQ is
+> a failure-forensics record, not live order flow). It is an
+> application-level handler-explicit DLQ, NOT a `max_deliver` consumer
+> (H-003 / T-216a OQ-3 forbid order auto-retry-from-replay). The token-bucket
+> design + stream topology model are **unchanged** — a defect-completion of
+> T-216a's shipped-but-unprovisioned intent. **No new ADR** — pre-governed by
+> ADR-0015 decision-C (F6 task T-553). The "Follow-up tasks" T-012 line above
+> enumerates T-012's original 8-stream scope and is a point-in-time record —
+> deliberately **NOT rewritten** (`ORDERS_DLQ` post-dates it via T-553;
+> editing it would falsely attribute the stream to T-012, L-027). Cross-ref:
+> the ADR-0003:96 / §8.2 NATS-resource pre-flight-CHECK (which would have
+> *detected* this missing stream) remains a separate deferred sibling, NOT in
+> T-553 scope.
