@@ -17,6 +17,8 @@ operational tunables):
 * ``_BASE_BACKOFF_S = (0.5, 1.0, 2.0)`` — §11.2 verbatim retry schedule.
 * ``_JITTER_PCT = 0.1`` — ±10% per §11.2 ``+ jitter``.
 * ``_RETCODE_RATE_LIMIT / _RETCODE_AUTH / _RETCODE_REJECT`` — §11.3 mapping.
+* ``_RETCODE_BENIGN`` — §11.3 idempotent-no-op codes (110043 set-leverage
+  "not modified") treated as benign success, NOT mapped to an exception (T-554).
 """
 
 from __future__ import annotations
@@ -54,6 +56,13 @@ _JITTER_PCT = 0.1
 _RETCODE_RATE_LIMIT: frozenset[int] = frozenset({10006, 10016})
 _RETCODE_AUTH: frozenset[int] = frozenset({10003, 10004})
 _RETCODE_REJECT: frozenset[int] = frozenset({10001, 10005})
+# T-554: 110043 = set-leverage "leverage not modified" — Bybit idempotent
+# no-op (the requested leverage already equals the current value; Bybit
+# makes no change). Treated as benign SUCCESS, not an error. Client-wide
+# benign treatment is safe BECAUSE 110043 is endpoint-unique: Bybit emits
+# it ONLY for /v5/position/set-leverage; none of the other adapter
+# endpoints routing through client.request can return it. §11.3.
+_RETCODE_BENIGN: frozenset[int] = frozenset({110043})
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +126,9 @@ class BybitV5Client:
         """Execute one Bybit V5 REST call with retry + retCode mapping.
 
         Returns the ``result`` field of the Bybit envelope on
-        ``retCode == 0``. Raises typed exceptions per §11.3:
+        ``retCode == 0`` (or on a ``_RETCODE_BENIGN`` idempotent-no-op code:
+        110043 set-leverage "not modified" → benign success, T-554, §11.3).
+        Otherwise raises typed exceptions per §11.3:
 
         * :class:`RateLimitError` on retCode 10006/10016 OR HTTP 429.
         * :class:`AuthError` on retCode 10003/10004 OR HTTP 401/403.
@@ -188,6 +199,21 @@ class BybitV5Client:
             retcode = int(envelope.get("retCode", -1))
             retmsg = str(envelope.get("retMsg", ""))
             if retcode == 0:
+                result = envelope.get("result", {})
+                return result if isinstance(result, dict) else {}
+            if retcode in _RETCODE_BENIGN:
+                # T-554: 110043 set-leverage "not modified" — Bybit idempotent
+                # no-op (requested leverage already current). Benign success,
+                # NOT an error. §N2: observable, not a silent swallow.
+                logger.info(
+                    "bybit_v5.retcode_benign_noop",
+                    extra={
+                        "retcode": retcode,
+                        "ret_msg": retmsg,
+                        "method": method,
+                        "path": path,
+                    },
+                )
                 result = envelope.get("result", {})
                 return result if isinstance(result, dict) else {}
             mapped = self._translate_retcode(retcode, retmsg)

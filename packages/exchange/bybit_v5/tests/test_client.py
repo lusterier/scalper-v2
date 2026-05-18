@@ -251,6 +251,23 @@ async def test_request_raises_exchange_error_on_malformed_response_json_with_ori
     assert isinstance(info.value.__cause__, json.JSONDecodeError)
 
 
+async def test_retcode_benign_110043_returns_without_raising(
+    mock_request: AsyncMock,
+) -> None:
+    """T-554: retCode 110043 (set-leverage 'leverage not modified', Bybit
+    idempotent no-op) is benign success — request returns the result dict,
+    does NOT raise. Endpoint-unique to /v5/position/set-leverage; the
+    `test_retcode_other_maps_to_generic_ExchangeError` sibling (retCode
+    99999, match-only) is unaffected — not a universal raise-contract."""
+    expected_result = {"leverage": "10"}
+    mock_request.return_value = _http_response(
+        200, _envelope(110043, "leverage not modified", expected_result)
+    )
+    client = _make_client()
+    result = await client.request("POST", "/v5/position/set-leverage", retries=0)
+    assert result == expected_result
+
+
 # --- HTTP status mapping tests ---------------------------------------------
 
 

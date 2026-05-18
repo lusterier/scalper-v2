@@ -1937,6 +1937,20 @@ class UnknownState(ExchangeError):                 # place_market_order timeout
 
 Upper layer (`execution-service`) maps these to decisions: retry, abort, reconcile on restart.
 
+> **T-554 benign-retCode amendment (2026-05-18, §6.7):** Bybit retCode **110043**
+> ("Set leverage has not been modified") is an **idempotent no-op = benign
+> success**, NOT mapped to any exception above. It is endpoint-unique — Bybit
+> emits 110043 ONLY for `/v5/position/set-leverage` (requested leverage already
+> equals current). The adapter client returns normally (logs
+> `bybit_v5.retcode_benign_noop`, §N2-observable) instead of raising
+> `ExchangeError`; `set_leverage`'s LRU cache is then correctly populated
+> (the pre-T-554 raise also left the cache unpopulated → every post-restart
+> repeat order re-failed). Implemented as the `_RETCODE_BENIGN` frozenset
+> (sibling of `_RETCODE_RATE_LIMIT/_AUTH/_REJECT`). Surfaced on the first real
+> repeat demo order (never-run-live path). Defect-completion — taxonomy
+> design unchanged; No new ADR — pre-governed by ADR-0015 decision-C (F6 task
+> T-554).
+
 ### 11.4 Shared rate limiter
 
 - Token bucket in NATS KV `rate_limits`.

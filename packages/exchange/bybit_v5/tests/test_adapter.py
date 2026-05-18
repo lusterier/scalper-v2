@@ -212,6 +212,25 @@ async def test_set_leverage_uses_custom_ttl_when_provided() -> None:
     assert client.request.await_count == 2
 
 
+async def test_set_leverage_populates_cache_on_non_raising_request_t554() -> None:
+    """T-554 compounding-fix pin: set_leverage relies on client.request
+    RETURNING (not raising) on Bybit retCode 110043 ('leverage not modified',
+    idempotent no-op — benign per client._RETCODE_BENIGN). Pre-T-554 the
+    110043 raise left ``_leverage_cache`` unpopulated (the cache line sits
+    after the try/except, success-only) → every post-restart repeat order
+    re-called set-leverage and re-failed. Post-condition: a normally-
+    returning client.request → set_leverage returns None AND caches
+    (symbol, leverage) so the next call within TTL cache-hit-skips upstream."""
+    client = _make_client_mock()  # returns, no raise (post-T-554 110043)
+    adapter = _make_adapter(client=client)
+    # Completes without raising = the benign-success pin (set_leverage is
+    # typed -> None; a runtime return-value assert is a mypy no-op).
+    await adapter.set_leverage("BTCUSDT", 10)
+    assert ("BTCUSDT", 10) in adapter._leverage_cache
+    await adapter.set_leverage("BTCUSDT", 10)
+    assert client.request.await_count == 1
+
+
 # --- place_market_order (6 tests) ------------------------------------------
 
 
